@@ -114,7 +114,8 @@ impl BurstIdentifier {
 
         AsfSearchFilter {
             platform: Some("Sentinel-1".to_string()),
-            product_type: Some("SLC".to_string()),
+            // Fix: Only use processing_level, not product_type (which is not supported by ASF API)
+            product_type: None,
             processing_level: Some("SLC".to_string()),
             beam_mode: Some("IW".to_string()),
             polarization: Some(self.polarization.clone()),
@@ -276,7 +277,28 @@ impl BurstDownloader {
 
                 // Step 1: Search
                 info!("Searching for SLC products matching burst: {}", burst_clone);
-                let datasets = client_clone.search(&filter).await?;
+                let search_result = client_clone.search(&filter).await;
+
+                let datasets = match search_result {
+                    Ok(data) => data,
+                    Err(e) => {
+                        warn!(
+                            "Failed to search for SLC products matching burst {}: {}",
+                            burst_clone, e
+                        );
+                        // Additional debug info to help diagnose API issues
+                        debug!(
+                            "Search filter used: platform={:?}, processing_level={:?}, beam_mode={:?}, polarization={:?}, start_date={:?}, end_date={:?}",
+                            filter.platform,
+                            filter.processing_level,
+                            filter.beam_mode,
+                            filter.polarization,
+                            filter.start_date,
+                            filter.end_date
+                        );
+                        return Err(e.into());
+                    }
+                };
 
                 if datasets.is_empty() {
                     warn!("No SLC products found for burst: {}", burst_clone);

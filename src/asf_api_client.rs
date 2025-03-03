@@ -14,6 +14,8 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 /// Error type for ASF API operations
+///
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
 #[derive(Error, Debug)]
 pub enum AsfApiError {
     #[error("authentication failed: {0}")]
@@ -45,6 +47,9 @@ pub enum AsfApiError {
 }
 
 /// Represents a search filter for the ASF API
+///
+/// Source: https://docs.asf.alaska.edu/api/basics/
+/// Source: https://asf.alaska.edu/data-sets/sar-data-sets/sentinel-1/sentinel-1-how-to-articles/how-to-search-for-sentinel-data/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfSearchFilter {
     pub platform: Option<String>,
@@ -87,7 +92,14 @@ impl AsfSearchFilter {
         }
 
         if let Some(ref processing_level) = self.processing_level {
+            // According to ASF API, the parameter is 'processingLevel'
+            // Let's ensure we're using the exact parameter name expected by the API
             params.insert("processingLevel".to_string(), processing_level.clone());
+
+            // Also add product type filtering via the supported parameter if the value is "SLC"
+            if processing_level == "SLC" {
+                params.insert("product_type".to_string(), "SLC".to_string());
+            }
         }
 
         if let Some(ref beam_mode) = self.beam_mode {
@@ -134,9 +146,10 @@ impl AsfSearchFilter {
             params.insert("maxResults".to_string(), max_results.to_string());
         }
 
-        if let Some(ref product_type) = self.product_type {
-            params.insert("productType".to_string(), product_type.clone());
-        }
+        // The "productType" parameter is not supported by the ASF API
+        // If we need product type filtering in the future, we'll need to map it to
+        // another parameter based on the ASF API documentation
+        // Product type is usually handled via processingLevel in ASF API
 
         if let Some(ref relativeorbit) = self.relativeorbit {
             params.insert("relativeOrbit".to_string(), relativeorbit.clone());
@@ -151,6 +164,9 @@ impl AsfSearchFilter {
 }
 
 /// Represents information about a dataset in ASF
+///
+/// Source: https://docs.asf.alaska.edu/api/basics/
+/// Source: https://docs.asf.alaska.edu/api/keywords/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfDataset {
     pub id: String,
@@ -171,6 +187,9 @@ pub struct AsfDataset {
 }
 
 /// Represents a file in a HyP3 job result
+///
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
+/// Source: https://hyp3-docs.asf.alaska.edu/api-reference/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfHyp3File {
     pub filename: String,
@@ -180,6 +199,9 @@ pub struct AsfHyp3File {
 }
 
 /// Represents parameters for a HyP3 job in ASF
+///
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
+/// Source: https://hyp3-docs.asf.alaska.edu/api-reference/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfHyp3JobParameters {
     pub granules: Vec<String>,
@@ -188,6 +210,9 @@ pub struct AsfHyp3JobParameters {
 }
 
 /// Represents a HyP3 job in ASF
+///
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
+/// Source: https://hyp3-docs.asf.alaska.edu/api-reference/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfHyp3Job {
     pub job_id: String,
@@ -203,12 +228,18 @@ pub struct AsfHyp3Job {
 }
 
 /// Represents the response from ASF API search query
+///
+/// Source: https://docs.asf.alaska.edu/api/basics/
+/// Source: https://docs.asf.alaska.edu/api/responses/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfSearchResponse {
     pub results: Vec<AsfDataset>,
 }
 
 /// Represents the response from ASF HyP3 API jobs query
+///
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
+/// Source: https://hyp3-docs.asf.alaska.edu/api-reference/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfHyp3JobsResponse {
     pub jobs: Vec<AsfHyp3Job>,
@@ -216,6 +247,9 @@ pub struct AsfHyp3JobsResponse {
 }
 
 /// Credentials for ASF API authentication
+///
+/// Source: https://docs.asf.alaska.edu/api/authentication/
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/#authentication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsfCredentials {
     pub username: String,
@@ -223,6 +257,13 @@ pub struct AsfCredentials {
 }
 
 /// Client for interacting with the ASF API
+///
+/// This client provides methods for searching, downloading, and processing Sentinel-1 data
+/// through the ASF API and HyP3 on-demand processing system.
+///
+/// Source: https://docs.asf.alaska.edu/api/basics/
+/// Source: https://hyp3-docs.asf.alaska.edu/using/api/
+/// Source: https://hyp3-docs.asf.alaska.edu/guides/insar_product_guide/
 #[derive(Clone)]
 pub struct AsfApiClient {
     client: Client,
@@ -263,7 +304,7 @@ impl AsfApiClient {
         let mut request = self.client.get(&url);
 
         // Add query parameters
-        for (key, value) in params {
+        for (key, value) in &params {
             request = request.query(&[(key, value)]);
         }
 
@@ -272,17 +313,27 @@ impl AsfApiClient {
             request = request.basic_auth(&creds.username, Some(&creds.password));
         }
 
-        let response: reqwest::Response = request.send().await?;
+        let response = request.send().await?;
 
         match response.status() {
             StatusCode::OK => {
+                log::debug!("ASF API search request successful");
                 let search_response: AsfSearchResponse = response.json().await?;
+                log::debug!(
+                    "Found {} results from ASF API",
+                    search_response.results.len()
+                );
                 Ok(search_response.results)
             }
-            StatusCode::TOO_MANY_REQUESTS => Err(AsfApiError::RateLimitExceeded),
+            StatusCode::TOO_MANY_REQUESTS => {
+                log::warn!("ASF API rate limit exceeded");
+                Err(AsfApiError::RateLimitExceeded)
+            }
             _ => {
                 let status = response.status();
                 let error_text = response.text().await?;
+                log::error!("ASF API search request failed: {} - {}", status, error_text);
+                log::debug!("Query parameters used: {:?}", params);
                 Err(AsfApiError::RequestError(format!(
                     "Search request failed: {} - {}",
                     status, error_text
@@ -645,6 +696,11 @@ impl AsfApiClient {
     }
 
     /// Submit an InSAR processing job using HyP3
+    ///
+    /// This method submits an InSAR job to generate interferograms using the GAMMA software.
+    ///
+    /// Source: https://hyp3-docs.asf.alaska.edu/guides/insar_product_guide/
+    /// Source: https://hyp3-docs.asf.alaska.edu/using/api/#create-jobs
     pub async fn submit_insar_job(
         &self,
         reference_granule: &str,
