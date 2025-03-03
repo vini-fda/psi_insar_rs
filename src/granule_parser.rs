@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -280,6 +280,79 @@ impl fmt::Display for ProductClass {
     }
 }
 
+/// Absolute Orbit Number at product start time.
+///
+/// Range: 000001-999999
+///
+/// Always represented as a 6-digit number, zero-padded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitNumber {
+    number: u32,
+}
+
+impl OrbitNumber {
+    pub fn new(number: u32) -> Result<Self, GranuleIdError> {
+        if number < 1 || number > 999999 {
+            return Err(GranuleIdError::InvalidOrbitNumber);
+        }
+
+        Ok(OrbitNumber { number })
+    }
+}
+
+impl FromStr for OrbitNumber {
+    type Err = GranuleIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let number = u32::from_str_radix(s, 10).map_err(|_| GranuleIdError::InvalidOrbitNumber)?;
+        OrbitNumber::new(number)
+    }
+}
+
+impl fmt::Display for OrbitNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:06}", self.number)
+    }
+}
+
+/// Mission Data Take Id (Hexadecimal)
+///
+/// Range: 000001-FFFFFF
+///
+/// Always represented as a 6-digit hexadecimal number, zero-padded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataTakeId {
+    id: u32,
+}
+
+impl DataTakeId {
+    pub fn new(id: u32) -> Result<Self, GranuleIdError> {
+        if id < 1 || id > 0xFFFFFF {
+            return Err(GranuleIdError::InvalidDataTakeId(String::from(
+                "Out of range! The Data Take Id must always be in the range 000001-FFFFFF.",
+            )));
+        }
+
+        Ok(DataTakeId { id })
+    }
+}
+
+impl FromStr for DataTakeId {
+    type Err = GranuleIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let id = u32::from_str_radix(s, 16)
+            .map_err(|_| GranuleIdError::InvalidDataTakeId(s.to_string()))?;
+        DataTakeId::new(id)
+    }
+}
+
+impl fmt::Display for DataTakeId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:06X}", self.id)
+    }
+}
+
 /// Error type for Sentinel-1 Granule ID parsing
 #[derive(Error, Debug)]
 pub enum GranuleIdError {
@@ -302,7 +375,7 @@ pub enum GranuleIdError {
     #[error("invalid orbit number")]
     InvalidOrbitNumber,
     #[error("invalid data take identifier")]
-    InvalidDataTakeId(#[from] std::num::ParseIntError),
+    InvalidDataTakeId(String),
 }
 
 /// Represents a Sentinel-1 Granule ID
@@ -334,8 +407,8 @@ pub struct Sentinel1GranuleId {
     pub polarization: PolarizationMode,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
-    pub orbit_number: u32,
-    pub data_take_id: u32,
+    pub orbit_number: OrbitNumber,
+    pub data_take_id: DataTakeId,
     pub product_id: String,
     pub extension: String,
     /// Original granule ID string
@@ -345,6 +418,7 @@ pub struct Sentinel1GranuleId {
 impl Sentinel1GranuleId {
     /// Parse a Sentinel-1 Granule ID from its string representation
     pub fn parse(granule_id: &str) -> Result<Self, GranuleIdError> {
+        //MMM_BB_TTTR_LFPP_YYYYMMDDTHHMMSS_YYYYMMDDTHHMMSS_OOOOOO_DDDDDD_CCCC.EEEE
         // Parse mission identifier
         let mission = Mission::from_str(&granule_id[0..3])?;
         // Parse mode beam identifier
@@ -354,27 +428,25 @@ impl Sentinel1GranuleId {
         // Parse resolution class
         let resolution = Resolution::from_str(&granule_id[10..11])?;
         // Parse processing level
-        let processing_level = ProcessingLevel::from_str(&granule_id[11..12])?;
+        let processing_level = ProcessingLevel::from_str(&granule_id[12..13])?;
         // Parse product class
-        let product_class = ProductClass::from_str(&granule_id[12..13])?;
+        let product_class = ProductClass::from_str(&granule_id[13..14])?;
         // Parse polarization mode
-        let polarization = PolarizationMode::from_str(&granule_id[13..17])?;
+        let polarization = PolarizationMode::from_str(&granule_id[14..16])?;
         // Parse start time
-        let start_time =
-            DateTime::parse_from_str(&granule_id[18..34], "%Y%m%dT%H%M%S")?.with_timezone(&Utc);
+        let start_time = NaiveDateTime::parse_from_str(&granule_id[17..32], "%Y%m%dT%H%M%S")?;
+        let start_time = DateTime::from_naive_utc_and_offset(start_time, Utc);
         // Parse end time
-        let end_time =
-            DateTime::parse_from_str(&granule_id[35..51], "%Y%m%dT%H%M%S")?.with_timezone(&Utc);
+        let end_time = NaiveDateTime::parse_from_str(&granule_id[33..48], "%Y%m%dT%H%M%S")?;
+        let end_time = DateTime::from_naive_utc_and_offset(end_time, Utc);
         // Parse orbit number
-        let orbit_number = u32::from_str_radix(&granule_id[52..58], 10)
-            .map_err(|_| GranuleIdError::InvalidOrbitNumber)?;
+        let orbit_number = OrbitNumber::from_str(&granule_id[49..55])?;
         // Parse data take identifier
-        let data_take_id = u32::from_str_radix(&granule_id[59..65], 16)
-            .map_err(GranuleIdError::InvalidDataTakeId)?;
+        let data_take_id = DataTakeId::from_str(&granule_id[56..62])?;
         // Parse product unique identifier
-        let product_id = granule_id[66..70].to_string();
+        let product_id = granule_id[63..67].to_string();
         // Parse file extension
-        let extension = granule_id[71..75].to_string();
+        let extension = granule_id[68..72].to_string();
 
         Ok(Sentinel1GranuleId {
             mission,
@@ -407,7 +479,7 @@ impl fmt::Display for Sentinel1GranuleId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}.{}",
+            "{}_{}_{}{}_{}{}{}_{}_{}_{}_{}_{}.{}",
             self.mission,
             self.mode,
             self.product_type,
@@ -418,7 +490,7 @@ impl fmt::Display for Sentinel1GranuleId {
             self.start_time.format("%Y%m%dT%H%M%S"),
             self.end_time.format("%Y%m%dT%H%M%S"),
             self.orbit_number,
-            format!("{:X}", self.data_take_id),
+            self.data_take_id,
             self.product_id,
             self.extension
         )
@@ -441,8 +513,8 @@ mod tests {
         assert_eq!(parsed.processing_level, ProcessingLevel::L1);
         assert_eq!(parsed.product_class, ProductClass::SARStandard);
         assert_eq!(parsed.polarization, PolarizationMode::DV);
-        assert_eq!(parsed.orbit_number, 19964);
-        assert_eq!(parsed.data_take_id, 0x21FFD);
+        assert_eq!(parsed.orbit_number, OrbitNumber::new(19964).unwrap());
+        assert_eq!(parsed.data_take_id, DataTakeId::new(0x021FFD).unwrap());
         assert_eq!(parsed.product_id, "0A9F");
         assert_eq!(parsed.extension, "SAFE");
     }
@@ -455,12 +527,13 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let granule_id = "S1A_IW_SLC_1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
+        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
         let display_str = format!("{}", parsed);
+        println!("{}", display_str);
 
         // Note: This doesn't check the extension as it's not part of the Display implementation
-        assert!(display_str.starts_with("S1A_IW_SLC"));
+        assert!(display_str.starts_with("S1A_IW_SLC_"));
         assert!(display_str.contains("1SDV"));
         assert!(display_str.contains("20180101T103955"));
         assert!(display_str.contains("019964"));
@@ -468,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let granule_id = "S1A_IW_SLC_1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
+        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
 
         // Test serialization
