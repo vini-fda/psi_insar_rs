@@ -223,6 +223,7 @@ pub struct AsfCredentials {
 }
 
 /// Client for interacting with the ASF API
+#[derive(Clone)]
 pub struct AsfApiClient {
     client: Client,
     credentials: Option<AsfCredentials>,

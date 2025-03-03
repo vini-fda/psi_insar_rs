@@ -305,6 +305,7 @@ pub enum PolynomialType {
 /// Persistent Scatterer candidates are pixels that potentially maintain coherence over time
 /// and are selected based on various criteria such as amplitude stability or phase stability.
 ///
+/// Sources:
 /// - https://www.sciencedirect.com/science/article/pii/S0924271615002415
 /// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,12 +323,13 @@ pub struct PsCandidate {
     pub selected: bool,
 }
 
-/// Represents a persistent scatterer with estimated parameters
+/// Represents a persistent scatterer with estimated parameters.
 ///
 /// A Persistent Scatterer is a point target that maintains stable scattering characteristics
 /// over long time periods. The associated parameters include deformation rate, height correction,
 /// and various quality metrics.
 ///
+/// Sources:
 /// - https://www.sciencedirect.com/science/article/pii/S0924271615002415
 /// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
 /// - https://www.mdpi.com/2072-4292/15/4/1165
