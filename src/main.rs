@@ -1,3 +1,5 @@
+use env_logger::{Builder, Env};
+use log::{LevelFilter, info};
 use std::error::Error;
 use std::path::PathBuf;
 
@@ -6,6 +8,10 @@ use psi_insar_rs::burst_downloader::{BurstDownloader, BurstIdentifier};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize logger
+    Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
     // Set up ASF credentials (use environment variables in production)
     let username = "GoogleColab2023";
     let password = "GoogleColab_2023";

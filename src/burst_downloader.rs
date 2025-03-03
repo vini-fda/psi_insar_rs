@@ -1,14 +1,12 @@
 use crate::asf_api_client::{AsfApiClient, AsfApiError, AsfSearchFilter};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
+use log::{debug, info, warn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::Read;
-use std::io::Seek;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::task;
@@ -160,6 +158,12 @@ impl BurstDownloader {
         let temp_dir = output_dir.join("temp");
         fs::create_dir_all(&temp_dir)?;
 
+        info!(
+            "Created burst downloader with output directory: {:?}",
+            output_dir
+        );
+        debug!("Temporary directory for downloads: {:?}", temp_dir);
+
         Ok(Self {
             client,
             output_dir,
@@ -171,6 +175,7 @@ impl BurstDownloader {
     /// Enable GDAL usage for burst extraction (if available)
     pub fn with_gdal(mut self, use_gdal: bool) -> Self {
         self.use_gdal = use_gdal;
+        debug!("GDAL usage for burst extraction set to: {}", use_gdal);
         self
     }
 
@@ -185,9 +190,11 @@ impl BurstDownloader {
             }
 
             let burst = BurstIdentifier::parse(line)?;
+            debug!("Parsed burst identifier: {}", burst);
             bursts.push(burst);
         }
 
+        info!("Parsed {} burst identifiers", bursts.len());
         Ok(bursts)
     }
 
@@ -196,38 +203,46 @@ impl BurstDownloader {
         &self,
         burst: &BurstIdentifier,
     ) -> Result<PathBuf, BurstDownloadError> {
+        info!("Downloading burst: {}", burst);
+
         // Create search filter for this burst
         let filter = burst.to_search_filter();
 
         // Search for SLC products matching this burst
+        debug!("Searching for SLC products matching burst: {}", burst);
         let datasets = self.client.search(&filter).await?;
 
         if datasets.is_empty() {
+            warn!("No SLC products found for burst: {}", burst);
             return Err(BurstDownloadError::ProductNotFound(burst.raw_id.clone()));
         }
 
         // Create directory for this burst
         let burst_dir = self.output_dir.join(format!("{}", burst));
         fs::create_dir_all(&burst_dir)?;
+        debug!("Created directory for burst: {:?}", burst_dir);
 
         // Choose the first dataset (most relevant based on search criteria)
         let dataset = &datasets[0];
-        println!(
+        info!(
             "Found SLC product: {} for burst: {}",
             dataset.granule_name, burst
         );
 
         // Download the SLC zip file to temp directory
+        info!("Downloading SLC product: {}", dataset.granule_name);
         let zip_path = self
             .client
-            .download_dataset(dataset, &self.temp_dir, true)
+            .download_dataset(dataset, &self.temp_dir, false)
             .await?;
-        println!("Downloaded SLC product to: {:?}", zip_path);
+        info!("Downloaded SLC product to: {:?}", zip_path);
 
         // Extract burst data from the zip file
+        info!("Extracting burst data from zip file");
         let burst_path = self
             .extract_burst_from_zip(&zip_path, burst, &burst_dir)
             .await?;
+        info!("Extracted burst data to: {:?}", burst_path);
 
         // Optionally clean up temp files
         // fs::remove_file(zip_path)?;
@@ -240,15 +255,7 @@ impl BurstDownloader {
         &self,
         bursts: &[BurstIdentifier],
     ) -> Result<Vec<PathBuf>, BurstDownloadError> {
-        let multi_progress = MultiProgress::new();
-        let progress_style = ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .expect("Failed to create progress style")
-            .progress_chars("#>-");
-
-        let total_progress = multi_progress.add(ProgressBar::new(bursts.len() as u64));
-        total_progress.set_style(progress_style.clone());
-        total_progress.set_message("Downloading bursts");
+        info!("Starting download of {} bursts", bursts.len());
 
         let mut tasks = Vec::new();
         let mut results = Vec::new();
@@ -259,21 +266,20 @@ impl BurstDownloader {
             let output_dir_clone = self.output_dir.clone();
             let temp_dir_clone = self.temp_dir.clone();
             let use_gdal = self.use_gdal;
-            let progress = multi_progress.add(ProgressBar::new(3)); // 3 steps: search, download, extract
-            progress.set_style(progress_style.clone());
-            progress.set_message(format!("Processing {}", burst));
 
             // Spawn task for each burst
             let task = task::spawn(async move {
+                info!("Processing burst: {}", burst_clone);
+
                 // Create search filter for this burst
                 let filter = burst_clone.to_search_filter();
 
                 // Step 1: Search
-                progress.set_message(format!("Searching for {}", burst_clone));
+                info!("Searching for SLC products matching burst: {}", burst_clone);
                 let datasets = client_clone.search(&filter).await?;
-                progress.inc(1);
 
                 if datasets.is_empty() {
+                    warn!("No SLC products found for burst: {}", burst_clone);
                     return Err(BurstDownloadError::ProductNotFound(
                         burst_clone.raw_id.clone(),
                     ));
@@ -282,19 +288,24 @@ impl BurstDownloader {
                 // Create directory for this burst
                 let burst_dir = output_dir_clone.join(format!("{}", burst_clone));
                 fs::create_dir_all(&burst_dir)?;
+                debug!("Created directory for burst: {:?}", burst_dir);
 
                 // Choose the first dataset
                 let dataset = &datasets[0];
+                info!(
+                    "Found SLC product: {} for burst: {}",
+                    dataset.granule_name, burst_clone
+                );
 
                 // Step 2: Download
-                progress.set_message(format!("Downloading product for {}", burst_clone));
+                info!("Downloading SLC product: {}", dataset.granule_name);
                 let zip_path = client_clone
                     .download_dataset(dataset, &temp_dir_clone, false)
                     .await?;
-                progress.inc(1);
+                info!("Downloaded SLC product to: {:?}", zip_path);
 
                 // Step 3: Extract burst
-                progress.set_message(format!("Extracting burst {}", burst_clone));
+                info!("Extracting burst data for: {}", burst_clone);
 
                 // This part extracts the burst data from the downloaded zip
                 let burst_data_path = if use_gdal {
@@ -305,8 +316,7 @@ impl BurstDownloader {
                     extract_burst_simple(&zip_path, &burst_clone, &burst_dir).await?
                 };
 
-                progress.inc(1);
-                progress.finish_with_message(format!("Completed {}", burst_clone));
+                info!("Completed processing burst: {}", burst_clone);
 
                 Ok::<PathBuf, BurstDownloadError>(burst_data_path)
             });
@@ -315,20 +325,29 @@ impl BurstDownloader {
         }
 
         // Wait for all tasks to complete
-        for task in tasks {
+        for (i, task) in tasks.into_iter().enumerate() {
             match task.await {
                 Ok(result) => match result {
                     Ok(path) => {
+                        info!(
+                            "Successfully downloaded burst {} of {}",
+                            i + 1,
+                            bursts.len()
+                        );
                         results.push(path);
-                        total_progress.inc(1);
                     }
                     Err(e) => {
-                        total_progress.inc(1);
+                        warn!(
+                            "Failed to download burst {} of {}: {}",
+                            i + 1,
+                            bursts.len(),
+                            e
+                        );
                         return Err(e);
                     }
                 },
                 Err(e) => {
-                    total_progress.inc(1);
+                    warn!("Task for burst {} of {} failed: {}", i + 1, bursts.len(), e);
                     return Err(BurstDownloadError::CommandError(format!(
                         "Task failed: {}",
                         e
@@ -337,7 +356,11 @@ impl BurstDownloader {
             }
         }
 
-        total_progress.finish_with_message(format!("Downloaded {} bursts", results.len()));
+        info!(
+            "Download complete. Successfully downloaded {} of {} bursts",
+            results.len(),
+            bursts.len()
+        );
 
         Ok(results)
     }
@@ -372,17 +395,24 @@ async fn extract_burst_simple(
 ) -> Result<PathBuf, BurstDownloadError> {
     // Create output directory if it doesn't exist
     fs::create_dir_all(output_dir)?;
+    debug!("Created output directory: {:?}", output_dir);
 
     // Determine subswath number (IW1, IW2, IW3)
     let subswath_num = burst.subswath_number()?;
+    debug!("Identified subswath number: {}", subswath_num);
 
     // Open zip file
+    debug!("Opening zip file: {:?}", zip_path);
     let zip_file = File::open(zip_path)?;
     let mut archive = ZipArchive::new(zip_file)
         .map_err(|e| BurstDownloadError::ExtractionError(e.to_string()))?;
 
     // Find annotation XML file for the subswath
     let annotation_pattern = format!("annotation/s1.-iw{}-slc", subswath_num);
+    debug!(
+        "Searching for annotation file matching pattern: {}",
+        annotation_pattern
+    );
     let mut annotation_path = None;
 
     for i in 0..archive.len() {
@@ -395,6 +425,7 @@ async fn extract_burst_simple(
         if file_path.contains(&annotation_pattern)
             && file_path.contains(&burst.polarization.to_lowercase())
         {
+            debug!("Found annotation file: {}", file_path);
             annotation_path = Some(file_path);
             break;
         }
@@ -405,6 +436,7 @@ async fn extract_burst_simple(
     })?;
 
     // Extract annotation XML
+    debug!("Extracting annotation XML file");
     let annotation_output_path = output_dir.join("annotation.xml");
     {
         let mut annotation_file = archive
@@ -415,12 +447,14 @@ async fn extract_burst_simple(
     }
 
     // Parse XML to find burst information
+    debug!("Parsing XML to identify burst information");
     let xml_content = fs::read_to_string(&annotation_output_path)?;
 
     // Simple parsing to find burst ID and byte position
     // This is a simplified approach. In a real implementation, you would use proper XML parsing
     let swath_tag = format!("<swath>IW{}</swath>", subswath_num);
     if !xml_content.contains(&swath_tag) {
+        warn!("Subswath {} not found in annotation XML", subswath_num);
         return Err(BurstDownloadError::BurstNotFound(format!(
             "Subswath {} not found in XML",
             subswath_num
@@ -437,14 +471,17 @@ async fn extract_burst_simple(
 
     // Look for the burst ID tag or equivalent identifier
     let burst_id_pattern = format!("<burstId>{}</burstId>", burst.burst_id);
+    debug!("Searching for burst ID pattern: {}", burst_id_pattern);
     if xml_content.contains(&burst_id_pattern) {
         burst_data_found = true;
+        debug!("Found burst ID in XML");
 
         // Find sample and line information
         if let Some(samples_pos) = xml_content.find("<samplesPerBurst>") {
             if let Some(samples_end) = xml_content[samples_pos..].find("</samplesPerBurst>") {
                 let samples_str = &xml_content[samples_pos + 17..samples_pos + samples_end];
                 samples = samples_str.parse().unwrap_or(0);
+                debug!("Parsed samples per burst: {}", samples);
             }
         }
 
@@ -452,6 +489,7 @@ async fn extract_burst_simple(
             if let Some(lines_end) = xml_content[lines_pos..].find("</linesPerBurst>") {
                 let lines_str = &xml_content[lines_pos + 15..lines_pos + lines_end];
                 lines = lines_str.parse().unwrap_or(0);
+                debug!("Parsed lines per burst: {}", lines);
             }
         }
 
@@ -460,15 +498,21 @@ async fn extract_burst_simple(
             if let Some(start_end) = xml_content[start_pos..].find("</byteOffset>") {
                 let start_str = &xml_content[start_pos + 12..start_pos + start_end];
                 burst_start = start_str.parse().unwrap_or(0);
+                debug!("Parsed byte offset: {}", burst_start);
             }
         }
 
         // Calculate end position
         let complex_sample_size = 4; // Each complex sample is 4 bytes (2 bytes real + 2 bytes imaginary)
         burst_end = burst_start + (lines as u64 * samples as u64 * complex_sample_size as u64);
+        debug!("Calculated byte end position: {}", burst_end);
     }
 
     if !burst_data_found || lines == 0 || samples == 0 {
+        warn!(
+            "Burst ID {} not found in XML or invalid metadata",
+            burst.burst_id
+        );
         return Err(BurstDownloadError::BurstNotFound(format!(
             "Burst ID {} not found in XML or invalid metadata",
             burst.burst_id
@@ -477,6 +521,10 @@ async fn extract_burst_simple(
 
     // Find measurement data file for the subswath
     let measurement_pattern = format!("measurement/s1.-iw{}-slc", subswath_num);
+    debug!(
+        "Searching for measurement file matching pattern: {}",
+        measurement_pattern
+    );
     let mut measurement_path = None;
 
     for i in 0..archive.len() {
@@ -489,6 +537,7 @@ async fn extract_burst_simple(
         if file_path.contains(&measurement_pattern)
             && file_path.contains(&burst.polarization.to_lowercase())
         {
+            debug!("Found measurement file: {}", file_path);
             measurement_path = Some(file_path);
             break;
         }
@@ -499,6 +548,7 @@ async fn extract_burst_simple(
     })?;
 
     // Extract burst data from measurement file
+    info!("Extracting burst data from measurement file");
     let burst_data_path = output_dir.join(format!("burst_data_{}x{}.raw", samples, lines));
     {
         let mut measurement_file = archive
@@ -506,19 +556,23 @@ async fn extract_burst_simple(
             .map_err(|e| BurstDownloadError::ExtractionError(e.to_string()))?;
 
         // Seek to burst start position
+        debug!("Seeking to burst start position: {}", burst_start);
         measurement_file
             .seek(std::io::SeekFrom::Start(burst_start))
             .map_err(|e| BurstDownloadError::ExtractionError(e.to_string()))?;
 
         // Create output file
+        debug!("Creating output file: {:?}", burst_data_path);
         let mut output_file = File::create(&burst_data_path)?;
 
         // Calculate how many bytes to read
         let bytes_to_read = burst_end - burst_start;
+        debug!("Total bytes to read: {}", bytes_to_read);
 
         // Read burst data to output file
         let mut buffer = vec![0u8; std::cmp::min(bytes_to_read, 1024 * 1024) as usize]; // 1MB buffer or smaller
         let mut remaining = bytes_to_read;
+        let mut total_read = 0u64;
 
         while remaining > 0 {
             let buf_size = std::cmp::min(remaining, buffer.len() as u64) as usize;
@@ -527,15 +581,32 @@ async fn extract_burst_simple(
                 .map_err(|e| BurstDownloadError::ExtractionError(e.to_string()))?;
 
             if bytes_read == 0 {
+                warn!(
+                    "Reached end of file unexpectedly after reading {} of {} bytes",
+                    total_read, bytes_to_read
+                );
                 break; // End of file
             }
 
             output_file.write_all(&buffer[0..bytes_read])?;
+            total_read += bytes_read as u64;
             remaining -= bytes_read as u64;
+
+            if total_read % (10 * 1024 * 1024) == 0 {
+                // Log every 10MB
+                debug!(
+                    "Read {:?} MB of {:?} MB",
+                    total_read / (1024 * 1024),
+                    bytes_to_read / (1024 * 1024)
+                );
+            }
         }
+
+        info!("Extracted {} bytes of burst data", total_read);
     }
 
     // Create metadata file
+    info!("Creating burst metadata file");
     let metadata_path = output_dir.join("burst_metadata.json");
     let metadata = serde_json::json!({
         "burst_id": burst.burst_id,
@@ -555,7 +626,9 @@ async fn extract_burst_simple(
         BurstDownloadError::ExtractionError(format!("Failed to serialize metadata: {}", e))
     })?;
     metadata_file.write_all(metadata_str.as_bytes())?;
+    debug!("Wrote metadata file: {:?}", metadata_path);
 
+    info!("Burst extraction complete: {}", burst);
     Ok(burst_data_path)
 }
 
