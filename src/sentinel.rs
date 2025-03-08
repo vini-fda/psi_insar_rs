@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub struct GeoPoint {
     pub latitude: f64,
     pub longitude: f64,
-    pub height: Option<f64>,
+    pub height: f64,
 }
 
 /// Represents a geographic bounding box in WGS84 coordinates

@@ -380,7 +380,7 @@ pub enum GranuleIdError {
 
 /// Represents a Sentinel-1 Granule ID
 ///
-/// Format: MMM_BB_TTTR_LFPP_YYYYMMDDTHHMMSS_YYYYMMDDTHHMMSS_OOOOOO_DDDDDD_CCCC.EEEE
+/// Format: MMM_BB_TTTR_LFPP_YYYYMMDDTHHMMSS_YYYYMMDDTHHMMSS_OOOOOO_DDDDDD_CCCC
 ///
 /// Where:
 /// - MMM: Mission identifier (S1A or S1B)
@@ -395,7 +395,6 @@ pub enum GranuleIdError {
 /// - OOOOOO: Absolute orbit number
 /// - DDDDDD: Mission data-take identifier
 /// - CCCC: Product unique identifier
-/// - EEEE: File extension
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sentinel1GranuleId {
     pub mission: Mission,
@@ -526,7 +525,6 @@ mod tests {
         let display_str = format!("{}", parsed);
         println!("{}", display_str);
 
-        // Note: This doesn't check the extension as it's not part of the Display implementation
         assert!(display_str.starts_with("S1A_IW_SLC_"));
         assert!(display_str.contains("1SDV"));
         assert!(display_str.contains("20180101T103955"));
