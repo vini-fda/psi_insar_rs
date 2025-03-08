@@ -410,7 +410,6 @@ pub struct Sentinel1GranuleId {
     pub orbit_number: OrbitNumber,
     pub data_take_id: DataTakeId,
     pub product_id: String,
-    pub extension: String,
     /// Original granule ID string
     pub raw_id: String,
 }
@@ -445,8 +444,6 @@ impl Sentinel1GranuleId {
         let data_take_id = DataTakeId::from_str(&granule_id[56..62])?;
         // Parse product unique identifier
         let product_id = granule_id[63..67].to_string();
-        // Parse file extension
-        let extension = granule_id[68..72].to_string();
 
         Ok(Sentinel1GranuleId {
             mission,
@@ -461,7 +458,6 @@ impl Sentinel1GranuleId {
             orbit_number,
             data_take_id,
             product_id,
-            extension,
             raw_id: granule_id.to_string(),
         })
     }
@@ -479,7 +475,7 @@ impl fmt::Display for Sentinel1GranuleId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}_{}_{}{}_{}{}{}_{}_{}_{}_{}_{}.{}",
+            "{}_{}_{}{}_{}{}{}_{}_{}_{}_{}_{}",
             self.mission,
             self.mode,
             self.product_type,
@@ -492,7 +488,6 @@ impl fmt::Display for Sentinel1GranuleId {
             self.orbit_number,
             self.data_take_id,
             self.product_id,
-            self.extension
         )
     }
 }
@@ -503,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_granule_id() {
-        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
+        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
 
         assert_eq!(parsed.mission, Mission::S1A);
@@ -516,7 +511,6 @@ mod tests {
         assert_eq!(parsed.orbit_number, OrbitNumber::new(19964).unwrap());
         assert_eq!(parsed.data_take_id, DataTakeId::new(0x021FFD).unwrap());
         assert_eq!(parsed.product_id, "0A9F");
-        assert_eq!(parsed.extension, "SAFE");
     }
 
     #[test]
@@ -527,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
+        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
         let display_str = format!("{}", parsed);
         println!("{}", display_str);
@@ -541,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F.SAFE";
+        let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
 
         // Test serialization
