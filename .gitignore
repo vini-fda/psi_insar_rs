@@ -1,1 +1,8 @@
 /target
+/download
+/data
+.ropeproject
+*.pdf
+*.png
+*.html
+*.py
