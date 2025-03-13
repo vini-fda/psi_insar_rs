@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<noise>
+  <adsHeader>
+    <missionId>S1A</missionId>
+    <productType>SLC</productType>
+    <polarisation>VV</polarisation>
+    <mode>IW</mode>
+    <swath>IW3</swath>
+    <startTime>2015-10-22T12:25:46.721151</startTime>
+    <stopTime>2015-10-22T12:25:49.816819</stopTime>
+    <absoluteOrbitNumber>8265</absoluteOrbitNumber>
+    <missionDataTakeId>47697</missionDataTakeId>
+    <imageNumber>001</imageNumber>
+  </adsHeader>
+  <noiseVectorList count="2">
+    <noiseVector>
+      <azimuthTime>2015-10-22T12:25:43.960539</azimuthTime>
+      <line>-1507</line>
+      <pixel count="5">0 40 80 120 160</pixel>
+      <noiseLut
+                count="5"
+            >1.46e+02 1.45e+02 1.44e+02 1.43e+02 1.42e+02</noiseLut>
+    </noiseVector>
+    <noiseVector>
+      <azimuthTime>2015-10-22T12:25:46.721151</azimuthTime>
+      <line>0</line>
+      <pixel count="5">0 50 100 150 200</pixel>
+      <noiseLut
+                count="5"
+            >1.43e+02 1.42e+02 1.41e+02 1.40e+02 1.39e+02</noiseLut>
+    </noiseVector>
+  </noiseVectorList>
+</noise>

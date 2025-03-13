@@ -1,4 +1,7 @@
-use crate::granule_id::Sentinel1GranuleId;
+use crate::granule_id::{
+    DataTakeId, Mission, Mode, OrbitNumber, PolarizationMode, ProcessingLevel, ProductClass,
+    ProductType, Resolution, Sentinel1GranuleId,
+};
 use chrono::{DateTime, Utc};
 use ndarray::{Array2, Array3};
 use num_complex::Complex32;
@@ -141,250 +144,259 @@ pub struct Sentinel1SlcMetadata {
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
 #[derive(Debug, Clone)]
 pub struct SlcBurst {
+    pub mission: Mission,
+    pub mode: Mode,
+    pub product_type: ProductType,
+    pub resolution: Resolution,
+    pub processing_level: ProcessingLevel,
+    pub product_class: ProductClass,
+    pub polarization: PolarizationMode,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub orbit_number: OrbitNumber,
+    pub data_take_id: DataTakeId,
+    pub product_id: String,
     pub metadata: BurstMetadata,
     pub data: Array2<Complex32>,
 }
 
-/// Represents a subswath containing multiple bursts.
-///
-/// A subswath is a portion of the total swath width. Sentinel-1 IW mode consists of
-/// three subswaths (IW1, IW2, IW3), each containing multiple bursts.
-///
-/// Sources:
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-wide-swath
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-#[derive(Debug, Clone)]
-pub struct SlcSubswath {
-    pub metadata: SubswathMetadata,
-    pub bursts: Vec<SlcBurst>,
-}
+impl SlcBurst {
+    pub fn load_from_directory(root: &PathBuf, granule: &Sentinel1GranuleId) -> Self {
+        let granule_name = granule.to_string();
+        let directory = root.join(&granule_name);
 
-/// Represents a complete Sentinel-1 SLC product.
-///
-/// A Sentinel-1 SLC product contains complex-valued SAR imagery preserving both amplitude and phase information.
-/// It includes subswaths, each containing multiple bursts, along with metadata and orbit information.
-///
-/// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/single-look-complex
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-#[derive(Debug, Clone)]
-pub struct Sentinel1SlcProduct {
-    pub metadata: Sentinel1SlcMetadata,
-    pub subswaths: Vec<SlcSubswath>,
-    pub directory_path: PathBuf,
-}
+        // Extract mission and polarization from granule ID
+        let mission = granule.mission;
+        let product_type = granule.product_type;
+        let polarization = granule.polarization;
+        let start_time = granule.start_time;
+        let end_time = granule.end_time;
+        let orbit_number = granule.orbit_number;
+        let data_take_id = granule.data_take_id;
 
-impl Sentinel1SlcProduct {
-    /// Loads a Sentinel-1 SLC product from the given directory path
-    pub fn load(directory_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        // Implementation would parse XML metadata and load binary data
-        // This is a complex operation that would require access to the actual Sentinel-1 data format
-        todo!("Implement Sentinel-1 SLC product loading")
-    }
+        for sub_swath in [SubSwath::IW1, SubSwath::IW2, SubSwath::IW3] {
+            let slug = format!(
+                "{mission}-{sub_swath}-{product_type}-{polarization}-{start_time}-{end_time}-{orbit_number}-{data_take_id}-001"
+            ).to_lowercase();
+            // Construct paths to necessary files
+            let calibration_path = Self::find_calibration_xml(&directory, &slug);
+            let noise_path = Self::find_noise_xml(&directory, &slug);
+            let annotation_path = Self::find_annotation_xml(&directory, &slug);
+            let measurement_path = Self::find_measurement_tiff(&directory, &slug);
 
-    /// Returns the interferometric burst pairs between this SLC product and another
-    pub fn get_burst_pairs(&self, other: &Sentinel1SlcProduct) -> Vec<(SlcBurst, SlcBurst)> {
-        // Implementation would identify matching bursts between two acquisitions
-        // using metadata like burst_id, subswath_id, etc.
-        todo!("Implement burst pair identification")
-    }
-
-    /// Returns a list of all bursts in the product
-    pub fn get_all_bursts(&self) -> Vec<&SlcBurst> {
-        let mut bursts = Vec::new();
-        for subswath in &self.subswaths {
-            for burst in &subswath.bursts {
-                bursts.push(burst);
-            }
+            // Parse calibration XML
+            let calibration = Self::parse_calibration_xml(&calibration_path);
+            // Parse noise XML
+            let noise = Self::parse_noise_xml(&noise_path);
+            // Parse annotation XML to get annotation metadata
+            let annotation = Self::parse_annotation_xml(&annotation_path);
+            // Load GeoTIFF data (complex values)
+            let complex_data = Self::load_complex_data(&measurement_path);
+            // Extract burst information from metadata
+            let burst_info = Self::extract_burst_info(&metadata);
         }
-        bursts
+
+        // Create the SlcBurst instance
+        SlcBurst {
+            granule_id: granule.clone(),
+            swath: swath,
+            polarization: polarization,
+            metadata: metadata,
+            calibration: calibration,
+            noise: noise,
+            complex_data: complex_data,
+            burst_info: burst_info,
+            // Additional fields as needed
+        }
     }
 
-    /// Returns bursts that cover the given geographic point
-    pub fn get_bursts_covering_point(&self, point: &GeoPoint) -> Vec<&SlcBurst> {
-        let mut covering_bursts = Vec::new();
+    /// Finds the calibration XML file for a given slug in the calibration directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` - Base directory containing the SAFE product structure
+    /// * `slug` - Identifier part of the filename (e.g. "s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PathBuf)` - Path to the calibration XML file if found
+    /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
+    fn find_calibration_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+        // Find the calibration XML file
+        let calibration_dir = directory.join("annotation").join("calibration");
+        let pattern = format!("calibration-{slug}.xml");
 
-        for subswath in &self.subswaths {
-            for burst in &subswath.bursts {
-                if point.latitude >= burst.metadata.bounding_box.min_latitude
-                    && point.latitude <= burst.metadata.bounding_box.max_latitude
-                    && point.longitude >= burst.metadata.bounding_box.min_longitude
-                    && point.longitude <= burst.metadata.bounding_box.max_longitude
-                {
-                    covering_bursts.push(burst);
+        // Check if directory exists
+        if !calibration_dir.exists() {
+            return Err(format!(
+                "Calibration directory does not exist: {}",
+                calibration_dir.display()
+            ));
+        }
+
+        // Find file matching pattern
+        let entries = std::fs::read_dir(&calibration_dir)
+            .map_err(|e| format!("Failed to read calibration directory: {}", e))?;
+
+        for entry_result in entries {
+            let entry =
+                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+
+            if let Some(file_name) = entry.file_name().to_str() {
+                if file_name == pattern {
+                    return Ok(entry.path());
                 }
             }
         }
 
-        covering_bursts
+        // File not found - return a meaningful error
+        Err(format!(
+            "Calibration file 'calibration-{}.xml' not found in {}",
+            slug,
+            calibration_dir.display()
+        ))
     }
 
-    /// Returns bursts that cover the given geographic area
-    pub fn get_bursts_covering_area(&self, area: &GeoBoundingBox) -> Vec<&SlcBurst> {
-        let mut covering_bursts = Vec::new();
+    /// Finds the noise XML file for a given slug in the calibration directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` - Base directory containing the SAFE product structure
+    /// * `slug` - Identifier part of the filename (e.g. "s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PathBuf)` - Path to the noise XML file if found
+    /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
+    fn find_noise_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+        // Find the noise XML file
+        let noise_dir = directory.join("annotation").join("calibration");
+        let pattern = format!("noise-{slug}.xml");
 
-        for subswath in &self.subswaths {
-            for burst in &subswath.bursts {
-                // Check if there's any overlap between the burst bounding box and the area
-                if area.min_latitude <= burst.metadata.bounding_box.max_latitude
-                    && area.max_latitude >= burst.metadata.bounding_box.min_latitude
-                    && area.min_longitude <= burst.metadata.bounding_box.max_longitude
-                    && area.max_longitude >= burst.metadata.bounding_box.min_longitude
-                {
-                    covering_bursts.push(burst);
+        // Check if directory exists
+        if !noise_dir.exists() {
+            return Err(format!(
+                "Calibration directory does not exist: {}",
+                noise_dir.display()
+            ));
+        }
+
+        // Find file matching pattern
+        let entries = std::fs::read_dir(&noise_dir)
+            .map_err(|e| format!("Failed to read calibration directory: {}", e))?;
+
+        for entry_result in entries {
+            let entry =
+                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+
+            if let Some(file_name) = entry.file_name().to_str() {
+                if file_name == pattern {
+                    return Ok(entry.path());
                 }
             }
         }
 
-        covering_bursts
+        // File not found - return a meaningful error
+        Err(format!(
+            "Noise file 'noise-{}.xml' not found in {}",
+            slug,
+            noise_dir.display()
+        ))
     }
-}
 
-/// Represents a stack of coregistered SLC data for PSI processing.
-///
-/// A coregistered SLC stack consists of multiple SLC images aligned to a common reference geometry,
-/// which is essential for PSI (Persistent Scatterer Interferometry) processing.
-///
-/// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-applications
-/// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
-#[derive(Debug, Clone)]
-pub struct SlcStack {
-    pub reference_product: Sentinel1SlcProduct,
-    pub slave_products: Vec<Sentinel1SlcProduct>,
-    pub coregistered_data: HashMap<String, Array3<Complex32>>, // Burst ID -> Stack of data
-    pub timestamps: Vec<DateTime<Utc>>,
-    pub metadata: HashMap<String, String>,
-}
+    /// Finds the annotation XML file for a given slug in the annotation directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` - Base directory containing the SAFE product structure
+    /// * `slug` - Identifier part of the filename (e.g. "s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PathBuf)` - Path to the annotation XML file if found
+    /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
+    fn find_annotation_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+        // Find the annotation XML file
+        let annotation_dir = directory.join("annotation");
+        let pattern = format!("{slug}.xml");
 
-impl SlcStack {
-    /// Creates a new SLC stack with the given reference product
-    pub fn new(reference_product: Sentinel1SlcProduct) -> Self {
-        let timestamps = vec![reference_product.metadata.acquisition_date];
-
-        SlcStack {
-            reference_product,
-            slave_products: Vec::new(),
-            coregistered_data: HashMap::new(),
-            timestamps,
-            metadata: HashMap::new(),
+        // Check if directory exists
+        if !annotation_dir.exists() {
+            return Err(format!(
+                "Annotation directory does not exist: {}",
+                annotation_dir.display()
+            ));
         }
+
+        // Find file matching pattern
+        let entries = std::fs::read_dir(&annotation_dir)
+            .map_err(|e| format!("Failed to read annotation directory: {}", e))?;
+
+        for entry_result in entries {
+            let entry =
+                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+
+            if let Some(file_name) = entry.file_name().to_str() {
+                if file_name == pattern {
+                    return Ok(entry.path());
+                }
+            }
+        }
+
+        // File not found - return a meaningful error
+        Err(format!(
+            "Annotation file '{}.xml' not found in {}",
+            slug,
+            annotation_dir.display()
+        ))
     }
 
-    /// Adds a slave product to the stack
-    pub fn add_slave_product(&mut self, slave_product: Sentinel1SlcProduct) {
-        self.timestamps
-            .push(slave_product.metadata.acquisition_date);
-        self.slave_products.push(slave_product);
-    }
+    /// Finds the measurement TIFF file for a given slug in the measurement directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` - Base directory containing the SAFE product structure
+    /// * `slug` - Identifier part of the filename (e.g. "s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PathBuf)` - Path to the measurement TIFF file if found
+    /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
+    fn find_measurement_tiff(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+        // Find the measurement TIFF file
+        let measurement_dir = directory.join("measurement");
+        let pattern = format!("{slug}.tiff"); // Note: Using .tiff extension
+        let pattern_alt = format!("{slug}.tif"); // Alternative .tif extension
 
-    /// Coregisters all slave products to the reference product
-    pub fn coregister(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Implementation would coregister each slave product to the reference
-        // This is a complex operation involving orbit information, DEM, etc.
-        todo!("Implement SLC stack coregistration")
-    }
-}
+        // Check if directory exists
+        if !measurement_dir.exists() {
+            return Err(format!(
+                "Measurement directory does not exist: {}",
+                measurement_dir.display()
+            ));
+        }
 
-/// Represents different polynomial types for modeling phases.
-///
-/// These polynomial types are used for modeling phase components in PSI processing,
-/// such as deformation, atmospheric effects, and topographic errors.
-///
-/// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
-/// - https://www.mdpi.com/2072-4292/15/4/1165
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PolynomialType {
-    Linear,
-    Quadratic,
-    Cubic,
-}
+        // Find file matching pattern
+        let entries = std::fs::read_dir(&measurement_dir)
+            .map_err(|e| format!("Failed to read measurement directory: {}", e))?;
 
-/// Represents a persistent scatterer candidate.
-///
-/// Persistent Scatterer candidates are pixels that potentially maintain coherence over time
-/// and are selected based on various criteria such as amplitude stability or phase stability.
-///
-/// Sources:
-/// - https://www.sciencedirect.com/science/article/pii/S0924271615002415
-/// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PsCandidate {
-    pub id: usize,
-    pub row: usize,
-    pub col: usize,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub height: f64,
-    pub amplitude_mean: f32,
-    pub amplitude_dispersion: f32,
-    pub coherence: f32,
-    pub phase_stability: f32,
-    pub selected: bool,
-}
+        for entry_result in entries {
+            let entry =
+                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
 
-/// Represents a persistent scatterer with estimated parameters.
-///
-/// A Persistent Scatterer is a point target that maintains stable scattering characteristics
-/// over long time periods. The associated parameters include deformation rate, height correction,
-/// and various quality metrics.
-///
-/// Sources:
-/// - https://www.sciencedirect.com/science/article/pii/S0924271615002415
-/// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
-/// - https://www.mdpi.com/2072-4292/15/4/1165
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistentScatterer {
-    pub id: usize,
-    pub row: usize,
-    pub col: usize,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub height: f64,
-    pub los_velocity: f64, // Line of sight velocity in mm/year
-    pub coherence: f32,
-    pub los_acceleration: Option<f64>,
-    pub height_error: f64,
-    pub velocity_error: f64,
-    pub phase_residuals: Vec<f32>,
-    pub model_parameters: HashMap<String, f64>,
-}
+            if let Some(file_name) = entry.file_name().to_str() {
+                // Check for both possible TIFF extensions
+                if file_name == pattern || file_name == pattern_alt {
+                    return Ok(entry.path());
+                }
+            }
+        }
 
-/// Represents the results of PSI processing
-///
-/// PSI (Persistent Scatterer Interferometry) results include a set of identified persistent scatterers,
-/// their locations, displacement rates, quality metrics, and associated processing parameters.
-///
-/// Sources:
-/// - https://www.sciencedirect.com/science/article/pii/S0924271615002415
-/// - https://earth.esa.int/eogateway/documents/20142/37627/TM-19_pt1.pdf
-/// - https://www.mdpi.com/2072-4292/15/4/1165
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PsiResults {
-    pub reference_point: GeoPoint,
-    pub persistent_scatterers: Vec<PersistentScatterer>,
-    pub temporal_baselines: Vec<f64>, // In days
-    pub processing_parameters: HashMap<String, String>,
-    pub processing_date: DateTime<Utc>,
-    pub area_of_interest: GeoBoundingBox,
-}
-
-impl PsiResults {
-    /// Exports PSI results to a GeoJSON file
-    pub fn export_to_geojson(&self, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        // Implementation would convert PS results to GeoJSON features
-        todo!("Implement GeoJSON export")
-    }
-
-    /// Exports PSI results to a GeoTIFF file
-    pub fn export_to_geotiff(&self, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        // Implementation would convert PS results to a raster GeoTIFF
-        todo!("Implement GeoTIFF export")
-    }
-
-    /// Exports PSI results to a CSV file
-    pub fn export_to_csv(&self, file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        // Implementation would write PS results to a CSV file
-        todo!("Implement CSV export")
+        // File not found - return a meaningful error
+        Err(format!(
+            "Measurement file '{}.tif(f)' not found in {}",
+            slug,
+            measurement_dir.display()
+        ))
     }
 }

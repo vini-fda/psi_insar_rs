@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 use thiserror::Error;
@@ -67,6 +67,65 @@ impl fmt::Display for Mode {
             Mode::EW => write!(f, "EW"),
             Mode::WV => write!(f, "WV"),
         }
+    }
+}
+
+/// Represents the Interferometric Wide (IW) Sub-Swath of a Sentinel-1 acquisition.
+///
+/// Sentinel-1 IW mode divides the imaged area into three sub-swaths (IW1, IW2, IW3)
+/// that are acquired using the Terrain Observation with Progressive Scans (TOPS) technique.
+/// Each sub-swath has different frequency ranges and viewing geometries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IWSwath {
+    IW1,
+    IW2,
+    IW3,
+}
+
+impl IWSwath {
+    /// Converts a string to a IWSwath enum value
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - A string slice that should contain "IW1", "IW2", "IW3" (case sensitive)
+    ///
+    /// # Returns
+    ///
+    /// * `Option<IWSwath>` - The corresponding IWSwath variant or None if the string is invalid
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "IW1" => Some(IWSwath::IW1),
+            "IW2" => Some(IWSwath::IW2),
+            "IW3" => Some(IWSwath::IW3),
+            _ => None,
+        }
+    }
+
+    /// Converts the IWSwath enum to a lowercase string
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The string representation ("IW1", "IW2", or "IW3")
+    pub fn to_string(&self) -> String {
+        match self {
+            IWSwath::IW1 => "IW1".to_string(),
+            IWSwath::IW2 => "IW2".to_string(),
+            IWSwath::IW3 => "IW3".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for IWSwath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
+impl std::str::FromStr for IWSwath {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str(s).ok_or_else(|| format!("Invalid sub-swath: {}", s))
     }
 }
 
@@ -285,7 +344,7 @@ impl fmt::Display for ProductClass {
 /// Range: 000001-999999
 ///
 /// Always represented as a 6-digit number, zero-padded.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrbitNumber {
     number: u32,
 }
@@ -315,12 +374,33 @@ impl fmt::Display for OrbitNumber {
     }
 }
 
+/// Custom serialization: store OrbitNumber as a plain integer.
+impl Serialize for OrbitNumber {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(self.number)
+    }
+}
+
+/// Custom deserialization: parse an integer into OrbitNumber.
+impl<'de> Deserialize<'de> for OrbitNumber {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let number = u32::deserialize(deserializer)?;
+        OrbitNumber::new(number).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Mission Data Take Id (Hexadecimal)
 ///
 /// Range: 000001-FFFFFF
 ///
 /// Always represented as a 6-digit hexadecimal number, zero-padded.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataTakeId {
     id: u32,
 }
@@ -350,6 +430,25 @@ impl FromStr for DataTakeId {
 impl fmt::Display for DataTakeId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:06X}", self.id)
+    }
+}
+
+impl Serialize for DataTakeId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(self.id)
+    }
+}
+
+impl<'de> Deserialize<'de> for DataTakeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let number = u32::deserialize(deserializer)?;
+        DataTakeId::new(number).map_err(serde::de::Error::custom)
     }
 }
 
