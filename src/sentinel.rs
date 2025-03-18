@@ -1,8 +1,12 @@
+use crate::annotation_xml::SlcProductAnnotation;
+use crate::calibration_xml::Calibration;
 use crate::granule_id::{
-    DataTakeId, Mission, Mode, OrbitNumber, PolarizationMode, ProcessingLevel, ProductClass,
-    ProductType, Resolution, Sentinel1GranuleId,
+    DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProcessingLevel,
+    ProductClass, ProductType, Resolution, Sentinel1GranuleId,
 };
+use crate::noise_xml::Noise;
 use chrono::{DateTime, Utc};
+use geotiff::GeoTiff;
 use ndarray::{Array2, Array3};
 use num_complex::Complex32;
 use serde::{Deserialize, Serialize};
@@ -142,72 +146,89 @@ pub struct Sentinel1SlcMetadata {
 /// Sources:
 /// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-#[derive(Debug, Clone)]
 pub struct SlcBurst {
     pub mission: Mission,
     pub mode: Mode,
     pub product_type: ProductType,
-    pub resolution: Resolution,
-    pub processing_level: ProcessingLevel,
-    pub product_class: ProductClass,
     pub polarization: PolarizationMode,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub orbit_number: OrbitNumber,
     pub data_take_id: DataTakeId,
     pub product_id: String,
-    pub metadata: BurstMetadata,
-    pub data: Array2<Complex32>,
+    pub metadata: SlcProductAnnotation,
+    pub calibration: Calibration,
+    pub noise: Noise,
+    pub data: GeoTiff,
 }
 
 impl SlcBurst {
-    pub fn load_from_directory(root: &PathBuf, granule: &Sentinel1GranuleId) -> Self {
-        let granule_name = granule.to_string();
-        let directory = root.join(&granule_name);
-
+    pub fn load_from_directory(
+        directory: &PathBuf,
+        granule: &Sentinel1GranuleId,
+    ) -> Result<Self, String> {
         // Extract mission and polarization from granule ID
         let mission = granule.mission;
+        let mode = granule.mode;
         let product_type = granule.product_type;
         let polarization = granule.polarization;
         let start_time = granule.start_time;
         let end_time = granule.end_time;
         let orbit_number = granule.orbit_number;
         let data_take_id = granule.data_take_id;
+        let product_id = granule.product_id.clone();
 
-        for sub_swath in [SubSwath::IW1, SubSwath::IW2, SubSwath::IW3] {
-            let slug = format!(
-                "{mission}-{sub_swath}-{product_type}-{polarization}-{start_time}-{end_time}-{orbit_number}-{data_take_id}-001"
+        // formatted times
+        let start_datetime_fmt = start_time.format("%Y%m%dT%H%M%S");
+        let end_datetime_fmt = end_time.format("%Y%m%dT%H%M%S");
+
+        let sub_swath = IWSwath::IW3;
+        let slug = format!(
+                "{mission}-{sub_swath}-{product_type}-{polarization}-{start_datetime_fmt}-{end_datetime_fmt}-{orbit_number}-{data_take_id}-001"
             ).to_lowercase();
-            // Construct paths to necessary files
-            let calibration_path = Self::find_calibration_xml(&directory, &slug);
-            let noise_path = Self::find_noise_xml(&directory, &slug);
-            let annotation_path = Self::find_annotation_xml(&directory, &slug);
-            let measurement_path = Self::find_measurement_tiff(&directory, &slug);
+        // Construct paths to necessary files
+        let calibration_path = Self::find_calibration_xml(&directory, &slug)?;
+        let noise_path = Self::find_noise_xml(&directory, &slug)?;
+        let annotation_path = Self::find_annotation_xml(&directory, &slug)?;
+        let measurement_path = Self::find_measurement_tiff(&directory, &slug)?;
 
-            // Parse calibration XML
-            let calibration = Self::parse_calibration_xml(&calibration_path);
-            // Parse noise XML
-            let noise = Self::parse_noise_xml(&noise_path);
-            // Parse annotation XML to get annotation metadata
-            let annotation = Self::parse_annotation_xml(&annotation_path);
-            // Load GeoTIFF data (complex values)
-            let complex_data = Self::load_complex_data(&measurement_path);
-            // Extract burst information from metadata
-            let burst_info = Self::extract_burst_info(&metadata);
-        }
+        // Parse calibration XML
+        let calibration_xml_content = std::fs::read_to_string(&calibration_path)
+            .expect("Failed to read calibration XML file");
+        let calibration: Calibration = quick_xml::de::from_str(&calibration_xml_content)
+            .expect("Failed to parse calibration XML");
+        // Parse noise XML
+        let noise_xml_content =
+            std::fs::read_to_string(&noise_path).expect("Failed to read noise XML file");
+        let noise: Noise =
+            quick_xml::de::from_str(&noise_xml_content).expect("Failed to parse noise XML");
+        // Parse annotation XML to get annotation metadata
+        let annotation_xml_content =
+            std::fs::read_to_string(&annotation_path).expect("Failed to read annotation XML file");
+        let metadata: SlcProductAnnotation = quick_xml::de::from_str(&annotation_xml_content)
+            .expect("Failed to parse annotation XML");
+
+        // Load GeoTIFF data
+        let geotiff_file =
+            std::fs::File::open(&measurement_path).expect("Failed to open measurement TIFF file");
+        let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
 
         // Create the SlcBurst instance
-        SlcBurst {
-            granule_id: granule.clone(),
-            swath: swath,
-            polarization: polarization,
-            metadata: metadata,
-            calibration: calibration,
-            noise: noise,
-            complex_data: complex_data,
-            burst_info: burst_info,
-            // Additional fields as needed
-        }
+        Ok(SlcBurst {
+            mission,
+            mode,
+            product_type,
+            polarization,
+            start_time,
+            end_time,
+            orbit_number,
+            data_take_id,
+            product_id,
+            calibration,
+            noise,
+            metadata,
+            data,
+        })
     }
 
     /// Finds the calibration XML file for a given slug in the calibration directory.
@@ -398,5 +419,24 @@ impl SlcBurst {
             slug,
             measurement_dir.display()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_slc_burst() {
+        // root directory
+        let root = PathBuf::from(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        );
+        let granule_id = Sentinel1GranuleId::parse(
+            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+        )
+        .expect("Failed to parse granule ID");
+        let burst =
+            SlcBurst::load_from_directory(&root, &granule_id).expect("Failed to load burst");
     }
 }

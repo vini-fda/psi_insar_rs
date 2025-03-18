@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+/// This contains all of the Single Look Complex (SLC) product annotation.
+///
+/// Represents the root of the XML document,
+/// and refers to the root element `Product`.
 #[derive(Serialize, Deserialize)]
-pub struct Product {
+pub struct SlcProductAnnotation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
     #[serde(rename = "adsHeader")]
@@ -1276,6 +1280,7 @@ mod tests {
         let xml_content = include_str!("test_data/annotation_example.xml");
 
         // Parse the XML into our Product struct
-        let calibration: Product = from_str(&xml_content).expect("Failed to parse annotation XML");
+        let calibration: SlcProductAnnotation =
+            from_str(&xml_content).expect("Failed to parse annotation XML");
     }
 }

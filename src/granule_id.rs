@@ -5,7 +5,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 /// Represents a Sentinel-1 mission identifier
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mission {
     S1A,
     S1B,
@@ -33,7 +33,7 @@ impl fmt::Display for Mission {
 }
 
 /// Represents a Sentinel-1 mode identifier
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
     /// Strip Map
     SM,
@@ -130,7 +130,7 @@ impl std::str::FromStr for IWSwath {
 }
 
 /// Represents a Sentinel-1 product type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductType {
     /// Raw Level-0
     RAW,
@@ -168,7 +168,7 @@ impl fmt::Display for ProductType {
 }
 
 /// Represents a Sentinel-1 resolution class
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resolution {
     /// Full Resolution
     F,
@@ -206,7 +206,7 @@ impl fmt::Display for Resolution {
 }
 
 /// Represents a Sentinel-1 processing level
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessingLevel {
     /// Level-0
     L0,
@@ -244,7 +244,7 @@ impl fmt::Display for ProcessingLevel {
 }
 
 /// Represents a Sentinel-1 polarization mode
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolarizationMode {
     /// Single HH
     SH,
@@ -298,7 +298,7 @@ impl fmt::Display for PolarizationMode {
 }
 
 /// Represents a Sentinel-1 product class
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductClass {
     /// SAR Standard
     SARStandard,
@@ -344,7 +344,7 @@ impl fmt::Display for ProductClass {
 /// Range: 000001-999999
 ///
 /// Always represented as a 6-digit number, zero-padded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrbitNumber {
     number: u32,
 }
@@ -400,7 +400,7 @@ impl<'de> Deserialize<'de> for OrbitNumber {
 /// Range: 000001-FFFFFF
 ///
 /// Always represented as a 6-digit hexadecimal number, zero-padded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataTakeId {
     id: u32,
 }
@@ -608,6 +608,14 @@ mod tests {
         assert_eq!(parsed.polarization, PolarizationMode::DV);
         assert_eq!(parsed.orbit_number, OrbitNumber::new(19964).unwrap());
         assert_eq!(parsed.data_take_id, DataTakeId::new(0x021FFD).unwrap());
+        assert_eq!(
+            parsed.start_time.format("%Y%m%dT%H%M%S").to_string(),
+            "20180101T103955"
+        );
+        assert_eq!(
+            parsed.end_time.format("%Y%m%dT%H%M%S").to_string(),
+            "20180101T104022"
+        );
         assert_eq!(parsed.product_id, "0A9F");
     }
 
