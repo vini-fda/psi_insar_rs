@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::AdsHeader;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// This contains all of the Single Look Complex (SLC) product annotation.
 ///
@@ -28,29 +30,6 @@ pub struct SlcProductAnnotation {
     pub coordinate_conversion: CoordinateConversion,
     #[serde(rename = "swathMerging")]
     pub swath_merging: SwathMerging,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AdsHeader {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    #[serde(rename = "missionId")]
-    pub mission_id: String,
-    #[serde(rename = "productType")]
-    pub product_type: String,
-    pub polarisation: String,
-    pub mode: String,
-    pub swath: String,
-    #[serde(rename = "startTime")]
-    pub start_time: String,
-    #[serde(rename = "stopTime")]
-    pub stop_time: String,
-    #[serde(rename = "absoluteOrbitNumber")]
-    pub absolute_orbit_number: String,
-    #[serde(rename = "missionDataTakeId")]
-    pub mission_data_take_id: String,
-    #[serde(rename = "imageNumber")]
-    pub image_number: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -493,64 +472,157 @@ pub struct PointingStatus {
 pub struct OrbitList {
     #[serde(rename = "@count")]
     pub count: u32,
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
     pub orbit: Vec<Orbit>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// # Satellite Reference Frames (ESA/NASA)
+///
+/// This enum represents different **reference frames** used in **orbital mechanics**,
+/// particularly for Sentinel-1 and other ESA/NASA missions.
+///
+/// ## **Common Reference Frames:**
+///
+/// ### **1. Earth-Centered, Earth-Fixed (ECEF)**
+/// - Also called **"Earth Fixed"** in Sentinel-1 metadata.
+/// - Rotates with the Earth.
+/// - Used for positions **relative to Earth's surface** (e.g., ground stations, DEM alignment).
+/// - Example: WGS84 ECEF.
+///
+/// ### **2. Earth-Centered Inertial (ECI)**
+/// - **GM2000 (Geocentric Mean of 2000)** is an **Earth-centered inertial frame**.
+/// - Aligned with the **International Celestial Reference Frame (ICRF)**.
+/// - Used for **precise orbit calculations** (does not rotate with Earth).
+///
+/// ### **3. Other Possible Frames**
+/// - **GCRF (Geocentric Celestial Reference Frame)**: Based on ICRF.
+/// - **ITRF (International Terrestrial Reference Frame)**: More precise ECEF.
+///
+/// ## **Usage**
+/// - Sentinel-1 data typically contains **"Earth Fixed"** (ECEF) or **GM2000** (ECI).
+/// - ECEF is used for **geolocation**, while GM2000 is used for **orbital propagation**.
+///
+/// ## **References**
+/// - ESA Sentinel-1 [Product Specification](https://sentinel.esa.int/web/sentinel/user-guides/sentinel-1-sar/document-library)
+/// - NASA GM2000 [Definition](https://ntrs.nasa.gov/search.jsp?R=20000088242)
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ReferenceFrame {
+    /// Earth-Centered, Earth-Fixed (ECEF)
+    EarthFixed,
+    /// Earth-Centered Inertial (ECI)
+    GM2000,
+    /// Geocentric Celestial Reference Frame
+    GCRF,
+    /// International Terrestrial Reference Frame
+    ITRF,
+}
+
+impl std::str::FromStr for ReferenceFrame {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
+            "GM2000" => Ok(ReferenceFrame::GM2000),
+            "GCRF" => Ok(ReferenceFrame::GCRF),
+            "ITRF" => Ok(ReferenceFrame::ITRF),
+            _ => Err(format!("Unknown reference frame: {}", input)),
+        }
+    }
+}
+
+impl Serialize for ReferenceFrame {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let frame_str = match self {
+            ReferenceFrame::EarthFixed => "Earth Fixed",
+            ReferenceFrame::GM2000 => "GM2000",
+            ReferenceFrame::GCRF => "GCRF",
+            ReferenceFrame::ITRF => "ITRF",
+        };
+        serializer.serialize_str(frame_str)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReferenceFrame {
+    fn deserialize<D>(deserializer: D) -> Result<ReferenceFrame, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let frame_str = String::deserialize(deserializer)?;
+        match frame_str.as_str() {
+            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
+            "GM2000" => Ok(ReferenceFrame::GM2000),
+            "GCRF" => Ok(ReferenceFrame::GCRF),
+            "ITRF" => Ok(ReferenceFrame::ITRF),
+            _ => Err(serde::de::Error::custom(format!(
+                "Unknown reference frame: {}",
+                frame_str
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Orbit {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    pub time: String,
+    #[serde(with = "datetime_format")]
+    pub time: DateTime<Utc>,
     pub frame: String,
     pub position: Position,
     pub velocity: Velocity,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Position {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    pub x: String,
-    pub y: String,
-    pub z: String,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Velocity {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    pub x: String,
-    pub y: String,
-    pub z: String,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AttitudeList {
     #[serde(rename = "@count")]
     pub count: u32,
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
     pub attitude: Vec<Attitude>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Attitude {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    pub time: String,
+    #[serde(rename = "time", with = "datetime_format")]
+    pub time: DateTime<Utc>,
+
     pub frame: String,
-    pub q0: String,
-    pub q1: String,
-    pub q2: String,
-    pub q3: String,
-    pub wx: String,
-    pub wy: String,
-    pub wz: String,
-    pub roll: String,
-    pub pitch: String,
-    pub yaw: String,
+
+    #[serde(with = "string_to_f64")]
+    pub q0: f64,
+    #[serde(with = "string_to_f64")]
+    pub q1: f64,
+    #[serde(with = "string_to_f64")]
+    pub q2: f64,
+    #[serde(with = "string_to_f64")]
+    pub q3: f64,
+
+    #[serde(with = "string_to_f64")]
+    pub wx: f64,
+    #[serde(with = "string_to_f64")]
+    pub wy: f64,
+    #[serde(with = "string_to_f64")]
+    pub wz: f64,
+
+    #[serde(with = "string_to_f64")]
+    pub roll: f64,
+    #[serde(with = "string_to_f64")]
+    pub pitch: f64,
+    #[serde(with = "string_to_f64")]
+    pub yaw: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1269,6 +1341,55 @@ pub struct SwathMergeList {
     pub count: u32,
 }
 
+/// Custom deserializer for DateTime<Utc>
+mod datetime_format {
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    use serde::{self, Deserialize, Deserializer};
+
+    const FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+
+        // Parse as NaiveDateTime first
+        let naive_dt =
+            NaiveDateTime::parse_from_str(&s, FORMAT).map_err(serde::de::Error::custom)?;
+
+        // Convert to Utc
+        Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc))
+    }
+
+    pub fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&value.format(FORMAT).to_string())
+    }
+}
+
+/// Custom deserializer for f64
+mod string_to_f64 {
+    use serde::{self, Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        s.parse::<f64>().map_err(serde::de::Error::custom)
+    }
+
+    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1279,8 +1400,15 @@ mod tests {
         // Read the file content
         let xml_content = include_str!("test_data/annotation_example.xml");
 
+        let xml_de = &mut quick_xml::de::Deserializer::from_str(&xml_content);
         // Parse the XML into our Product struct
-        let calibration: SlcProductAnnotation =
-            from_str(&xml_content).expect("Failed to parse annotation XML");
+        let result: Result<SlcProductAnnotation, _> = serde_path_to_error::deserialize(xml_de);
+        match result {
+            Ok(_) => (),
+            Err(err) => {
+                let path = err.path().to_string();
+                panic!("Error parsing XML\nError path: {}\nError: {}", path, err);
+            }
+        }
     }
 }

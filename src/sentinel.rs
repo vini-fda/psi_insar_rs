@@ -1,10 +1,10 @@
-use crate::annotation_xml::SlcProductAnnotation;
-use crate::calibration_xml::Calibration;
 use crate::granule_id::{
     DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProcessingLevel,
     ProductClass, ProductType, Resolution, Sentinel1GranuleId,
 };
-use crate::noise_xml::Noise;
+use crate::metadata::annotation_xml::SlcProductAnnotation;
+use crate::metadata::calibration_xml::Calibration;
+use crate::metadata::noise_xml::Noise;
 use chrono::{DateTime, Utc};
 use geotiff::GeoTiff;
 use ndarray::{Array2, Array3};
@@ -138,7 +138,7 @@ pub struct Sentinel1SlcMetadata {
     pub bounding_box: GeoBoundingBox,
 }
 
-/// Represents a single burst of SLC data.
+/// Represents a single burst of Sentinel-1 SLC data.
 ///
 /// A burst is the basic acquisition unit in TOPS mode. Each burst contains SAR data acquired
 /// during a single sweep of the antenna beam from back to fore.
@@ -146,7 +146,7 @@ pub struct Sentinel1SlcMetadata {
 /// Sources:
 /// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-pub struct SlcBurst {
+pub struct Sentinel1SlcBurst {
     pub mission: Mission,
     pub mode: Mode,
     pub product_type: ProductType,
@@ -162,7 +162,7 @@ pub struct SlcBurst {
     pub data: GeoTiff,
 }
 
-impl SlcBurst {
+impl Sentinel1SlcBurst {
     pub fn load_from_directory(
         directory: &PathBuf,
         granule: &Sentinel1GranuleId,
@@ -214,7 +214,7 @@ impl SlcBurst {
         let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
 
         // Create the SlcBurst instance
-        Ok(SlcBurst {
+        Ok(Sentinel1SlcBurst {
             mission,
             mode,
             product_type,
@@ -436,7 +436,7 @@ mod tests {
             "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .expect("Failed to parse granule ID");
-        let burst =
-            SlcBurst::load_from_directory(&root, &granule_id).expect("Failed to load burst");
+        let burst = Sentinel1SlcBurst::load_from_directory(&root, &granule_id)
+            .expect("Failed to load burst");
     }
 }

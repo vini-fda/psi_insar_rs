@@ -244,7 +244,7 @@ impl fmt::Display for ProcessingLevel {
 }
 
 /// Represents a Sentinel-1 polarization mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PolarizationMode {
     /// Single HH
     SH,

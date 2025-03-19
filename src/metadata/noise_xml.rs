@@ -1,3 +1,4 @@
+use super::AdsHeader;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -8,29 +9,6 @@ pub struct Noise {
     pub ads_header: AdsHeader,
     #[serde(rename = "noiseVectorList")]
     pub noise_vector_list: NoiseVectorList,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AdsHeader {
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
-    #[serde(rename = "missionId")]
-    pub mission_id: String,
-    #[serde(rename = "productType")]
-    pub product_type: String,
-    pub polarisation: String,
-    pub mode: String,
-    pub swath: String,
-    #[serde(rename = "startTime")]
-    pub start_time: String,
-    #[serde(rename = "stopTime")]
-    pub stop_time: String,
-    #[serde(rename = "absoluteOrbitNumber")]
-    pub absolute_orbit_number: String,
-    #[serde(rename = "missionDataTakeId")]
-    pub mission_data_take_id: String,
-    #[serde(rename = "imageNumber")]
-    pub image_number: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,6 +48,7 @@ pub struct NoiseLut {
     #[serde(rename = "$text")]
     pub text: Option<String>,
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@ use xml_schema_generator::{Options, into_struct};
 
 fn main() {
     // create struct from XML
-    let xml_content = include_str!("test_data/annotation_example.xml");
+    let xml_content = include_str!("metadata/test_data/annotation_example.xml");
     let mut reader = Reader::from_str(xml_content);
 
     if let Ok(root) = into_struct(&mut reader) {
