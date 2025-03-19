@@ -1,3 +1,5 @@
+use crate::granule_id::IWSwath;
+
 use super::AdsHeader;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -256,14 +258,14 @@ pub struct DownlinkInformationList {
 pub struct DownlinkInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    pub swath: String,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    #[serde(rename = "firstLineSensingTime")]
-    pub first_line_sensing_time: String,
-    #[serde(rename = "lastLineSensingTime")]
-    pub last_line_sensing_time: String,
-    pub prf: String,
+    pub swath: IWSwath,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    #[serde(rename = "firstLineSensingTime", with = "datetime_format")]
+    pub first_line_sensing_time: DateTime<Utc>,
+    #[serde(rename = "lastLineSensingTime", with = "datetime_format")]
+    pub last_line_sensing_time: DateTime<Utc>,
+    pub prf: f64,
     #[serde(rename = "bitErrorCount")]
     pub bit_error_count: BitErrorCount,
     #[serde(rename = "downlinkValues")]
@@ -876,13 +878,13 @@ pub struct ImageInformation {
     #[serde(rename = "outputPixels")]
     pub output_pixels: String,
     #[serde(rename = "rangePixelSpacing")]
-    pub range_pixel_spacing: String,
+    pub range_pixel_spacing: f64,
     #[serde(rename = "azimuthPixelSpacing")]
-    pub azimuth_pixel_spacing: String,
+    pub azimuth_pixel_spacing: f64,
     #[serde(rename = "azimuthTimeInterval")]
-    pub azimuth_time_interval: String,
+    pub azimuth_time_interval: f64,
     #[serde(rename = "azimuthFrequency")]
-    pub azimuth_frequency: String,
+    pub azimuth_frequency: f64,
     #[serde(rename = "numberOfSamples")]
     pub number_of_samples: String,
     #[serde(rename = "numberOfLines")]
