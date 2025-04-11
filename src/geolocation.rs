@@ -17,6 +17,11 @@ pub enum GeolocationError {
 // alias for Vector3
 type Vector3 = nalgebra::Vector3<f64>;
 
+/// A collection of orbital state vectors (position and velocity) over time
+///
+/// This structure stores a time series of orbital states and provides methods
+/// for interpolating state values at arbitrary times and computing related
+/// orbital parameters.
 pub struct OrbitalStateHistory {
     pub time: Vec<DateTime<Utc>>,
     pub position: Vec<Vector3>,
@@ -24,118 +29,284 @@ pub struct OrbitalStateHistory {
 }
 
 impl OrbitalStateHistory {
-    pub fn get_position(&self, time: f64) -> Vector3 {
-        // Find the two closest times
-        let (i, j) = self.find_closest_times(time);
+    /// Gets the interpolated position at the specified time
+    ///
+    /// # Arguments
+    ///
+    /// * `time` - The time at which to calculate the position
+    ///
+    /// # Returns
+    ///
+    /// A 3D vector representing the interpolated position in meters
+    pub fn get_position(&self, time: DateTime<Utc>) -> Vector3 {
+        // Check if time exists in our data to avoid unnecessary interpolation
+        if let Some(idx) = self.time.iter().position(|t| *t == time) {
+            return self.position[idx];
+        }
 
-        // Interpolate position
-        let pos_i = self.position[i];
-        let pos_j = self.position[j];
-        let t_i = self.time[i].timestamp() as f64;
-        let t_j = self.time[j].timestamp() as f64;
-        let alpha = (time - t_i) / (t_j - t_i);
-        pos_i + alpha * (pos_j - pos_i)
+        // Otherwise interpolate between closest points
+        let (i, j) = self.find_closest_times(time);
+        self.interpolate_vector(&self.position, i, j, time)
     }
 
-    pub fn get_velocity(&self, time: f64) -> Vector3 {
-        // Find the two closest times
-        let (i, j) = self.find_closest_times(time);
+    /// Gets the interpolated velocity at the specified time
+    ///
+    /// # Arguments
+    ///
+    /// * `time` - The time at which to calculate the velocity
+    ///
+    /// # Returns
+    ///
+    /// A 3D vector representing the interpolated velocity in meters/second
+    pub fn get_velocity(&self, time: DateTime<Utc>) -> Vector3 {
+        // Check if time exists in our data to avoid unnecessary interpolation
+        if let Some(idx) = self.time.iter().position(|t| *t == time) {
+            return self.velocity[idx];
+        }
 
-        // Interpolate velocity
-        let vel_i = self.velocity[i];
-        let vel_j = self.velocity[j];
-        let t_i = self.time[i].timestamp() as f64;
-        let t_j = self.time[j].timestamp() as f64;
-        let alpha = (time - t_i) / (t_j - t_i);
-        vel_i + alpha * (vel_j - vel_i)
+        // Otherwise interpolate between closest points
+        let (i, j) = self.find_closest_times(time);
+        self.interpolate_vector(&self.velocity, i, j, time)
     }
 
-    fn find_closest_times(&self, time: f64) -> (usize, usize) {
-        let mut i = 0;
-        let mut j = 0;
+    /// Helper method to interpolate a vector between two time points
+    ///
+    /// # Arguments
+    ///
+    /// * `vectors` - Slice of vectors to interpolate from
+    /// * `i` - Index of the first vector
+    /// * `j` - Index of the second vector
+    /// * `time` - The time at which to interpolate
+    ///
+    /// # Returns
+    ///
+    /// The interpolated vector
+    fn interpolate_vector(
+        &self,
+        vectors: &[Vector3],
+        i: usize,
+        j: usize,
+        time: DateTime<Utc>,
+    ) -> Vector3 {
+        let vec_i = vectors[i];
+        let vec_j = vectors[j];
+
+        // Calculate interpolation factor (alpha) based on time differences
+        let t_i = self.time[i].timestamp_millis() as f64;
+        let t_j = self.time[j].timestamp_millis() as f64;
+        let t = time.timestamp_millis() as f64;
+
+        // Ensure we don't divide by zero
+        if (t_j - t_i).abs() < f64::EPSILON {
+            // Times are effectively identical, return first value
+            return vec_i;
+        }
+
+        let alpha = (t - t_i) / (t_j - t_i);
+
+        // Linear interpolation
+        vec_i + alpha * (vec_j - vec_i)
+    }
+
+    /// Finds the indices of the two closest time points to the given time
+    ///
+    /// # Arguments
+    ///
+    /// * `time` - The reference time
+    ///
+    /// # Returns
+    ///
+    /// A tuple of indices (i, j) where i corresponds to the closest time point
+    /// and j to the second closest time point
+    fn find_closest_times(&self, time: DateTime<Utc>) -> (usize, usize) {
+        assert!(
+            self.time.len() >= 2,
+            "At least two time points are required for interpolation"
+        );
+
+        // Convert to f64 timestamp for comparison
+        let target_ts = time.timestamp_millis() as f64;
+
+        // Find closest point first
+        let mut closest_idx = 0;
         let mut min_diff = f64::INFINITY;
+
         for (idx, t) in self.time.iter().enumerate() {
-            let diff = (t.timestamp() as f64 - time).abs();
+            let diff = (t.timestamp_millis() as f64 - target_ts).abs();
             if diff < min_diff {
                 min_diff = diff;
-                i = idx;
+                closest_idx = idx;
             }
         }
-        for (idx, t) in self.time.iter().enumerate() {
-            let diff = (t.timestamp() as f64 - time).abs();
-            if diff < min_diff && idx != i {
-                min_diff = diff;
-                j = idx;
+
+        // Now find second closest - prefer the neighboring point in the time sequence
+        let second_idx = if closest_idx == 0 {
+            1
+        } else if closest_idx == self.time.len() - 1 {
+            self.time.len() - 2
+        } else {
+            // Compare neighbors and pick the closer one
+            let prev_diff =
+                (self.time[closest_idx - 1].timestamp_millis() as f64 - target_ts).abs();
+            let next_diff =
+                (self.time[closest_idx + 1].timestamp_millis() as f64 - target_ts).abs();
+            if prev_diff < next_diff {
+                closest_idx - 1
+            } else {
+                closest_idx + 1
             }
+        };
+
+        // Ensure proper ordering for interpolation (earlier time first)
+        if self.time[closest_idx] < self.time[second_idx] {
+            (closest_idx, second_idx)
+        } else {
+            (second_idx, closest_idx)
         }
-        (i, j)
     }
 
-    fn get_closest_approach_time(&self, ground_point: Vector3) -> f64 {
+    /// Gets the time of closest approach to a ground point
+    ///
+    /// # Arguments
+    ///
+    /// * `ground_point` - The 3D coordinates of the ground point in meters
+    ///
+    /// # Returns
+    ///
+    /// The time of closest approach as a `DateTime<Utc>` object
+    pub fn get_closest_approach_time(&self, ground_point: Vector3) -> DateTime<Utc> {
         // Initial guess: closest approach to the ground point
-        let mut min_dist = f64::INFINITY;
-        let mut min_time = 0.0;
-        for (time, pos) in self.time.iter().zip(self.position.iter()) {
-            let dist = (pos - ground_point).norm();
-            if dist < min_dist {
-                min_dist = dist;
-                min_time = time.timestamp() as f64;
-            }
-        }
+        let (&min_time, _) = self
+            .time
+            .iter()
+            .zip(self.position.iter())
+            .map(|(time, pos)| (time, (*pos - ground_point).norm()))
+            .min_by(|(_, dist1), (_, dist2)| {
+                dist1
+                    .partial_cmp(dist2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap();
+
         min_time
     }
 
-    fn compute_doppler_derivative(&self, ground_point: Vector3, time: f64) -> f64 {
-        // Finite difference for derivative
-        let delta = 1e-6;
+    /// Computes the Doppler shift derivative at a given time for a ground point
+    ///
+    /// # Arguments
+    ///
+    /// * `ground_point` - The 3D coordinates of the ground point in meters
+    /// * `time` - The time at which to calculate the Doppler derivative
+    ///
+    /// # Returns
+    ///
+    /// The rate of change of the Doppler shift in meters/second²
+    pub fn compute_doppler_derivative(&self, ground_point: Vector3, time: DateTime<Utc>) -> f64 {
+        /// Time step for finite difference calculations in seconds
+        const FINITE_DIFF_STEP_SEC: f64 = 1e-6;
+        // Use central finite difference for numerical derivative
+        let delta = Duration::microseconds(1);
         let doppler_plus = self.compute_doppler(ground_point, time + delta);
         let doppler_minus = self.compute_doppler(ground_point, time - delta);
-        (doppler_plus - doppler_minus) / (2.0 * delta)
+
+        // Return rate of change per second
+        (doppler_plus - doppler_minus) / (2.0 * FINITE_DIFF_STEP_SEC)
     }
 
-    fn compute_doppler(&self, ground_point: Vector3, time: f64) -> f64 {
+    /// Computes the Doppler shift at a given time for a ground point
+    ///
+    /// The Doppler shift is calculated as the line-of-sight component of
+    /// the satellite's velocity vector, which represents the rate of change
+    /// of distance between the satellite and ground point.
+    ///
+    /// # Arguments
+    ///
+    /// * `ground_point` - The 3D coordinates of the ground point in meters
+    /// * `time` - The time at which to calculate the Doppler shift
+    ///
+    /// # Returns
+    ///
+    /// The Doppler shift in meters/second (positive values indicate increasing distance)
+    pub fn compute_doppler(&self, ground_point: Vector3, time: DateTime<Utc>) -> f64 {
         let sat_pos = self.get_position(time);
         let sat_vel = self.get_velocity(time);
+
+        // Calculate line of sight vector from satellite to ground point
         let los = ground_point - sat_pos;
-        los.dot(&sat_vel)
+
+        // Normalize to get unit vector in the direction of line of sight
+        let los_unit = los.normalize();
+
+        // Return the component of velocity in the line of sight direction
+        los_unit.dot(&sat_vel)
     }
 }
 
 /// Computes the zero-Doppler time for a ground point
 ///
+/// The zero-Doppler time is when the satellite's velocity has no component
+/// along the line-of-sight vector to the ground point. At this time, the
+/// satellite is moving perpendicular to the line connecting it to the ground point.
+///
 /// # Arguments
-/// * `ground_point` - ECEF coordinates of the ground point
+///
+/// * `ground_point` - ECEF coordinates of the ground point in meters
 /// * `orbit` - Satellite orbit state vectors
 ///
 /// # Returns
-/// * The time (in seconds) when the satellite passes through
-///   the zero-Doppler plane for this ground point
-pub fn compute_zero_doppler_time(ground_point: Vector3, orbit: &OrbitalStateHistory) -> f64 {
+///
+/// The time (as a `Datetime<Utc>`) when the satellite passes through the zero-Doppler plane for this ground point
+pub fn compute_zero_doppler_time(
+    ground_point: Vector3,
+    orbit: &OrbitalStateHistory,
+) -> DateTime<Utc> {
+    const MAX_ITERATIONS: usize = 10;
+    /// Tolerance for zero-Doppler in m/s
+    const DOPPLER_TOLERANCE: f64 = 1e-6;
+    /// Maximum time step in seconds
+    const MAX_TIME_STEP: i64 = 30;
     // Initial guess from closest approach
     let mut t = orbit.get_closest_approach_time(ground_point);
 
     // Iterative refinement using Newton's method
-    for _ in 0..10 {
-        // Get satellite position and velocity
-        let sat_pos = orbit.get_position(t);
-        let sat_vel = orbit.get_velocity(t);
-
-        // Line-of-sight vector
-        let los = ground_point - sat_pos;
-
-        // Doppler function: dot product of LOS and velocity
-        let doppler = los.dot(&sat_vel);
+    for iteration in 0..MAX_ITERATIONS {
+        // Get current Doppler value
+        let doppler = orbit.compute_doppler(ground_point, t);
 
         // If close enough to zero, we've found the zero-Doppler time
-        if doppler.abs() < 1e-6 {
+        if doppler.abs() < DOPPLER_TOLERANCE {
             return t;
         }
-
         // Derivative of Doppler for Newton's method
         let derivative = orbit.compute_doppler_derivative(ground_point, t);
 
-        // Newton step
-        t -= doppler / derivative;
+        // Avoid division by very small numbers
+        if derivative.abs() < DOPPLER_TOLERANCE {
+            // If derivative is too small, use bisection or just return current best estimate
+            break;
+        }
+
+        // Calculate time step using Newton's method
+        let mut time_step_seconds = -(doppler / derivative);
+
+        // Limit maximum time step to prevent overshooting
+        time_step_seconds = time_step_seconds.clamp(-MAX_TIME_STEP as f64, MAX_TIME_STEP as f64);
+
+        // Convert to Duration and apply time step
+        let time_step = Duration::milliseconds((time_step_seconds * 1000.0) as i64);
+        let next_time = t + time_step;
+
+        // Check if we're converging
+        let new_doppler = orbit.compute_doppler(ground_point, next_time);
+
+        // If the new Doppler is worse, reduce step size and try again
+        if new_doppler.abs() > doppler.abs() && iteration < MAX_ITERATIONS - 1 {
+            // Halve the time step and try again
+            let reduced_step = Duration::milliseconds(time_step.num_milliseconds() / 2);
+            t += reduced_step;
+        } else {
+            t = next_time;
+        }
     }
 
     t
@@ -144,7 +315,7 @@ pub fn compute_zero_doppler_time(ground_point: Vector3, orbit: &OrbitalStateHist
 /// Computes slant range between satellite and ground point
 pub fn compute_slant_range(
     ground_point: Vector3,
-    time: f64,
+    time: DateTime<Utc>,
     orbit: &OrbitalStateHistory,
 ) -> Result<f64, GeolocationError> {
     let sat_pos = orbit.get_position(time);
@@ -171,7 +342,7 @@ pub fn radar_to_geographic(
     );
 
     // Initial position (no elevation)
-    let sat_pos = orbit.get_position(azimuth_time.timestamp() as f64);
+    let sat_pos = orbit.get_position(azimuth_time);
     let earth_center = Vector3::new(0.0, 0.0, 0.0);
 
     // Iterative solution to find the intersection point
@@ -232,20 +403,9 @@ fn compute_ground_point(sat_pos: Vector3, slant_range: f64, earth_point: Vector3
 ///
 /// # Formula
 /// The azimuth time is interpolated linearly as:
-/// ```
+/// ```text
 /// Δt = (AzTimeLast - AzTimeFirst) / (numberOfLines - 1)
 /// t_i = AzTimeFirst + (i * Δt)
-/// ```
-///
-/// # Example
-/// ```
-/// let az_time = azimuth_line_to_azimuth_time(
-///     500,
-///     "2025-03-19T00:00:00.000000Z".parse().unwrap(),
-///     "2025-03-19T00:00:10.000000Z".parse().unwrap(),
-///     1000
-/// );
-/// println!("{}", az_time); // Expected: "2025-03-19T00:00:05.005000Z"
 /// ```
 fn azimuth_line_to_azimuth_time(
     az_index: usize,
