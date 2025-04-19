@@ -116,7 +116,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::dem::ElevationModel;
+use crate::dem::DEM;
 use crate::granule_id::PolarizationMode;
 use crate::sentinel::Sentinel1SlcBurst;
 
@@ -207,11 +207,11 @@ pub struct CoregisteredSLCStack {}
 
 pub struct DEMAssistedCoregistration {
     config: S1DEMCoregistrationConfig,
-    external_dem: ElevationModel,
+    external_dem: DEM,
 }
 
 impl DEMAssistedCoregistration {
-    pub fn new(config: S1DEMCoregistrationConfig, external_dem: ElevationModel) -> Self {
+    pub fn new(config: S1DEMCoregistrationConfig, external_dem: DEM) -> Self {
         Self {
             config,
             external_dem,

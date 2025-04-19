@@ -1395,7 +1395,6 @@ mod string_to_f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quick_xml::de::from_str;
 
     #[test]
     fn test_annotation_parsing() {

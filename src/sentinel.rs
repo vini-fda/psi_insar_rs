@@ -1,14 +1,12 @@
 use crate::granule_id::{
-    DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProcessingLevel,
-    ProductClass, ProductType, Resolution, Sentinel1GranuleId,
+    DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProductType,
+    Sentinel1GranuleId,
 };
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
 use chrono::{DateTime, Utc};
 use geotiff::GeoTiff;
-use ndarray::{Array2, Array3};
-use num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -436,7 +434,7 @@ mod tests {
             "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .expect("Failed to parse granule ID");
-        let burst = Sentinel1SlcBurst::load_from_directory(&root, &granule_id)
+        let _ = Sentinel1SlcBurst::load_from_directory(&root, &granule_id)
             .expect("Failed to load burst");
     }
 }

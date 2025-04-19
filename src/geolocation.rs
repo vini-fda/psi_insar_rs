@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 
-use crate::dem::ElevationModel;
+use crate::dem::DEM;
 
 /// Error type for geolocation functions
 #[derive(Error, Debug)]
@@ -330,52 +330,53 @@ pub fn radar_to_geographic(
     az_time_first: DateTime<Utc>,
     az_time_last: DateTime<Utc>,
     num_azimuth_lines: usize,
-    dem: &ElevationModel,
+    dem: &DEM,
     orbit: &OrbitalStateHistory,
 ) -> Result<GeographicPoint, GeolocationError> {
-    // Convert line to time
-    let azimuth_time = azimuth_line_to_azimuth_time(
-        azimuth_index,
-        az_time_first,
-        az_time_last,
-        num_azimuth_lines,
-    );
+    // // Convert line to time
+    // let azimuth_time = azimuth_line_to_azimuth_time(
+    //     azimuth_index,
+    //     az_time_first,
+    //     az_time_last,
+    //     num_azimuth_lines,
+    // );
 
-    // Initial position (no elevation)
-    let sat_pos = orbit.get_position(azimuth_time);
-    let earth_center = Vector3::new(0.0, 0.0, 0.0);
+    // // Initial position (no elevation)
+    // let sat_pos = orbit.get_position(azimuth_time);
+    // let earth_center = Vector3::new(0.0, 0.0, 0.0);
 
-    // Iterative solution to find the intersection point
-    let mut ground_point = initial_ground_point(sat_pos, slant_range, earth_center);
+    // // Iterative solution to find the intersection point
+    // let mut ground_point = initial_ground_point(sat_pos, slant_range, earth_center);
 
-    for _ in 0..10 {
-        // 1. Get geographic coordinates
-        let mut geo = ecef_to_geographic(ground_point.into());
+    // for _ in 0..10 {
+    //     // 1. Get geographic coordinates
+    //     let mut geo = ecef_to_geographic(ground_point.into());
 
-        // 2. Get height from DEM
-        geo.height = dem.get_height(geo.latitude, geo.longitude);
+    //     // 2. Get height from DEM
+    //     geo.height = dem.get_height(geo.latitude, geo.longitude);
 
-        // 3. Get improved position using height
-        let improved_point = geographic_to_ecef(geo).into();
+    //     // 3. Get improved position using height
+    //     let improved_point = geographic_to_ecef(geo).into();
 
-        // 4. Find new zero-Doppler time for this position
-        let time = compute_zero_doppler_time(improved_point, orbit);
+    //     // 4. Find new zero-Doppler time for this position
+    //     let time = compute_zero_doppler_time(improved_point, orbit);
 
-        // 5. Get satellite position at new time
-        let new_sat_pos = orbit.get_position(time);
+    //     // 5. Get satellite position at new time
+    //     let new_sat_pos = orbit.get_position(time);
 
-        // 6. Compute new ground point on the range sphere
-        ground_point = compute_ground_point(new_sat_pos, slant_range, improved_point);
+    //     // 6. Compute new ground point on the range sphere
+    //     ground_point = compute_ground_point(new_sat_pos, slant_range, improved_point);
 
-        // Check convergence
-        if (ground_point - improved_point).norm() < 1e-6 {
-            break;
-        }
-    }
+    //     // Check convergence
+    //     if (ground_point - improved_point).norm() < 1e-6 {
+    //         break;
+    //     }
+    // }
 
-    // Convert final ECEF to geographic
-    let final_geo = ecef_to_geographic(ground_point.into());
-    Ok(final_geo)
+    // // Convert final ECEF to geographic
+    // let final_geo = ecef_to_geographic(ground_point.into());
+    // Ok(final_geo)
+    todo!()
 }
 
 fn initial_ground_point(sat_pos: Vector3, slant_range: f64, earth_center: Vector3) -> Vector3 {

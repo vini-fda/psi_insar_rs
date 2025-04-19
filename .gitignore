@@ -2,6 +2,7 @@
 /download
 /download_new
 /data
+/sar_env
 .ropeproject
 *.pdf
 *.png
