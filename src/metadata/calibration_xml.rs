@@ -1,9 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::granule_id::{
-    DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProductType,
-};
-
 use super::AdsHeader;
 
 #[derive(Serialize, Deserialize)]
@@ -166,7 +162,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{
+        granule_id::{
+            DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProductType,
+        },
+        metadata::calibration_xml::Calibration,
+    };
     use quick_xml::de::from_str;
 
     #[test]
@@ -176,7 +177,7 @@ mod tests {
 
         // Parse the XML into our Calibration struct
         let calibration: Calibration =
-            from_str(&xml_content).expect("Failed to parse calibration XML");
+            from_str(xml_content).expect("Failed to parse calibration XML");
 
         // Test AdsHeader fields
         assert_eq!(calibration.ads_header.mission_id, Mission::S1A);

@@ -1401,7 +1401,7 @@ mod tests {
         // Read the file content
         let xml_content = include_str!("test_data/annotation_example.xml");
 
-        let xml_de = &mut quick_xml::de::Deserializer::from_str(&xml_content);
+        let xml_de = &mut quick_xml::de::Deserializer::from_str(xml_content);
         // Parse the XML into our Product struct
         let result: Result<SlcProductAnnotation, _> = serde_path_to_error::deserialize(xml_de);
         match result {

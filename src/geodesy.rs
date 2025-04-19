@@ -6,7 +6,7 @@
 /// Semi-major axis of the WGS84 ellipsoid (meters).
 const A: f32 = 6_378_137.0;
 /// Flattening of the WGS84 ellipsoid.
-const F: f32 = 1.0 / 298.257_223_563;
+const F: f32 = 1.0 / 298.257_23;
 /// Square of eccentricity: e² = f(2 − f).
 const E2: f32 = F * (2.0 - F);
 

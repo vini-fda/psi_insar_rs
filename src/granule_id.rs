@@ -351,7 +351,7 @@ pub struct OrbitNumber {
 
 impl OrbitNumber {
     pub fn new(number: u32) -> Result<Self, GranuleIdError> {
-        if number < 1 || number > 999999 {
+        if !(1..=999999).contains(&number) {
             return Err(GranuleIdError::InvalidOrbitNumber);
         }
 
@@ -407,7 +407,7 @@ pub struct DataTakeId {
 
 impl DataTakeId {
     pub fn new(id: u32) -> Result<Self, GranuleIdError> {
-        if id < 1 || id > 0xFFFFFF {
+        if !(1..=0xFFFFFF).contains(&id) {
             return Err(GranuleIdError::InvalidDataTakeId(String::from(
                 "Out of range! The Data Take Id must always be in the range 000001-FFFFFF.",
             )));

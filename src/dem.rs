@@ -50,13 +50,13 @@ impl DEM {
     /// Copies the DEM raster data into a new, owned, 2D ndarray and returns it.
     pub fn read_raster_data(&self) -> Array2<f32> {
         let data = &self.data;
-        let dem_raster = match data.raster_data {
+        
+        match data.raster_data {
             RasterData::F32(ref vec) => {
                 Array2::from_shape_vec((data.raster_height, data.raster_width), vec.clone())
                     .unwrap()
             }
             _ => panic!(),
-        };
-        dem_raster
+        }
     }
 }

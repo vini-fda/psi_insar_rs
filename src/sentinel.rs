@@ -185,10 +185,10 @@ impl Sentinel1SlcBurst {
                 "{mission}-{sub_swath}-{product_type}-{polarization}-{start_datetime_fmt}-{end_datetime_fmt}-{orbit_number}-{data_take_id}-001"
             ).to_lowercase();
         // Construct paths to necessary files
-        let calibration_path = Self::find_calibration_xml(&directory, &slug)?;
-        let noise_path = Self::find_noise_xml(&directory, &slug)?;
-        let annotation_path = Self::find_annotation_xml(&directory, &slug)?;
-        let measurement_path = Self::find_measurement_tiff(&directory, &slug)?;
+        let calibration_path = Self::find_calibration_xml(directory, &slug)?;
+        let noise_path = Self::find_noise_xml(directory, &slug)?;
+        let annotation_path = Self::find_annotation_xml(directory, &slug)?;
+        let measurement_path = Self::find_measurement_tiff(directory, &slug)?;
 
         // Parse calibration XML
         let calibration_xml_content = std::fs::read_to_string(&calibration_path)

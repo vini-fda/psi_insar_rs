@@ -111,13 +111,9 @@
 //! 2. Sampling of the constructed signal at the new sampling locations.
 //!
 
-use std::collections::HashMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::dem::DEM;
-use crate::granule_id::PolarizationMode;
 use crate::sentinel::Sentinel1SlcBurst;
 
 /// Error types specific to Sentinel-1 DEM coregistration

@@ -60,6 +60,6 @@ mod tests {
         let xml_content = include_str!("test_data/noise_example.xml");
 
         // Parse the XML into our Noise struct
-        let noise: Noise = from_str(&xml_content).expect("Failed to parse noise XML");
+        let _: Noise = from_str(xml_content).expect("Failed to parse noise XML");
     }
 }
