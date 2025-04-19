@@ -5,4 +5,5 @@ pub mod geodesy;
 pub mod geolocation;
 pub mod granule_id;
 pub mod metadata;
+pub mod satellite_orbit;
 pub mod sentinel;

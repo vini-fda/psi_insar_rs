@@ -1,4 +1,5 @@
 use crate::granule_id::IWSwath;
+use nalgebra::Vector3;
 
 use super::AdsHeader;
 use chrono::{DateTime, Utc};
@@ -575,18 +576,54 @@ pub struct Orbit {
     pub velocity: Velocity,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Velocity {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+}
+
+// Vector3 -> Position
+impl From<Vector3<f64>> for Position {
+    fn from(v: Vector3<f64>) -> Self {
+        Position {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+// Position -> Vector3
+impl From<Position> for Vector3<f64> {
+    fn from(p: Position) -> Self {
+        Vector3::new(p.x, p.y, p.z)
+    }
+}
+
+// Vector3 -> Velocity
+impl From<Vector3<f64>> for Velocity {
+    fn from(v: Vector3<f64>) -> Self {
+        Velocity {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+// Velocity -> Vector3
+impl From<Velocity> for Vector3<f64> {
+    fn from(v: Velocity) -> Self {
+        Vector3::new(v.x, v.y, v.z)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

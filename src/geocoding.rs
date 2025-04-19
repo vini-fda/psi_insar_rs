@@ -1,6 +1,3 @@
-// r = |P - S(a)|
-// v(a) *  (P - S(a)) = 0
-
 use ndarray::{Array2, s};
 use num_complex::Complex64;
 

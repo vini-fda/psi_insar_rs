@@ -3,8 +3,11 @@
 /download_new
 /data
 /sar_env
+Cargo.lock
 .ropeproject
 *.pdf
 *.png
 *.html
 *.py
+*.tif
+*.glb

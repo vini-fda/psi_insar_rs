@@ -303,9 +303,7 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 
 #[cfg(test)]
 mod manual_tests {
-    use geotiff::{GeoTiff, raster_data::RasterData};
     use ndarray::{Array2, s};
-    use num_complex::Complex;
 
     use crate::dem::DEM;
 
