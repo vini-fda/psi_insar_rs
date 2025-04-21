@@ -428,6 +428,15 @@ mod manual_tests {
         let tensor =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, dem_array).unwrap();
         rec.log("DEM", &tensor).expect("Could not finish recording");
+        let data_img = rerun::Image::from_color_model_and_tensor(
+            rerun::ColorModel::L,
+            reference_image
+                .map(|c| c.norm().powf(0.3) / 22.0)
+                .to_owned(),
+        )
+        .unwrap();
+        rec.log("ref_img", &data_img)
+            .expect("Could not finish recording");
         rec.log(
             "DEM Extent",
             &rerun::GeoLineStrings::from_lat_lon([lines
@@ -446,8 +455,8 @@ mod manual_tests {
                 "lon, lat at (790, 261) = {:?}\n\
                 height = {}\n\
                 xyz = {:?}",
-                dem.get_lon_lat_at_pixel(row, col),
-                dem.get_value_at_pixel(row, col),
+                dem.get_lon_lat_at_index(row, col),
+                dem.get_value_at_index(row, col),
                 dem.get_ecef_at_pixel(row, col)
             ))
             .with_level(rerun::TextLogLevel::INFO),

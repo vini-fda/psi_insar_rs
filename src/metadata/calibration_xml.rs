@@ -168,6 +168,7 @@ mod tests {
         },
         metadata::calibration_xml::Calibration,
     };
+    use chrono::{DateTime, NaiveDateTime, Utc};
     use quick_xml::de::from_str;
 
     #[test]
@@ -185,13 +186,25 @@ mod tests {
         assert_eq!(calibration.ads_header.polarisation, PolarizationMode::VV);
         assert_eq!(calibration.ads_header.mode, Mode::IW);
         assert_eq!(calibration.ads_header.swath, IWSwath::IW3);
+
+        // Returns a DateTime::<Utc> if the string was able to be parsed
+        let sentinel_dt = |s: &str| {
+            // Datetime format used in Sentinel-1 annotation data
+            const FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
+            let naive_dt =
+                NaiveDateTime::parse_from_str(&s, FORMAT).expect("Could not parse from str");
+
+            // Convert to Utc
+            DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc)
+        };
+
         assert_eq!(
             calibration.ads_header.start_time,
-            "2015-10-22T12:25:46.721151"
+            sentinel_dt("2015-10-22T12:25:46.721151")
         );
         assert_eq!(
             calibration.ads_header.stop_time,
-            "2015-10-22T12:25:49.816819"
+            sentinel_dt("2015-10-22T12:25:49.816819")
         );
         assert_eq!(
             calibration.ads_header.absolute_orbit_number,

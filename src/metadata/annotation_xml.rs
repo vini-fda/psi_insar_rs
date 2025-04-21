@@ -1,3 +1,5 @@
+use std::{io::BufReader, path::Path};
+
 use crate::granule_id::IWSwath;
 use nalgebra::Vector3;
 
@@ -237,8 +239,8 @@ pub struct ProductInformation {
     #[serde(rename = "platformHeading")]
     pub platform_heading: String,
     pub projection: String,
-    #[serde(rename = "rangeSamplingRate")]
-    pub range_sampling_rate: String,
+    #[serde(rename = "rangeSamplingRate", with = "string_to_f64")]
+    pub range_sampling_rate: f64,
     #[serde(rename = "radarFrequency")]
     pub radar_frequency: String,
     #[serde(rename = "azimuthSteeringRate")]
@@ -894,8 +896,8 @@ pub struct ImageAnnotation {
 pub struct ImageInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "productFirstLineUtcTime")]
-    pub product_first_line_utc_time: String,
+    #[serde(rename = "productFirstLineUtcTime", with = "datetime_format")]
+    pub product_first_line_utc_time: DateTime<Utc>,
     #[serde(rename = "productLastLineUtcTime")]
     pub product_last_line_utc_time: String,
     #[serde(rename = "ascendingNodeTime")]
@@ -908,24 +910,24 @@ pub struct ImageInformation {
     pub slice_number: String,
     #[serde(rename = "sliceList")]
     pub slice_list: SliceList,
-    #[serde(rename = "slantRangeTime")]
-    pub slant_range_time: String,
+    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    pub slant_range_time: f64,
     #[serde(rename = "pixelValue")]
     pub pixel_value: String,
     #[serde(rename = "outputPixels")]
     pub output_pixels: String,
-    #[serde(rename = "rangePixelSpacing")]
+    #[serde(rename = "rangePixelSpacing", with = "string_to_f64")]
     pub range_pixel_spacing: f64,
-    #[serde(rename = "azimuthPixelSpacing")]
+    #[serde(rename = "azimuthPixelSpacing", with = "string_to_f64")]
     pub azimuth_pixel_spacing: f64,
     #[serde(rename = "azimuthTimeInterval")]
     pub azimuth_time_interval: f64,
     #[serde(rename = "azimuthFrequency")]
     pub azimuth_frequency: f64,
-    #[serde(rename = "numberOfSamples")]
-    pub number_of_samples: String,
-    #[serde(rename = "numberOfLines")]
-    pub number_of_lines: String,
+    #[serde(rename = "numberOfSamples", with = "string_to_usize")]
+    pub number_of_samples: usize,
+    #[serde(rename = "numberOfLines", with = "string_to_usize")]
+    pub number_of_lines: usize,
     #[serde(rename = "zeroDopMinusAcqTime")]
     pub zero_dop_minus_acq_time: String,
     #[serde(rename = "incidenceAngleMidSwath")]
@@ -1381,7 +1383,7 @@ pub struct SwathMergeList {
 }
 
 /// Custom deserializer for DateTime<Utc>
-mod datetime_format {
+pub mod datetime_format {
     use chrono::{DateTime, NaiveDateTime, Utc};
     use serde::{self, Deserialize, Deserializer};
 
@@ -1426,6 +1428,36 @@ mod string_to_f64 {
         S: serde::Serializer,
     {
         serializer.serialize_str(&value.to_string())
+    }
+}
+
+/// Custom serializer/deserializer for usize
+mod string_to_usize {
+    use serde::{self, Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        s.parse::<usize>().map_err(serde::de::Error::custom)
+    }
+
+    pub fn serialize<S>(value: &usize, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
+impl SlcProductAnnotation {
+    pub fn open<P: AsRef<Path>>(path: P) -> Self {
+        let reader = std::fs::File::open(path).unwrap();
+        let buf_reader = BufReader::new(reader);
+        let xml_de = &mut quick_xml::de::Deserializer::from_reader(buf_reader);
+        let result: Result<SlcProductAnnotation, _> = serde_path_to_error::deserialize(xml_de);
+        result.unwrap()
     }
 }
 

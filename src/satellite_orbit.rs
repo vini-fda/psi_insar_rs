@@ -1,6 +1,20 @@
-use crate::metadata::annotation_xml::OrbitList;
-use chrono::{DateTime, Duration, Utc};
+use crate::{
+    interpolation::{
+        unit_derivative_interval_cubic_hermite_spline_interpolation,
+        unit_interval_cubic_hermite_spline_interpolation,
+    },
+    metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
+};
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use nalgebra::Vector3;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ZeroDopplerState {
+    /// The zero-Doppler time.
+    pub time: DateTime<Utc>,
+    /// The distance from the satellite to the ground target.
+    pub distance_to_target: f64,
+}
 
 /// A collection of orbital state vectors (position and velocity) over time
 ///
@@ -11,6 +25,108 @@ pub struct OrbitalStateHistory {
     pub time: Vec<DateTime<Utc>>,
     pub position: Vec<Vector3<f64>>,
     pub velocity: Vec<Vector3<f64>>,
+}
+
+impl OrbitalStateHistory {
+    #[inline(always)]
+    pub fn interp_pos(&self, t: DateTime<Utc>) -> (Vector3<f64>, Vector3<f64>) {
+        let time: &[DateTime<Utc>] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        assert!(time.len() >= 2);
+        // Try to find "t" in the slice "time"
+        // 1. If you can find it, return the corresponding position, velocity pair
+        match time.binary_search(&t) {
+            Ok(i) => return (pos[i], vel[i]), // exact match
+            Err(_) => { /* continue to interpolation */ }
+        }
+        // 2. Otherwise, search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 3. With "t_prev" and "t_next", perform interpolation
+        let total_dt = (t_next - t_prev).num_nanoseconds().unwrap() as f64;
+        let dt = (t - t_prev).num_nanoseconds().unwrap() as f64;
+        let alpha = dt / total_dt;
+
+        // cubic hermite interpolation
+        let pos_interp =
+            unit_interval_cubic_hermite_spline_interpolation(p_prev, v_prev, p_next, v_next, alpha);
+        // Derivative of Hermite spline w.r.t. time
+        // (the scale factor of 1 / total_dt comes from the chain rule)
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, alpha,
+        ) / total_dt;
+        (pos_interp, vel_interp)
+    }
+
+    /// Calculate the zero-Doppler time for a given ground target and satellite trajectory.
+    /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
+    /// is perpendicular to the vector pointing from the satellite to the ground target:
+    ///     v(t) · (ground_target_pos - s(t)) = 0
+    /// This condition implies a dot product of zero between the velocity vector and
+    /// the look vector, indicating orthogonality.
+    ///
+    /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
+    pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> ZeroDopplerState {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: DateTime<Utc>| {
+            let (sat_pos, sat_vel) = self.interp_pos(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.dot(&normalized_displacement)
+        };
+
+        let state = |t: DateTime<Utc>| {
+            let (sat_pos, _) = self.interp_pos(t);
+            let distance_to_target = (ground_target_pos - sat_pos).norm();
+            return ZeroDopplerState {
+                time: t,
+                distance_to_target,
+            };
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over datetime
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        return state(mid);
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let mid = left + (right - left) / 2;
+                return state(mid);
+            }
+        }
+
+        panic!("Zero-Doppler point not found in trajectory window.");
+    }
 }
 
 impl From<OrbitList> for OrbitalStateHistory {
@@ -39,16 +155,120 @@ impl From<&OrbitList> for OrbitalStateHistory {
     }
 }
 
+// pub fn radar_coords_to_pixel(
+//     zero_doppler: ZeroDopplerState,
+//     t_start: DateTime<Utc>,
+//     dt_az: TimeDelta,
+//     r0: f64,
+//     fs: f64,
+//     num_rows: usize,
+//     num_cols: usize,
+// ) -> Option<(usize, usize)> {
+// }
+//
+
+pub fn radar_coords_slc_annotation_to_pixel(
+    zero_doppler: ZeroDopplerState,
+    annotation: SlcProductAnnotation,
+) -> Option<(usize, usize)> {
+    /// Speed of light in m/s
+    const C_LIGHT: f64 = 299_792_458.0;
+    let slant_range_time = annotation
+        .image_annotation
+        .image_information
+        .slant_range_time;
+    let near_edge_slant_range = 0.5 * C_LIGHT * slant_range_time;
+    let t_start = annotation
+        .image_annotation
+        .image_information
+        .product_first_line_utc_time;
+    let stop_time = annotation.ads_header.stop_time;
+    let prf = annotation
+        .general_annotation
+        .downlink_information_list
+        .downlink_information
+        .prf;
+    // ADC Sampling Rate (?) TODO: LEARN
+    // let fs = annotation
+    //     .general_annotation
+    //     .product_information
+    //     .range_sampling_rate;
+    let range_spacing = annotation
+        .image_annotation
+        .image_information
+        .range_pixel_spacing;
+    let azimuth_time_interval = annotation
+        .image_annotation
+        .image_information
+        .azimuth_time_interval;
+
+    // Number of azimuth lines (rows)
+    let num_rows = annotation
+        .image_annotation
+        .image_information
+        .number_of_lines;
+    // Number of range samples per azimuth line (columns)
+    let num_cols = annotation
+        .image_annotation
+        .image_information
+        .number_of_samples;
+
+    // Time difference in seconds
+    let delta_time = zero_doppler.time.signed_duration_since(t_start);
+    let delta_time_secs = delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
+
+    let total_delta_time = stop_time.signed_duration_since(t_start);
+    let total_delta_time_secs = total_delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
+
+    // Row calculation: (time - t_start) * prf (DOES NOT WORK)
+    // TODO: Understand why this doesn't work
+    // let row = delta_time_secs * prf;
+
+    // Linear interpolation (this seems to work better)
+    // let row = (delta_time_secs / total_delta_time_secs) * (num_rows as f64);
+
+    // Calculation using azimuth_time_interval (similar to linear interp)
+    // This is what the official SNAP microwave toolbox performs:
+    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-io/src/main/java/eu/esa/sar/io/sentinel1/Sentinel1Level1Directory.java
+    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-op-insar/src/main/java/eu/esa/sar/insar/gpf/support/SARPosition.java
+    let azimuth_index = delta_time_secs / azimuth_time_interval;
+
+    // Column calculation:
+    let slant_range_index =
+        (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
+    println!(
+        "DEBUG | (azimuth, slant range) = {:?}, delta_r = {}, r_0 = {}",
+        (azimuth_index, slant_range_index),
+        range_spacing,
+        near_edge_slant_range
+    );
+    // Check bounds and return if within image
+    if azimuth_index >= 0.0 && slant_range_index >= 0.0 {
+        let row_idx = azimuth_index.round() as usize;
+        let col_idx = slant_range_index.round() as usize;
+
+        if row_idx < num_rows && col_idx < num_cols {
+            return Some((row_idx, col_idx));
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod manual_tests_satellite_orbit {
     use std::f32::consts::{PI, TAU};
 
+    use nalgebra::{Matrix3, Rotation3, Unit, Vector3};
+    use ndarray::Array;
     use rerun::Color;
 
     use super::OrbitalStateHistory;
     use crate::{
+        dem::DEM,
         geodesy::geodetic_to_ecef,
         metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
+        satellite_orbit::radar_coords_slc_annotation_to_pixel,
     };
 
     /// Reads the first `<orbitList>` element found in the XML file at `path`.
@@ -76,9 +296,25 @@ mod manual_tests_satellite_orbit {
     }
 
     #[test]
+    fn find_zero_doppler_from_orbit_list() {
+        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
+        let osh = OrbitalStateHistory::from(orbit_list);
+        // let ground_target_pos = Vector3::<f64>::new(-899075.25, -5949767.5, 2116386.8);
+        let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
+        let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        println!("Zero-Doppler time = {:?}", zero_doppler);
+        let annotation =
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, annotation) {
+            println!("Found pixel at {row}, {col}");
+        }
+    }
+
+    #[test]
     #[ignore]
     fn simple() {
         let rec = rerun::RecordingStreamBuilder::new("simple_test_satellite_orbit")
+            .recording_id("my_shared_recording")
             .connect_tcp()
             .expect("Could not connect to local Rerun instance.");
         let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
@@ -100,6 +336,10 @@ mod manual_tests_satellite_orbit {
             let pos = orbital_history.position[k];
             let vel = orbital_history.velocity[k];
             let time = orbital_history.time[k];
+            let look_rot3x3 = look_rotation_from_velocity_and_position(
+                vel.map(|c| c as f32),
+                pos.map(|c| c as f32),
+            );
             rec.set_time_nanos("satellite_time", time.timestamp_nanos_opt().unwrap());
 
             let pos = rerun::Position3D::new(pos.x as f32, pos.y as f32, pos.z as f32);
@@ -115,12 +355,29 @@ mod manual_tests_satellite_orbit {
                     .with_origins([pos]);
             rec.log("satellite_velocity", &arrow_vel).unwrap();
 
+            // Pinhole camera
+            let ground_target = geodetic_to_ecef(19.49831428810679, -98.59301000370277, 0.0);
+            let ground_target_vec3 = Vector3::<f32>::from(ground_target);
+            let pos_vec3 = Vector3::<f32>::new(pos.x(), pos.y(), pos.z());
+            let rot3x3 = look_at_ground_target(pos_vec3, ground_target_vec3);
+            rec.log(
+                "universe/camera",
+                &rerun::Transform3D::from_translation_mat3x3(
+                    [pos.x(), pos.y(), pos.z()],
+                    rerun::Mat3x3(rot3x3.data.0.as_flattened().try_into().unwrap()),
+                ),
+            )
+            .unwrap();
+            let focal_length = (pos_vec3 - ground_target_vec3).norm();
+            rec.log(
+                "universe/camera",
+                &rerun::Pinhole::from_focal_length_and_resolution(
+                    [focal_length, focal_length],
+                    [23739., 1507.],
+                ),
+            )
+            .unwrap();
             // TODO: Pinhole camera
-            // rec.log(
-            //     "universe/camera",
-            //     &rerun::Transform3D::from_translation_rotation(translation, rot),
-            // )
-            // .unwrap();
 
             // rec.log(
             //     "universe/camera",
@@ -150,7 +407,35 @@ mod manual_tests_satellite_orbit {
         .unwrap();
         rec.log_static("universe/earth", &asset).unwrap();
 
-        // XYZ OF POINTS
+        // X Y Z arrows
+        const ARROW_LENGTH: f32 = 1.2 * EARTH_RADIUS;
+        let arrow_x = rerun::Arrows3D::from_vectors([(ARROW_LENGTH, 0.0, 0.0)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/x", &arrow_x).unwrap();
+        let arrow_y = rerun::Arrows3D::from_vectors([(0.0, ARROW_LENGTH, 0.0)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/y", &arrow_y).unwrap();
+        let arrow_z = rerun::Arrows3D::from_vectors([(0.0, 0.0, ARROW_LENGTH)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/z", &arrow_z).unwrap();
+
+        // DEM
+        let dem = DEM::open_file("dem.tif");
+        let (rows, cols) = dem.array_dim();
+        let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
+        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];
+        let vertex_colors: Vec<u32> = dem.triangle_colors();
+        let triangle_indices = dem.triangle_indices();
+        rec.log_static(
+            "dem_mesh3d",
+            &rerun::Mesh3D::new(vertex_positions)
+                .with_vertex_normals(vertex_normals)
+                .with_vertex_colors(vertex_colors)
+                .with_triangle_indices(triangle_indices),
+        )
+        .unwrap();
+
+        // XYZ OF GROUND CONTROL POINTS
         let radar_xyz: Vec<_> = [
             [19.49831428810679, -98.59301000370277],
             [19.50516497145322, -98.63155270190656],
@@ -196,23 +481,44 @@ mod manual_tests_satellite_orbit {
             [19.46306674963845, -99.36782713184502],
         ]
         .iter()
-        .map(|&[lat, lon]| geodetic_to_ecef(lat, lon, 0.0))
+        .map(|&[lat, lon]| dem.get_ecef_at_lat_lon(lat, lon))
         .collect();
 
         rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
             .unwrap();
+    }
 
-        // X Y Z arrows
-        const ARROW_LENGTH: f32 = 1.2 * EARTH_RADIUS;
-        let arrow_x = rerun::Arrows3D::from_vectors([(ARROW_LENGTH, 0.0, 0.0)])
-            .with_origins([(0.0, 0.0, 0.0)]);
-        rec.log_static("universe/x", &arrow_x).unwrap();
-        let arrow_y = rerun::Arrows3D::from_vectors([(0.0, ARROW_LENGTH, 0.0)])
-            .with_origins([(0.0, 0.0, 0.0)]);
-        rec.log_static("universe/y", &arrow_y).unwrap();
-        let arrow_z = rerun::Arrows3D::from_vectors([(0.0, 0.0, ARROW_LENGTH)])
-            .with_origins([(0.0, 0.0, 0.0)]);
-        rec.log_static("universe/z", &arrow_z).unwrap();
+    fn look_rotation_from_velocity_and_position(v: Vector3<f32>, p: Vector3<f32>) -> Matrix3<f32> {
+        let forward = Unit::new_normalize(v);
+        let radial = Unit::new_normalize(p);
+
+        // Remove component of radial in the direction of forward (Gram-Schmidt)
+        let up_raw = radial.into_inner();
+        let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
+
+        // Right vector
+        let right = Unit::new_normalize(up.cross(&forward));
+
+        // Compose rotation matrix from right, up, forward as columns
+        let rot_matrix =
+            Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()]);
+
+        rot_matrix
+    }
+
+    /// Constructs a rotation matrix that orients an object at `p_sat` to point toward `p_target`.
+    pub fn look_at_ground_target(p_sat: Vector3<f32>, p_target: Vector3<f32>) -> Matrix3<f32> {
+        let forward_vec = p_target - p_sat;
+        let forward = Unit::new_normalize(forward_vec);
+
+        let up_raw = Unit::new_normalize(p_sat).into_inner(); // Radial from Earth center
+        let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
+        let right = Unit::new_normalize(up.cross(&forward));
+
+        let rot_matrix =
+            Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()]);
+
+        rot_matrix
     }
 }
 

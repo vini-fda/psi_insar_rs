@@ -30,7 +30,7 @@ const E2: f32 = F * (2.0 - F);
 /// let (x, y, z) = geodetic_to_ecef(52.5, 13.4, 140.2);
 /// println!("ECEF = ({:.3}, {:.3}, {:.3})", x, y, z);
 /// ```
-pub fn geodetic_to_ecef(lat_deg: f32, lon_deg: f32, h: f32) -> (f32, f32, f32) {
+pub fn geodetic_to_ecef(lat_deg: f32, lon_deg: f32, h: f32) -> [f32; 3] {
     // Convert degrees to radians
     let lat = lat_deg.to_radians();
     let lon = lon_deg.to_radians();
@@ -48,7 +48,7 @@ pub fn geodetic_to_ecef(lat_deg: f32, lon_deg: f32, h: f32) -> (f32, f32, f32) {
     let y = (n + h) * cos_lat * sin_lon;
     let z = (n * (1.0 - E2) + h) * sin_lat;
 
-    (x, y, z)
+    [x, y, z]
 }
 
 /// Converts ECEF coordinates (x, y, z) back to geodetic coordinates
