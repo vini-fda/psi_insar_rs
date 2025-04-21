@@ -5,6 +5,7 @@
 /sar_env
 Cargo.lock
 .ropeproject
+.ipynb_checkpoints
 *.pdf
 *.png
 *.html
