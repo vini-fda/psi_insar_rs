@@ -155,21 +155,9 @@ impl From<&OrbitList> for OrbitalStateHistory {
     }
 }
 
-// pub fn radar_coords_to_pixel(
-//     zero_doppler: ZeroDopplerState,
-//     t_start: DateTime<Utc>,
-//     dt_az: TimeDelta,
-//     r0: f64,
-//     fs: f64,
-//     num_rows: usize,
-//     num_cols: usize,
-// ) -> Option<(usize, usize)> {
-// }
-//
-
 pub fn radar_coords_slc_annotation_to_pixel(
     zero_doppler: ZeroDopplerState,
-    annotation: SlcProductAnnotation,
+    annotation: &SlcProductAnnotation,
 ) -> Option<(usize, usize)> {
     /// Speed of light in m/s
     const C_LIGHT: f64 = 299_792_458.0;
@@ -255,6 +243,78 @@ pub fn radar_coords_slc_annotation_to_pixel(
     None
 }
 
+pub fn radar_coords_slc_annotation_to_pixel_f32(
+    zero_doppler: ZeroDopplerState,
+    annotation: &SlcProductAnnotation,
+) -> (f32, f32) {
+    /// Speed of light in m/s
+    const C_LIGHT: f64 = 299_792_458.0;
+    let slant_range_time = annotation
+        .image_annotation
+        .image_information
+        .slant_range_time;
+    let near_edge_slant_range = 0.5 * C_LIGHT * slant_range_time;
+    let t_start = annotation
+        .image_annotation
+        .image_information
+        .product_first_line_utc_time;
+    let stop_time = annotation.ads_header.stop_time;
+    let prf = annotation
+        .general_annotation
+        .downlink_information_list
+        .downlink_information
+        .prf;
+    // ADC Sampling Rate (?) TODO: LEARN
+    // let fs = annotation
+    //     .general_annotation
+    //     .product_information
+    //     .range_sampling_rate;
+    let range_spacing = annotation
+        .image_annotation
+        .image_information
+        .range_pixel_spacing;
+    let azimuth_time_interval = annotation
+        .image_annotation
+        .image_information
+        .azimuth_time_interval;
+
+    // Number of azimuth lines (rows)
+    let num_rows = annotation
+        .image_annotation
+        .image_information
+        .number_of_lines;
+    // Number of range samples per azimuth line (columns)
+    let num_cols = annotation
+        .image_annotation
+        .image_information
+        .number_of_samples;
+
+    // Time difference in seconds
+    let delta_time = zero_doppler.time.signed_duration_since(t_start);
+    let delta_time_secs = delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
+
+    let total_delta_time = stop_time.signed_duration_since(t_start);
+    let total_delta_time_secs = total_delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
+
+    // Row calculation: (time - t_start) * prf (DOES NOT WORK)
+    // TODO: Understand why this doesn't work
+    // let row = delta_time_secs * prf;
+
+    // Linear interpolation (this seems to work better)
+    // let row = (delta_time_secs / total_delta_time_secs) * (num_rows as f64);
+
+    // Calculation using azimuth_time_interval (similar to linear interp)
+    // This is what the official SNAP microwave toolbox performs:
+    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-io/src/main/java/eu/esa/sar/io/sentinel1/Sentinel1Level1Directory.java
+    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-op-insar/src/main/java/eu/esa/sar/insar/gpf/support/SARPosition.java
+    let azimuth_index = delta_time_secs / azimuth_time_interval;
+
+    // Column calculation:
+    let slant_range_index =
+        (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
+    (azimuth_index as f32, slant_range_index as f32)
+}
+
 #[cfg(test)]
 mod manual_tests_satellite_orbit {
     use std::f32::consts::{PI, TAU};
@@ -268,7 +328,9 @@ mod manual_tests_satellite_orbit {
         dem::DEM,
         geodesy::geodetic_to_ecef,
         metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
-        satellite_orbit::radar_coords_slc_annotation_to_pixel,
+        satellite_orbit::{
+            radar_coords_slc_annotation_to_pixel, radar_coords_slc_annotation_to_pixel_f32,
+        },
     };
 
     /// Reads the first `<orbitList>` element found in the XML file at `path`.
@@ -299,15 +361,119 @@ mod manual_tests_satellite_orbit {
     fn find_zero_doppler_from_orbit_list() {
         let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let osh = OrbitalStateHistory::from(orbit_list);
-        // let ground_target_pos = Vector3::<f64>::new(-899075.25, -5949767.5, 2116386.8);
-        let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
+        let dem = DEM::open_file("dem.tif");
+        let [lat, lon] = [19.49831428810679, -98.59301000370277];
+        // let [lat, lon] = [19.46306674963845, -99.36782713184502];
+        let pos = dem.get_ecef_at_lat_lon(lat, lon);
+        // let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
+        let ground_target_pos = Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
         let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
         println!("Zero-Doppler time = {:?}", zero_doppler);
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
-        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, annotation) {
+        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, &annotation) {
             println!("Found pixel at {row}, {col}");
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_backgeocoding() {
+        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
+        let osh = OrbitalStateHistory::from(orbit_list);
+        let dem = DEM::open_file("dem.tif");
+        let [lat, lon] = [19.49831428810679, -98.59301000370277];
+        // let [lat, lon] = [19.46306674963845, -99.36782713184502];
+        let pos = dem.get_ecef_at_lat_lon(lat, lon);
+        // let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
+        let ground_target_pos = Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+        let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        println!("Zero-Doppler time = {:?}", zero_doppler);
+        let annotation =
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, &annotation) {
+            println!("Found pixel at {row}, {col}");
+        }
+
+        let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
+            .connect_tcp()
+            .expect("Could not connect to local Rerun instance.");
+
+        let mut points = vec![];
+        for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let ground_target_pos =
+                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+
+            points.push([col as f32, row as f32]);
+        }
+        let points = rerun::Points2D::new(points)
+            .with_colors(dem.vertex_colors())
+            .with_radii([10.0]);
+        rr.log_static("backgeocoded_points", &points).unwrap();
+
+        // Log ground control points
+        let lat_lon_gcps = [
+            [19.49831428810679, -98.59301000370277],
+            [19.50516497145322, -98.63155270190656],
+            [19.51197728410019, -98.66992859316593],
+            [19.51875199752162, -98.7081413973442],
+            [19.52548985740382, -98.74619471009619],
+            [19.53219158481003, -98.78409200847771],
+            [19.53885787727854, -98.82183665623535],
+            [19.5454894098591, -98.85943190879907],
+            [19.55208683609183, -98.89688091799755],
+            [19.55865078893238, -98.9341867365148],
+            [19.56518188162694, -98.97135232210496],
+            [19.57168070854037, -99.00838054158147],
+            [19.57814784594043, -99.04527417459472],
+            [19.58458385274104, -99.08203591721202],
+            [19.59098927120689, -99.11866838531225],
+            [19.5973646276222, -99.15517411780644],
+            [19.60371043292545, -99.19155557969563],
+            [19.61002718331234, -99.22781516497541],
+            [19.61631536080904, -99.26395519939655],
+            [19.62257559081166, -99.29997885004042],
+            [19.62877652653297, -99.33570497416603],
+            [19.33245909128312, -98.62592837407114],
+            [19.33931662789667, -98.66442995280119],
+            [19.34613584071955, -98.70276488660213],
+            [19.35291750085852, -98.74093689141644],
+            [19.35966235364623, -98.77894955911454],
+            [19.36637111980492, -98.81680636309756],
+            [19.37304449654394, -98.85451066358128],
+            [19.3796831585957, -98.89206571258312],
+            [19.38628775919396, -98.92947465863222],
+            [19.39285893099849, -98.96674055122072],
+            [19.39939728696963, -99.0038663450142],
+            [19.40590342119594, -99.0408549038362],
+            [19.41237790967802, -99.07770900444162],
+            [19.41882131107135, -99.1144313400927],
+            [19.4252341673906, -99.15102452394993],
+            [19.43161700467787, -99.187491092289],
+            [19.43797033363727, -99.22383350755531],
+            [19.44429465023745, -99.2600541612652],
+            [19.45059043628451, -99.29615537676354],
+            [19.45685815996673, -99.33213941184621],
+            [19.46306674963845, -99.36782713184502],
+        ];
+
+        let mut points = vec![];
+        for [lat, lon] in lat_lon_gcps {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let ground_target_pos =
+                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+
+            points.push([col as f32, row as f32]);
+        }
+        let points = rerun::Points2D::new(points)
+            .with_colors([rerun::Color::from_rgb(255, 122, 100)])
+            .with_radii([10.0]);
+        rr.log_static("backgeocoded_gcps", &points).unwrap();
     }
 
     #[test]
@@ -424,7 +590,7 @@ mod manual_tests_satellite_orbit {
         let (rows, cols) = dem.array_dim();
         let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
         let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];
-        let vertex_colors: Vec<u32> = dem.triangle_colors();
+        let vertex_colors: Vec<u32> = dem.vertex_colors();
         let triangle_indices = dem.triangle_indices();
         rec.log_static(
             "dem_mesh3d",

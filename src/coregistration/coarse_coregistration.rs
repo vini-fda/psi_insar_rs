@@ -447,20 +447,20 @@ mod manual_tests {
         )
         .unwrap();
 
-        let row = 790;
-        let col = 261;
-        rec.log(
-            "logs",
-            &rerun::TextLog::new(format!(
-                "lon, lat at (790, 261) = {:?}\n\
-                height = {}\n\
-                xyz = {:?}",
-                dem.get_lon_lat_at_index(row, col),
-                dem.get_value_at_index(row, col),
-                dem.get_ecef_at_pixel(row, col)
-            ))
-            .with_level(rerun::TextLogLevel::INFO),
-        )
-        .unwrap();
+        // let row = 300;
+        // let col = 261;
+        // rec.log(
+        //     "logs",
+        //     &rerun::TextLog::new(format!(
+        //         "lon, lat at (300, 261) = {:?}\n\
+        //         height = {}\n\
+        //         xyz = {:?}",
+        //         dem.get_lon_lat_at_index(row, col),
+        //         dem.get_value_at_index(row, col),
+        //         dem.get_ecef_at_pixel(row, col)
+        //     ))
+        //     .with_level(rerun::TextLogLevel::INFO),
+        // )
+        // .unwrap();
     }
 }

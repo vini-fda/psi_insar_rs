@@ -3,6 +3,8 @@
 //!
 //! This uses the WGS84 ellipsoid parameters and only the Rust standard library (`std`).
 
+use geo_types::Point;
+
 /// Semi-major axis of the WGS84 ellipsoid (meters).
 const A: f32 = 6_378_137.0;
 /// Flattening of the WGS84 ellipsoid.
@@ -100,3 +102,15 @@ pub fn ecef_to_geodetic(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
 
     (lat_deg, lon_deg, h)
 }
+
+// fn get_ecef(lat: f64, lon: f64, height_dem: f64) -> Point {
+//     let transformation = Proj::new_known_crs(
+//         "EPSG:4326+3855", // Source: WGS84 Lon/Lat + EGM2008 Height
+//         "EPSG:6500",      // Target: ECEF
+//         None,
+//     )
+//     .unwrap();
+
+//     let point = Point::new(lon, lat);
+//     transformation.convert((lon, lat, height_dem)).unwrap()
+// }
