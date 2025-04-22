@@ -47,7 +47,7 @@ impl DEM {
     }
 
     /// Gets the height value at the index (row, col)
-    pub fn get_value_at_index(&self, row: usize, col: usize) -> f32 {
+    pub fn get_value_at_index(&self, row: usize, col: usize) -> f64 {
         let data = &self.data;
         let band = data
             .rasterband(1)
@@ -55,28 +55,28 @@ impl DEM {
         let value = band
             .read_as::<f32>((col as isize, row as isize), (1, 1), (1, 1), None)
             .unwrap();
-        value[(0, 0)]
+        value[(0, 0)] as f64
     }
 
     /// Gets the height value at the coordinates (lat, lon)
-    pub fn get_height_at_lat_lon(&self, lat: f64, lon: f64) -> f32 {
+    pub fn get_height_at_lat_lon(&self, lat: f64, lon: f64) -> f64 {
         let [row, col] = self.get_index_at_lat_lon(lat, lon);
         self.get_value_at_index(row, col)
     }
 
     /// Gets the Earth-Centered Earth-Fixed (ECEF) cartesian coordinates of the pixel at (row, col)
-    pub fn get_ecef_at_pixel(&self, row: usize, col: usize) -> [f32; 3] {
+    pub fn get_ecef_at_pixel(&self, row: usize, col: usize) -> [f64; 3] {
         let [lat, lon] = self.get_lat_lon_at_index(row, col);
         let height = self.get_value_at_index(row, col);
         let geoid_height = egm_2008::geoid_height(lat, lon).unwrap();
-        geodetic_to_ecef(lat as f32, lon as f32, height + geoid_height as f32)
+        geodetic_to_ecef(lat, lon, height + geoid_height)
     }
 
     /// Gets the Earth-Centered Earth-Fixed (ECEF) cartesian coordinates of the pixel at (row, col)
-    pub fn get_ecef_at_lat_lon(&self, lat: f64, lon: f64) -> [f32; 3] {
+    pub fn get_ecef_at_lat_lon(&self, lat: f64, lon: f64) -> [f64; 3] {
         let height = self.get_height_at_lat_lon(lat, lon);
         let geoid_height = egm_2008::geoid_height(lat, lon).unwrap();
-        geodetic_to_ecef(lat as f32, lon as f32, height + geoid_height as f32)
+        geodetic_to_ecef(lat, lon, height + geoid_height)
     }
 
     /// Copies the DEM raster data into a new, owned, 2D ndarray and returns it.
@@ -110,7 +110,7 @@ impl DEM {
         let mut vertex_positions = Vec::<[f32; 3]>::with_capacity(rows * cols);
         for i in 0..rows {
             for j in 0..cols {
-                vertex_positions.push(self.get_ecef_at_pixel(i, j));
+                vertex_positions.push(self.get_ecef_at_pixel(i, j).map(|val| val as f32));
             }
         }
         vertex_positions
@@ -173,7 +173,8 @@ impl DEM {
             .data
             .rasterband(1)
             .expect("Could not read first raster band.");
-        band.size()
+        let (columns, rows) = band.size();
+        (rows, columns)
     }
 
     /// Gets the [lat, lon] of each of these 4 corners of the DEM extent:
@@ -215,7 +216,7 @@ pub struct IndexedLatLonHeight<'a> {
 }
 
 impl<'a> Iterator for IndexedLatLonHeight<'a> {
-    type Item = (usize, usize, f64, f64, f32);
+    type Item = (usize, usize, f64, f64, f64);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.i >= self.rows {
