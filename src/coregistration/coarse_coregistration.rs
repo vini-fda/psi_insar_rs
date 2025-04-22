@@ -419,8 +419,9 @@ mod manual_tests {
         .unwrap();
         let dem = DEM::open_file("dem.tif");
 
-        let dem_extent = dem.data.model_extent();
-        let lines = dem_extent.to_lines();
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
         let dem_array = dem.read_raster_data();
         // let tensor = rerun::Tensor::try_from(dem)
         //     .unwrap()
@@ -439,11 +440,9 @@ mod manual_tests {
             .expect("Could not finish recording");
         rec.log(
             "DEM Extent",
-            &rerun::GeoLineStrings::from_lat_lon([lines
-                .map(|line| [[line.start.y, line.start.x], [line.end.y, line.end.x]])
-                .as_flattened()])
-            .with_radii([rerun::Radius::new_ui_points(2.0)])
-            .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
         )
         .unwrap();
 
