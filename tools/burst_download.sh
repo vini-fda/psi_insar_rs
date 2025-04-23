@@ -1,4 +1,4 @@
-#!/usr/bin/zsh
+#!/usr/bin/bash
 
 ASF_USERNAME='GoogleColab2023'
 ASF_PASSWORD='GoogleColab_2023'
