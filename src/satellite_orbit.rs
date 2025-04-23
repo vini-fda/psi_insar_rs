@@ -93,10 +93,13 @@ impl OrbitalStateHistory {
         let pos_interp =
             unit_interval_cubic_hermite_spline_interpolation(p_prev, v_prev, p_next, v_next, alpha);
         // Derivative of Hermite spline w.r.t. time
-        // (the scale factor of 1 / total_dt comes from the chain rule)
-        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
-            p_prev, v_prev, p_next, v_next, alpha,
-        ) / total_dt;
+        // (the scale factor of 1e9 / total_dt comes from the chain rule
+        // and also the fact that we have to use the metric/SI system,
+        // thus we convert nanoseconds to seconds, that's why 1e9 appears in the numerator)
+        let vel_interp =
+            1e9 * unit_derivative_interval_cubic_hermite_spline_interpolation(
+                p_prev, v_prev, p_next, v_next, alpha,
+            ) / total_dt;
         (pos_interp, vel_interp)
     }
 
@@ -158,6 +161,37 @@ impl OrbitalStateHistory {
         }
 
         panic!("Zero-Doppler point not found in trajectory window.");
+    }
+
+    /// Creates an upsampled version of Self, inserting k >= 1 samples inbetween every two samples in the original
+    pub fn interp_n(&self, k: usize) -> Self {
+        assert!(k >= 1);
+        let n = self.time.len();
+        let n_ups = k * (n - 1) + n;
+        let mut time_ups = vec![DateTime::<Utc>::default(); n_ups];
+        for i in 0..(n - 1) {
+            time_ups[(k + 1) * i] = self.time[i];
+            let delta_t = (self.time[i + 1] - self.time[i]).num_nanoseconds().unwrap() as f64
+                / (k as f64 + 1.0);
+            for j in 1..=k {
+                let total_delta_t = delta_t * j as f64;
+                let total_delta_t = TimeDelta::nanoseconds(total_delta_t.round() as i64);
+                time_ups[(k + 1) * i + j] = self.time[i] + total_delta_t;
+            }
+        }
+        time_ups[(k + 1) * (n - 1)] = self.time[n - 1];
+        let mut position_ups = Vec::with_capacity(n_ups);
+        let mut velocity_ups = Vec::with_capacity(n_ups);
+        for t in &time_ups {
+            let (pos, vel) = self.interp_pos_vel(*t);
+            position_ups.push(pos);
+            velocity_ups.push(vel);
+        }
+        Self {
+            time: time_ups,
+            position: position_ups,
+            velocity: velocity_ups,
+        }
     }
 }
 
@@ -515,15 +549,8 @@ mod manual_tests_satellite_orbit {
             .recording_id("my_shared_recording")
             .connect_tcp()
             .expect("Could not connect to local Rerun instance.");
-        // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
-        let annotation =
-            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
-        let start_time = annotation.ads_header.start_time;
-        let end_time = annotation.ads_header.stop_time;
-        let eef = EarthExplorerFile::open("orbit.EOF");
-        let osv_list = eef.data_block.list_of_osvs;
-        let orbital_history =
-            OrbitalStateHistory::from_poe_timeframe("orbit.EOF", start_time, end_time);
+        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
+        let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
         let points = orbital_history
             .position
             .iter()
