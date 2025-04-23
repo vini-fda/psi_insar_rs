@@ -445,25 +445,13 @@ mod manual_tests_satellite_orbit {
     #[test]
     #[ignore]
     fn test_backgeocoding() {
-        let annotation =
-            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
-        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
-        let osh = OrbitalStateHistory::from(orbit_list);
-        let dem = DEM::open_file("dem.tif");
-        let [lat, lon] = [19.49831428810679, -98.59301000370277];
-        // let [lat, lon] = [19.46306674963845, -99.36782713184502];
-        let pos = dem.get_ecef_at_lat_lon(lat, lon);
-        // let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
-        let ground_target_pos = Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
-        let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
-        println!("Zero-Doppler time = {:?}", zero_doppler);
-        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, &annotation) {
-            println!("Found pixel at {row}, {col}");
-        }
-
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
             .connect_tcp()
             .expect("Could not connect to local Rerun instance.");
+        let annotation =
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+        let osh = OrbitalStateHistory::from(&annotation.general_annotation.orbit_list);
+        let dem = DEM::open_file("dem.tif");
 
         let mut points = vec![];
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
@@ -540,6 +528,43 @@ mod manual_tests_satellite_orbit {
             .with_colors([rerun::Color::from_rgb(255, 122, 100)])
             .with_radii([10.0]);
         rr.log_static("backgeocoded_gcps", &points).unwrap();
+
+        // part 2
+        let annotation = SlcProductAnnotation::open(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/annotation/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.xml",
+        );
+        let osh = OrbitalStateHistory::from(&annotation.general_annotation.orbit_list);
+        let dem = DEM::open_file("dem.tif");
+
+        let mut points = vec![];
+        for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let ground_target_pos =
+                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+
+            points.push([col as f32, row as f32]);
+        }
+        let points = rerun::Points2D::new(points)
+            .with_colors(dem.vertex_colors().iter().map(|&n| n & 0x0000FFFF))
+            .with_radii([10.0]);
+        rr.log_static("backgeocoded_points_2", &points).unwrap();
+
+        let mut points = vec![];
+        for [lat, lon] in lat_lon_gcps {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let ground_target_pos =
+                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+
+            points.push([col as f32, row as f32]);
+        }
+        let points = rerun::Points2D::new(points)
+            .with_colors([rerun::Color::from_rgb(122, 255, 100)])
+            .with_radii([10.0]);
+        rr.log_static("backgeocoded_gcps_2", &points).unwrap();
     }
 
     #[test]
