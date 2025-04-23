@@ -456,8 +456,7 @@ mod manual_tests_satellite_orbit {
         let mut points = vec![];
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos =
-                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
@@ -526,7 +525,7 @@ mod manual_tests_satellite_orbit {
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(255, 122, 100)])
-            .with_radii([10.0]);
+            .with_radii([30.0]);
         rr.log_static("backgeocoded_gcps", &points).unwrap();
 
         // part 2
@@ -554,8 +553,7 @@ mod manual_tests_satellite_orbit {
         let mut points = vec![];
         for [lat, lon] in lat_lon_gcps {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos =
-                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
+            let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
@@ -563,7 +561,7 @@ mod manual_tests_satellite_orbit {
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(122, 255, 100)])
-            .with_radii([10.0]);
+            .with_radii([30.0]);
         rr.log_static("backgeocoded_gcps_2", &points).unwrap();
     }
 
