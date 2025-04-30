@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub mod annotation_xml;
 pub mod calibration_xml;
 pub mod noise_xml;
+pub mod orbit_xml;
 
 #[derive(Serialize, Deserialize)]
 pub struct AdsHeader {

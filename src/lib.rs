@@ -1,5 +1,6 @@
 pub mod coregistration;
 pub mod dem;
+mod egm_2008;
 pub mod geocoding;
 pub mod geodesy;
 pub mod geolocation;

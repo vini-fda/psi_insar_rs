@@ -4,11 +4,11 @@
 //! This uses the WGS84 ellipsoid parameters and only the Rust standard library (`std`).
 
 /// Semi-major axis of the WGS84 ellipsoid (meters).
-const A: f32 = 6_378_137.0;
+const A: f64 = 6_378_137.0;
 /// Flattening of the WGS84 ellipsoid.
-const F: f32 = 1.0 / 298.257_23;
+const F: f64 = 1.0 / 298.257_223_563;
 /// Square of eccentricity: e² = f(2 − f).
-const E2: f32 = F * (2.0 - F);
+const E2: f64 = F * (2.0 - F);
 
 /// Converts geodetic coordinates (latitude, longitude, ellipsoidal height) to
 /// ECEF coordinates (x, y, z).
@@ -30,7 +30,7 @@ const E2: f32 = F * (2.0 - F);
 /// let (x, y, z) = geodetic_to_ecef(52.5, 13.4, 140.2);
 /// println!("ECEF = ({:.3}, {:.3}, {:.3})", x, y, z);
 /// ```
-pub fn geodetic_to_ecef(lat_deg: f32, lon_deg: f32, h: f32) -> [f32; 3] {
+pub fn geodetic_to_ecef(lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
     // Convert degrees to radians
     let lat = lat_deg.to_radians();
     let lon = lon_deg.to_radians();
@@ -74,7 +74,7 @@ pub fn geodetic_to_ecef(lat_deg: f32, lon_deg: f32, h: f32) -> [f32; 3] {
 /// let (lat, lon, h) = ecef_to_geodetic(-912052.75, -5952183.0, 2107839.5);
 /// println!("Lat = {:.6}°, Lon = {:.6}°, Height = {:.3} m", lat, lon, h);
 /// ```
-pub fn ecef_to_geodetic(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+pub fn ecef_to_geodetic(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     // Longitude via atan2
     let lon = y.atan2(x);
 
@@ -83,7 +83,7 @@ pub fn ecef_to_geodetic(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
 
     // Initial latitude estimate
     let mut lat = z.atan2(p * (1.0 - E2));
-    let mut h = 0.0_f32;
+    let mut h = 0.0_f64;
     let mut n;
 
     // Iterate to improve latitude and height

@@ -1,4 +1,4 @@
-use geotiff::{GeoTiff, raster_data::RasterData};
+use gdal::{raster::{GdalDataType, GdalType}, Dataset};
 use ndarray::{Array2, s};
 use num_complex::{Complex, Complex32};
 use std::ops::Range;
@@ -285,33 +285,66 @@ impl CoarseCoregistration {
     }
 }
 
-pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
-    let geotiff_file =
-        std::fs::File::open(&measurement_path).expect("Failed to open measurement TIFF file");
-    let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
+#[derive(Copy, Clone)]
+struct ComplexI16(Complex<i16>);
 
-    if let RasterData::CInt16(vec) = data.raster_data {
-        let mapped_vec: Vec<num_complex::Complex<f32>> = vec
-            .into_iter()
-            .map(|x| Complex::<f32>::new(x.re as f32, x.im as f32))
-            .collect();
-        return Array2::from_shape_vec((data.raster_height, data.raster_width), mapped_vec)
-            .unwrap();
+impl From<ComplexI16> for Complex<i16> {
+    fn from(value: ComplexI16) -> Self {
+        value.0
     }
-    panic!();
+}
+
+impl From<Complex<i16>> for ComplexI16 {
+    fn from(value: Complex<i16>) -> Self {
+        ComplexI16(value)
+    }
+}
+
+impl GdalType for ComplexI16 {
+    fn gdal_ordinal() -> gdal_sys::GDALDataType::Type {
+        gdal_sys::GDALDataType::GDT_CInt16
+    }
+}
+
+pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
+    let dataset = Dataset::open(measurement_path).expect("Failed to open measurement TIFF file");
+    let (width, height) = dataset.raster_size();
+    
+    // Read the single band containing u32 values (pairs of i16)
+    let band = dataset.rasterband(1).expect("Could not read band");
+    let buffer = band
+        .read_as::<ComplexI16>((0, 0), (width, height), (width, height), None)
+        .expect("Could not read data");
+
+    // Convert u32 to pairs of i16 and then to complex numbers
+    let complex_data: Vec<Complex<f32>> = buffer
+        .data()
+        .iter()
+        .map(|&chunk| {
+            let ComplexI16(value) = chunk;
+            // Extract the two i16 values from the u32
+            let re = value.re;
+            let im = value.im;
+            // Convert to f32 and create complex number
+            Complex::new(re as f32, im as f32)
+        })
+        .collect();
+
+    Array2::from_shape_vec((height as usize, width as usize), complex_data)
+        .expect("Could not create array from complex data")
 }
 
 #[cfg(test)]
 mod manual_tests {
-    use ndarray::{Array2, s};
+    use ndarray::{s, Array2};
 
     use crate::dem::DEM;
 
-    use super::{CoarseCoregistration, CoregistrationResult, extract_data};
+    use super::{extract_data, CoarseCoregistration, CoregistrationResult};
 
     fn normalize(data: &mut Array2<f32>) {
         let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));
-        data.map_mut(|x| *x = *x / max_amplitude);
+        data.map_mut(|x| *x /= max_amplitude);
     }
 
     /// A visual test using the Rerun framework.
@@ -321,9 +354,9 @@ mod manual_tests {
     #[test]
     #[ignore]
     fn visual_test_rerun() {
-        let measurement_path_1 = "./download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE/measurement/s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001.tif";
+        let measurement_path_1 = "./download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE/measurement/s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001.tiff";
         let reference_image = extract_data(measurement_path_1);
-        let measurement_path_2 = "./download_new/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
+        let measurement_path_2 = "./download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
         let secondary_image = extract_data(measurement_path_2);
         let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
             .connect_tcp()
@@ -342,7 +375,12 @@ mod manual_tests {
             .with_dim_names(["rows", "cols"]);
         rec.log("correlation", &tensor)
             .expect("Could not finish recording");
-
+        let mut sec_img: Array2<f32> = secondary_image.map(|c| c.norm());
+        normalize(&mut sec_img);
+        let img_sec =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, sec_img).unwrap();
+        rec.log("secondary_image", &img_sec)
+            .expect("Could not finish recording");
         // Log 2 images for comparison
         let mut ref_patch = reference_image
             .slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()])
@@ -355,8 +393,8 @@ mod manual_tests {
             .expect("Could not finish recording");
         let mut kernel = secondary_image
             .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
-            .map(|c| c.norm().powf(0.3))
-            .to_owned();
+        .map(|c| c.norm().powf(0.3))
+        .to_owned();
         normalize(&mut kernel);
         let img_sec =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();
@@ -419,14 +457,13 @@ mod manual_tests {
         .unwrap();
         let dem = DEM::open_file("dem.tif");
 
-        let dem_extent = dem.data.model_extent();
-        let lines = dem_extent.to_lines();
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
         let dem_array = dem.read_raster_data();
-        // let tensor = rerun::Tensor::try_from(dem)
-        //     .unwrap()
-        //     .with_dim_names(["rows", "cols"]);
-        let tensor =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, dem_array).unwrap();
+        let tensor = rerun::Tensor::try_from(dem_array)
+            .unwrap()
+            .with_dim_names(["rows", "cols"]);
         rec.log("DEM", &tensor).expect("Could not finish recording");
         let data_img = rerun::Image::from_color_model_and_tensor(
             rerun::ColorModel::L,
@@ -439,27 +476,9 @@ mod manual_tests {
             .expect("Could not finish recording");
         rec.log(
             "DEM Extent",
-            &rerun::GeoLineStrings::from_lat_lon([lines
-                .map(|line| [[line.start.y, line.start.x], [line.end.y, line.end.x]])
-                .as_flattened()])
-            .with_radii([rerun::Radius::new_ui_points(2.0)])
-            .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
-        )
-        .unwrap();
-
-        let row = 790;
-        let col = 261;
-        rec.log(
-            "logs",
-            &rerun::TextLog::new(format!(
-                "lon, lat at (790, 261) = {:?}\n\
-                height = {}\n\
-                xyz = {:?}",
-                dem.get_lon_lat_at_index(row, col),
-                dem.get_value_at_index(row, col),
-                dem.get_ecef_at_pixel(row, col)
-            ))
-            .with_level(rerun::TextLogLevel::INFO),
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
         )
         .unwrap();
     }
