@@ -1,14 +1,6 @@
 use std::path::Path;
 
-use gdal::{
-    GcpRef,
-    raster::Buffer,
-    spatial_ref::{CoordTransform, SpatialRef},
-};
-use geotiff::{
-    GeoTiff,
-    raster_data::{RasterData, RasterValue},
-};
+use gdal::raster::Buffer;
 use ndarray::Array2;
 
 use crate::{egm_2008, geodesy::geodetic_to_ecef};
@@ -196,16 +188,13 @@ impl DEM {
             [lat, lon]
         };
 
-        // Get raster corners
-        let corners = [
+        [
             (0, 0),                            // Upper Left
             (0, height as isize),              // Lower Left
             (width as isize, height as isize), // Lower Right
             (width as isize, 0),               // Upper Right
         ]
-        .map(|(col, row)| to_geo(col, row));
-
-        corners
+        .map(|(col, row)| to_geo(col, row))
     }
 }
 
@@ -217,7 +206,7 @@ pub struct IndexedLatLonHeight<'a> {
     cols: usize,
 }
 
-impl<'a> Iterator for IndexedLatLonHeight<'a> {
+impl Iterator for IndexedLatLonHeight<'_> {
     type Item = (usize, usize, f64, f64, f64);
 
     fn next(&mut self) -> Option<Self::Item> {
