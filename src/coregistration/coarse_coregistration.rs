@@ -1,4 +1,4 @@
-use geotiff::{GeoTiff, raster_data::RasterData};
+use gdal::{raster::{GdalDataType, GdalType}, Dataset};
 use ndarray::{Array2, s};
 use num_complex::{Complex, Complex32};
 use std::ops::Range;
@@ -285,20 +285,53 @@ impl CoarseCoregistration {
     }
 }
 
-pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
-    let geotiff_file =
-        std::fs::File::open(measurement_path).expect("Failed to open measurement TIFF file");
-    let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
+#[derive(Copy, Clone)]
+struct ComplexI16(Complex<i16>);
 
-    if let RasterData::CInt16(vec) = data.raster_data {
-        let mapped_vec: Vec<num_complex::Complex<f32>> = vec
-            .into_iter()
-            .map(|x| Complex::<f32>::new(x.re as f32, x.im as f32))
-            .collect();
-        return Array2::from_shape_vec((data.raster_height, data.raster_width), mapped_vec)
-            .unwrap();
+impl From<ComplexI16> for Complex<i16> {
+    fn from(value: ComplexI16) -> Self {
+        value.0
     }
-    panic!();
+}
+
+impl From<Complex<i16>> for ComplexI16 {
+    fn from(value: Complex<i16>) -> Self {
+        ComplexI16(value)
+    }
+}
+
+impl GdalType for ComplexI16 {
+    fn gdal_ordinal() -> gdal_sys::GDALDataType::Type {
+        gdal_sys::GDALDataType::GDT_CInt16
+    }
+}
+
+pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
+    let dataset = Dataset::open(measurement_path).expect("Failed to open measurement TIFF file");
+    let (width, height) = dataset.raster_size();
+    
+    // Read the single band containing u32 values (pairs of i16)
+    let band = dataset.rasterband(1).expect("Could not read band");
+    let buffer = band
+        .read_as::<ComplexI16>((0, 0), (width, height), (width, height), None)
+        .expect("Could not read data");
+
+    // Convert u32 to pairs of i16 and then to complex numbers
+    let complex_data: Vec<Complex<f32>> = buffer
+        .data()
+        .iter()
+        .map(|&chunk| {
+            let ComplexI16(value) = chunk;
+            // Extract the two i16 values from the u32
+            let re = value.re;
+            let im = value.im;
+            // Convert to f32 and create complex number
+            Complex::new(re as f32, im as f32)
+        })
+        .collect();
+
+    Array2::from_shape_vec((height as usize, width as usize), complex_data)
+        .expect("Could not create array from complex data")
 }
 
 #[cfg(test)]
