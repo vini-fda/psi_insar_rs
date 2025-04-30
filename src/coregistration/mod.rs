@@ -1,4 +1,4 @@
-use std::{f32, ops::Deref};
+use std::f32;
 
 use nalgebra::{ComplexField, Vector3};
 use ndarray::Array2;

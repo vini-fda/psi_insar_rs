@@ -287,7 +287,7 @@ impl CoarseCoregistration {
 
 pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
     let geotiff_file =
-        std::fs::File::open(&measurement_path).expect("Failed to open measurement TIFF file");
+        std::fs::File::open(measurement_path).expect("Failed to open measurement TIFF file");
     let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
 
     if let RasterData::CInt16(vec) = data.raster_data {
@@ -303,15 +303,15 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 
 #[cfg(test)]
 mod manual_tests {
-    use ndarray::{Array2, s};
+    use ndarray::Array2;
 
     use crate::dem::DEM;
 
-    use super::{CoarseCoregistration, CoregistrationResult, extract_data};
+    use super::{CoarseCoregistration, extract_data};
 
     fn normalize(data: &mut Array2<f32>) {
         let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));
-        data.map_mut(|x| *x = *x / max_amplitude);
+        data.map_mut(|x| *x /= max_amplitude);
     }
 
     /// A visual test using the Rerun framework.

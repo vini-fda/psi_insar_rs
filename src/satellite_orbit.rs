@@ -10,7 +10,7 @@ use crate::{
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
 };
-use chrono::{DateTime, Duration, TimeDelta, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
 
 #[derive(Clone, Copy, Debug)]
@@ -126,10 +126,10 @@ impl OrbitalStateHistory {
         let state = |t: DateTime<Utc>| {
             let (sat_pos, _) = self.interp_pos_vel(t);
             let distance_to_target = (ground_target_pos - sat_pos).norm();
-            return ZeroDopplerState {
+            ZeroDopplerState {
                 time: t,
                 distance_to_target,
-            };
+            }
         };
 
         // Step 1: Search for a sign change across time intervals
@@ -229,9 +229,9 @@ impl From<ListOfOsvs> for OrbitalStateHistory {
 
 impl From<&ListOfOsvs> for OrbitalStateHistory {
     fn from(osv_list: &ListOfOsvs) -> Self {
-        let mut time = Vec::with_capacity(osv_list.count as usize);
-        let mut position = Vec::with_capacity(osv_list.count as usize);
-        let mut velocity = Vec::with_capacity(osv_list.count as usize);
+        let mut time = Vec::with_capacity(osv_list.count);
+        let mut position = Vec::with_capacity(osv_list.count);
+        let mut velocity = Vec::with_capacity(osv_list.count);
 
         for osv in osv_list.osv.iter() {
             time.push(osv.utc);
@@ -386,11 +386,8 @@ mod manual_tests_satellite_orbit {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        geodesy::{ecef_to_geodetic, geodetic_to_ecef},
-        metadata::{
-            annotation_xml::{OrbitList, SlcProductAnnotation},
-            orbit_xml::EarthExplorerFile,
-        },
+        geodesy::geodetic_to_ecef,
+        metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
         satellite_orbit::{
             radar_coords_slc_annotation_to_pixel, radar_coords_slc_annotation_to_pixel_f32,
         },
@@ -457,7 +454,7 @@ mod manual_tests_satellite_orbit {
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col as f32, row as f32]);
+            points.push([col, row]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors(dem.vertex_colors())
@@ -476,7 +473,7 @@ mod manual_tests_satellite_orbit {
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col as f32, row as f32]);
+            points.push([col, row]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(255, 122, 100)])
@@ -496,7 +493,7 @@ mod manual_tests_satellite_orbit {
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col as f32, row as f32]);
+            points.push([col, row]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors(dem.vertex_colors().iter().map(|&n| n & 0x0000FFFF))
@@ -509,7 +506,7 @@ mod manual_tests_satellite_orbit {
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col as f32, row as f32]);
+            points.push([col, row]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(122, 255, 100)])
@@ -669,10 +666,9 @@ mod manual_tests_satellite_orbit {
         let right = Unit::new_normalize(up.cross(&forward));
 
         // Compose rotation matrix from right, up, forward as columns
-        let rot_matrix =
-            Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()]);
+        
 
-        rot_matrix
+        Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
     }
 
     /// Constructs a rotation matrix that orients an object at `p_sat` to point toward `p_target`.
@@ -684,9 +680,8 @@ mod manual_tests_satellite_orbit {
         let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
         let right = Unit::new_normalize(up.cross(&forward));
 
-        let rot_matrix =
-            Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()]);
+        
 
-        rot_matrix
+        Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
     }
 }

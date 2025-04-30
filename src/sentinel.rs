@@ -169,7 +169,7 @@ impl Sentinel1SlcBurst {
     ) -> Result<Self, String> {
         let directory = directory.as_ref();
         let granule = Sentinel1GranuleId::parse(granule_str.as_ref())
-            .map_err(|e| format!("ERROR: {}", e.to_string()))?;
+            .map_err(|e| format!("ERROR: {}", e))?;
         // Extract mission and polarization from granule ID
         let mission = granule.mission;
         let mode = granule.mode;

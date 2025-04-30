@@ -192,7 +192,7 @@ mod tests {
             // Datetime format used in Sentinel-1 annotation data
             const FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
             let naive_dt =
-                NaiveDateTime::parse_from_str(&s, FORMAT).expect("Could not parse from str");
+                NaiveDateTime::parse_from_str(s, FORMAT).expect("Could not parse from str");
 
             // Convert to Utc
             DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc)
