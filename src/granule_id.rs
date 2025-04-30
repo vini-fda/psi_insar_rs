@@ -590,6 +590,12 @@ impl fmt::Display for Sentinel1GranuleId {
     }
 }
 
+impl AsRef<Sentinel1GranuleId> for Sentinel1GranuleId {
+    fn as_ref(&self) -> &Sentinel1GranuleId {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

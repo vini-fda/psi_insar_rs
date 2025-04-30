@@ -321,53 +321,58 @@ mod manual_tests {
     #[test]
     #[ignore]
     fn visual_test_rerun() {
-        let measurement_path_1 = "./download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE/measurement/s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001.tif";
-        let reference_image = extract_data(measurement_path_1);
-        let measurement_path_2 = "./download_new/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
+        // let measurement_path_1 = "./download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE/measurement/s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001.tif";
+        // let reference_image = extract_data(measurement_path_1);
+        let measurement_path_2 = "./download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
         let secondary_image = extract_data(measurement_path_2);
         let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
             .connect_tcp()
             .expect("Could not connect to local Rerun instance.");
         let coregistration = CoarseCoregistration::new(255, 64).unwrap();
-        let CoregistrationResult {
-            offsets,
-            correlation,
-            ref_image_range,
-            sec_image_range,
-        } = coregistration.estimate_offset(&reference_image, &secondary_image);
+        // let CoregistrationResult {
+        //     offsets,
+        //     correlation,
+        //     ref_image_range,
+        //     sec_image_range,
+        // } = coregistration.estimate_offset(&reference_image, &secondary_image);
         // Log correlation tensor
-        let data = correlation.mapv_into_any(|c| c.norm());
-        let tensor = rerun::Tensor::try_from(data)
-            .unwrap()
-            .with_dim_names(["rows", "cols"]);
-        rec.log("correlation", &tensor)
-            .expect("Could not finish recording");
-
-        // Log 2 images for comparison
-        let mut ref_patch = reference_image
-            .slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()])
-            .map(|c| c.norm().powf(0.3))
-            .to_owned();
-        normalize(&mut ref_patch);
-        let img_ref =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_patch).unwrap();
-        rec.log("ref", &img_ref)
-            .expect("Could not finish recording");
-        let mut kernel = secondary_image
-            .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
-            .map(|c| c.norm().powf(0.3))
-            .to_owned();
-        normalize(&mut kernel);
+        // let data = correlation.mapv_into_any(|c| c.norm());
+        // let tensor = rerun::Tensor::try_from(data)
+        //     .unwrap()
+        //     .with_dim_names(["rows", "cols"]);
+        // rec.log("correlation", &tensor)
+        //     .expect("Could not finish recording");
+        let mut sec_img: Array2<f32> = secondary_image.map(|c| c.norm());
+        normalize(&mut sec_img);
         let img_sec =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();
-        rec.log("sec", &img_sec)
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, sec_img).unwrap();
+        rec.log("secondary_image", &img_sec)
             .expect("Could not finish recording");
-        rec.log(
-            "logs",
-            &rerun::TextLog::new(format!("offsets = {offsets:?}"))
-                .with_level(rerun::TextLogLevel::INFO),
-        )
-        .unwrap();
+        // Log 2 images for comparison
+        // let mut ref_patch = reference_image
+        //     .slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()])
+        //     .map(|c| c.norm().powf(0.3))
+        //     .to_owned();
+        // normalize(&mut ref_patch);
+        // let img_ref =
+        //     rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_patch).unwrap();
+        // rec.log("ref", &img_ref)
+        //     .expect("Could not finish recording");
+        // let mut kernel = secondary_image
+        //     .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
+        // .map(|c| c.norm().powf(0.3))
+        // .to_owned();
+        // normalize(&mut kernel);
+        // let img_sec =
+        //     rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();
+        // rec.log("sec", &img_sec)
+        //     .expect("Could not finish recording");
+        // rec.log(
+        //     "logs",
+        //     &rerun::TextLog::new(format!("offsets = {offsets:?}"))
+        //         .with_level(rerun::TextLogLevel::INFO),
+        // )
+        // .unwrap();
         let lat_lon = [
             [19.49831428810679, -98.59301000370277],
             [19.50516497145322, -98.63155270190656],
@@ -429,15 +434,15 @@ mod manual_tests {
         let tensor =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, dem_array).unwrap();
         rec.log("DEM", &tensor).expect("Could not finish recording");
-        let data_img = rerun::Image::from_color_model_and_tensor(
-            rerun::ColorModel::L,
-            reference_image
-                .map(|c| c.norm().powf(0.3) / 22.0)
-                .to_owned(),
-        )
-        .unwrap();
-        rec.log("ref_img", &data_img)
-            .expect("Could not finish recording");
+        // let data_img = rerun::Image::from_color_model_and_tensor(
+        //     rerun::ColorModel::L,
+        //     reference_image
+        //         .map(|c| c.norm().powf(0.3) / 22.0)
+        //         .to_owned(),
+        // )
+        // .unwrap();
+        // rec.log("ref_img", &data_img)
+        //     .expect("Could not finish recording");
         rec.log(
             "DEM Extent",
             &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])

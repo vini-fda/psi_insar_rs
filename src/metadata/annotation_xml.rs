@@ -1339,19 +1339,22 @@ pub struct GeolocationGridPointList {
 pub struct GeolocationGridPoint {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    #[serde(rename = "slantRangeTime")]
-    pub slant_range_time: String,
-    pub line: String,
-    pub pixel: String,
-    pub latitude: String,
-    pub longitude: String,
-    pub height: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    pub slant_range_time: f64,
+    pub line: usize,
+    pub pixel: usize,
+    #[serde(with = "string_to_f64")]
+    pub latitude: f64,
+    #[serde(with = "string_to_f64")]
+    pub longitude: f64,
+    #[serde(with = "string_to_f64")]
+    pub height: f64,
     #[serde(rename = "incidenceAngle")]
-    pub incidence_angle: String,
+    pub incidence_angle: f64,
     #[serde(rename = "elevationAngle")]
-    pub elevation_angle: String,
+    pub elevation_angle: f64,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -386,7 +386,7 @@ mod manual_tests_satellite_orbit {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        geodesy::geodetic_to_ecef,
+        geodesy::{ecef_to_geodetic, geodetic_to_ecef},
         metadata::{
             annotation_xml::{OrbitList, SlcProductAnnotation},
             orbit_xml::EarthExplorerFile,
@@ -430,12 +430,9 @@ mod manual_tests_satellite_orbit {
         let osh = OrbitalStateHistory::from_poe_timeframe("orbit.EOF", start_time, end_time);
         let dem = DEM::open_file("dem.tif");
         let [lat, lon] = [19.49831428810679, -98.59301000370277];
-        // let [lat, lon] = [19.46306674963845, -99.36782713184502];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
-        // let ground_target_pos = Vector3::<f64>::new(-903403.94, -5955250.0, 2099050.0);
-        let ground_target_pos = Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
 
-        let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        let zero_doppler = osh.find_zero_doppler_state(pos.into());
         println!("Zero-Doppler time = {:?}", zero_doppler);
         if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, &annotation) {
             println!("Found pixel at {row}, {col}");
@@ -468,57 +465,15 @@ mod manual_tests_satellite_orbit {
         rr.log_static("backgeocoded_points", &points).unwrap();
 
         // Log ground control points
-        let lat_lon_gcps = [
-            [19.49831428810679, -98.59301000370277],
-            [19.50516497145322, -98.63155270190656],
-            [19.51197728410019, -98.66992859316593],
-            [19.51875199752162, -98.7081413973442],
-            [19.52548985740382, -98.74619471009619],
-            [19.53219158481003, -98.78409200847771],
-            [19.53885787727854, -98.82183665623535],
-            [19.5454894098591, -98.85943190879907],
-            [19.55208683609183, -98.89688091799755],
-            [19.55865078893238, -98.9341867365148],
-            [19.56518188162694, -98.97135232210496],
-            [19.57168070854037, -99.00838054158147],
-            [19.57814784594043, -99.04527417459472],
-            [19.58458385274104, -99.08203591721202],
-            [19.59098927120689, -99.11866838531225],
-            [19.5973646276222, -99.15517411780644],
-            [19.60371043292545, -99.19155557969563],
-            [19.61002718331234, -99.22781516497541],
-            [19.61631536080904, -99.26395519939655],
-            [19.62257559081166, -99.29997885004042],
-            [19.62877652653297, -99.33570497416603],
-            [19.33245909128312, -98.62592837407114],
-            [19.33931662789667, -98.66442995280119],
-            [19.34613584071955, -98.70276488660213],
-            [19.35291750085852, -98.74093689141644],
-            [19.35966235364623, -98.77894955911454],
-            [19.36637111980492, -98.81680636309756],
-            [19.37304449654394, -98.85451066358128],
-            [19.3796831585957, -98.89206571258312],
-            [19.38628775919396, -98.92947465863222],
-            [19.39285893099849, -98.96674055122072],
-            [19.39939728696963, -99.0038663450142],
-            [19.40590342119594, -99.0408549038362],
-            [19.41237790967802, -99.07770900444162],
-            [19.41882131107135, -99.1144313400927],
-            [19.4252341673906, -99.15102452394993],
-            [19.43161700467787, -99.187491092289],
-            [19.43797033363727, -99.22383350755531],
-            [19.44429465023745, -99.2600541612652],
-            [19.45059043628451, -99.29615537676354],
-            [19.45685815996673, -99.33213941184621],
-            [19.46306674963845, -99.36782713184502],
-        ];
+        let gcps = &annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point;
 
         let mut points = vec![];
-        for [lat, lon] in lat_lon_gcps {
-            let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos =
-                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        for gcp in gcps {
+            let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
+            let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
             points.push([col as f32, row as f32]);
@@ -538,9 +493,7 @@ mod manual_tests_satellite_orbit {
         let mut points = vec![];
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos =
-                Vector3::<f64>::new(pos[0] as f64, pos[1] as f64, pos[2] as f64);
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+            let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
             points.push([col as f32, row as f32]);
@@ -551,10 +504,9 @@ mod manual_tests_satellite_orbit {
         rr.log_static("backgeocoded_points_2", &points).unwrap();
 
         let mut points = vec![];
-        for [lat, lon] in lat_lon_gcps {
-            let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos = Vector3::<f64>::from(pos);
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        for gcp in gcps {
+            let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
+            let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
             points.push([col as f32, row as f32]);
@@ -569,10 +521,11 @@ mod manual_tests_satellite_orbit {
     #[ignore]
     fn simple() {
         let rec = rerun::RecordingStreamBuilder::new("simple_test_satellite_orbit")
-            .recording_id("my_shared_recording")
             .connect_tcp()
             .expect("Could not connect to local Rerun instance.");
-        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
+        let annotation =
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+        let orbit_list = &annotation.general_annotation.orbit_list;
         let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
         let points = orbital_history
             .position
@@ -691,53 +644,14 @@ mod manual_tests_satellite_orbit {
         .unwrap();
 
         // XYZ OF GROUND CONTROL POINTS
-        let radar_xyz: Vec<_> = [
-            [19.49831428810679, -98.59301000370277],
-            [19.50516497145322, -98.63155270190656],
-            [19.51197728410019, -98.66992859316593],
-            [19.51875199752162, -98.7081413973442],
-            [19.52548985740382, -98.74619471009619],
-            [19.53219158481003, -98.78409200847771],
-            [19.53885787727854, -98.82183665623535],
-            [19.5454894098591, -98.85943190879907],
-            [19.55208683609183, -98.89688091799755],
-            [19.55865078893238, -98.9341867365148],
-            [19.56518188162694, -98.97135232210496],
-            [19.57168070854037, -99.00838054158147],
-            [19.57814784594043, -99.04527417459472],
-            [19.58458385274104, -99.08203591721202],
-            [19.59098927120689, -99.11866838531225],
-            [19.5973646276222, -99.15517411780644],
-            [19.60371043292545, -99.19155557969563],
-            [19.61002718331234, -99.22781516497541],
-            [19.61631536080904, -99.26395519939655],
-            [19.62257559081166, -99.29997885004042],
-            [19.62877652653297, -99.33570497416603],
-            [19.33245909128312, -98.62592837407114],
-            [19.33931662789667, -98.66442995280119],
-            [19.34613584071955, -98.70276488660213],
-            [19.35291750085852, -98.74093689141644],
-            [19.35966235364623, -98.77894955911454],
-            [19.36637111980492, -98.81680636309756],
-            [19.37304449654394, -98.85451066358128],
-            [19.3796831585957, -98.89206571258312],
-            [19.38628775919396, -98.92947465863222],
-            [19.39285893099849, -98.96674055122072],
-            [19.39939728696963, -99.0038663450142],
-            [19.40590342119594, -99.0408549038362],
-            [19.41237790967802, -99.07770900444162],
-            [19.41882131107135, -99.1144313400927],
-            [19.4252341673906, -99.15102452394993],
-            [19.43161700467787, -99.187491092289],
-            [19.43797033363727, -99.22383350755531],
-            [19.44429465023745, -99.2600541612652],
-            [19.45059043628451, -99.29615537676354],
-            [19.45685815996673, -99.33213941184621],
-            [19.46306674963845, -99.36782713184502],
-        ]
-        .iter()
-        .map(|&[lat, lon]| dem.get_ecef_at_lat_lon(lat, lon).map(|val| val as f32))
-        .collect();
+        let gcps = &annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point;
+        let radar_xyz = gcps.iter().map(|gcp| {
+            println!("gcp height = {}", gcp.height);
+            geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height).map(|val| val as f32)
+        });
 
         rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
             .unwrap();
@@ -776,34 +690,3 @@ mod manual_tests_satellite_orbit {
         rot_matrix
     }
 }
-
-// //! Log different transforms between three arrows.
-
-// use std::f32::consts::TAU;
-
-// fn main() -> Result<(), Box<dyn std::error::Error>> {
-//     let rec = rerun::RecordingStreamBuilder::new("rerun_example_transform3d").spawn()?;
-
-//     let arrow = rerun::Arrows3D::from_vectors([(0.0, 1.0, 0.0)]).with_origins([(0.0, 0.0, 0.0)]);
-
-//     rec.log("base", &arrow)?;
-
-//     rec.log(
-//         "base/translated",
-//         &rerun::Transform3D::from_translation([1.0, 0.0, 0.0]),
-//     )?;
-
-//     rec.log("base/translated", &arrow)?;
-
-//     rec.log(
-//         "base/rotated_scaled",
-//         &rerun::Transform3D::from_rotation_scale(
-//             rerun::RotationAxisAngle::new([0.0, 0.0, 1.0], rerun::Angle::from_radians(TAU / 8.0)),
-//             rerun::Scale3D::from(2.0),
-//         ),
-//     )?;
-
-//     rec.log("base/rotated_scaled", &arrow)?;
-
-//     Ok(())
-// }

@@ -52,10 +52,12 @@ impl DEM {
         let band = data
             .rasterband(1)
             .expect("Could not read first raster band.");
-        let value = band
-            .read_as::<f32>((col as isize, row as isize), (1, 1), (1, 1), None)
-            .unwrap();
-        value[(0, 0)] as f64
+        let value = band.read_as::<f32>((col as isize, row as isize), (1, 1), (1, 1), None);
+        match value {
+            Ok(value) => value[(0, 0)] as f64,
+            Err(_) => f64::NAN,
+        }
+        // value[(0, 0)] as f64
     }
 
     /// Gets the height value at the coordinates (lat, lon)

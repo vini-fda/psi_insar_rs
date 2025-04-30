@@ -5,11 +5,13 @@ use crate::granule_id::{
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
+use crate::satellite_orbit::OrbitalStateHistory;
 use chrono::{DateTime, Utc};
 use geotiff::GeoTiff;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::convert::AsRef;
+use std::path::{Path, PathBuf};
 
 /// Represents a geographic point in WGS84 coordinates
 ///
@@ -162,9 +164,12 @@ pub struct Sentinel1SlcBurst {
 
 impl Sentinel1SlcBurst {
     pub fn load_from_directory(
-        directory: &PathBuf,
-        granule: &Sentinel1GranuleId,
+        directory: impl AsRef<Path>,
+        granule_str: impl AsRef<str>,
     ) -> Result<Self, String> {
+        let directory = directory.as_ref();
+        let granule = Sentinel1GranuleId::parse(granule_str.as_ref())
+            .map_err(|e| format!("ERROR: {}", e.to_string()))?;
         // Extract mission and polarization from granule ID
         let mission = granule.mission;
         let mode = granule.mode;
@@ -240,7 +245,8 @@ impl Sentinel1SlcBurst {
     ///
     /// * `Ok(PathBuf)` - Path to the calibration XML file if found
     /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
-    fn find_calibration_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+    fn find_calibration_xml(directory: impl AsRef<Path>, slug: &str) -> Result<PathBuf, String> {
+        let directory = directory.as_ref();
         // Find the calibration XML file
         let calibration_dir = directory.join("annotation").join("calibration");
         let pattern = format!("calibration-{slug}.xml");
@@ -287,7 +293,8 @@ impl Sentinel1SlcBurst {
     ///
     /// * `Ok(PathBuf)` - Path to the noise XML file if found
     /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
-    fn find_noise_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+    fn find_noise_xml(directory: impl AsRef<Path>, slug: &str) -> Result<PathBuf, String> {
+        let directory = directory.as_ref();
         // Find the noise XML file
         let noise_dir = directory.join("annotation").join("calibration");
         let pattern = format!("noise-{slug}.xml");
@@ -334,7 +341,8 @@ impl Sentinel1SlcBurst {
     ///
     /// * `Ok(PathBuf)` - Path to the annotation XML file if found
     /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
-    fn find_annotation_xml(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+    fn find_annotation_xml(directory: impl AsRef<Path>, slug: &str) -> Result<PathBuf, String> {
+        let directory = directory.as_ref();
         // Find the annotation XML file
         let annotation_dir = directory.join("annotation");
         let pattern = format!("{slug}.xml");
@@ -381,8 +389,9 @@ impl Sentinel1SlcBurst {
     ///
     /// * `Ok(PathBuf)` - Path to the measurement TIFF file if found
     /// * `Err(String)` - Error message if the file couldn't be found or there was an I/O error
-    fn find_measurement_tiff(directory: &PathBuf, slug: &str) -> Result<PathBuf, String> {
+    fn find_measurement_tiff(directory: impl AsRef<Path>, slug: &str) -> Result<PathBuf, String> {
         // Find the measurement TIFF file
+        let directory = directory.as_ref();
         let measurement_dir = directory.join("measurement");
         let pattern = format!("{slug}.tiff"); // Note: Using .tiff extension
         let pattern_alt = format!("{slug}.tif"); // Alternative .tif extension
@@ -418,6 +427,11 @@ impl Sentinel1SlcBurst {
             measurement_dir.display()
         ))
     }
+
+    pub fn orbital_state_history(&self) -> OrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        OrbitalStateHistory::from(orbit_list)
+    }
 }
 
 #[cfg(test)]
@@ -430,11 +444,10 @@ mod tests {
         let root = PathBuf::from(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         );
-        let granule_id = Sentinel1GranuleId::parse(
+        let _ = Sentinel1SlcBurst::load_from_directory(
+            &root,
             "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
-        .expect("Failed to parse granule ID");
-        let _ = Sentinel1SlcBurst::load_from_directory(&root, &granule_id)
-            .expect("Failed to load burst");
+        .expect("Failed to load burst");
     }
 }
