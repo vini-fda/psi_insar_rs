@@ -3,7 +3,6 @@ pub mod dem;
 mod egm_2008;
 pub mod geocoding;
 pub mod geodesy;
-pub mod geolocation;
 pub mod granule_id;
 pub mod interpolation;
 pub mod metadata;
