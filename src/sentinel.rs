@@ -7,7 +7,8 @@ use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::OrbitalStateHistory;
 use chrono::{DateTime, Utc};
-use geotiff::GeoTiff;
+use gdal::{Dataset, raster::{GdalDataType, GdalType}};
+use num_complex::{Complex, Complex32};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::AsRef;
@@ -138,6 +139,27 @@ pub struct Sentinel1SlcMetadata {
     pub bounding_box: GeoBoundingBox,
 }
 
+#[derive(Copy, Clone)]
+struct ComplexI16(Complex<i16>);
+
+impl From<ComplexI16> for Complex<i16> {
+    fn from(value: ComplexI16) -> Self {
+        value.0
+    }
+}
+
+impl From<Complex<i16>> for ComplexI16 {
+    fn from(value: Complex<i16>) -> Self {
+        ComplexI16(value)
+    }
+}
+
+impl GdalType for ComplexI16 {
+    fn gdal_ordinal() -> gdal_sys::GDALDataType::Type {
+        gdal_sys::GDALDataType::GDT_CInt16
+    }
+}
+
 /// Represents a single burst of Sentinel-1 SLC data.
 ///
 /// A burst is the basic acquisition unit in TOPS mode. Each burst contains SAR data acquired
@@ -159,7 +181,7 @@ pub struct Sentinel1SlcBurst {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
-    pub data: GeoTiff,
+    pub data: Dataset,
 }
 
 impl Sentinel1SlcBurst {
@@ -211,10 +233,8 @@ impl Sentinel1SlcBurst {
         let metadata: SlcProductAnnotation = quick_xml::de::from_str(&annotation_xml_content)
             .expect("Failed to parse annotation XML");
 
-        // Load GeoTIFF data
-        let geotiff_file =
-            std::fs::File::open(&measurement_path).expect("Failed to open measurement TIFF file");
-        let data = GeoTiff::read(geotiff_file).expect("Failed to parse TIFF file");
+        // Load data using GDAL
+        let data = Dataset::open(&measurement_path).expect("Failed to open measurement TIFF file");
 
         // Create the SlcBurst instance
         Ok(Sentinel1SlcBurst {

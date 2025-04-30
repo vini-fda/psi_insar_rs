@@ -7,8 +7,6 @@ edition = "2024"
 chrono = { version = "= 0.4.39", features = ["serde"] }
 gdal = { version = "0.18.0", features = ["array", "ndarray"] }
 gdal-sys = "0.11.0"
-geo-types = "0.7.16"
-geotiff = { path = "../geotiff", features = ["tie-points"] }
 nalgebra = "0.33.2"
 ndarray = "0.16.1"
 num-complex = "0.4.6"
@@ -19,5 +17,4 @@ serde_path_to_error = "0.1.17"
 thiserror = "2.0.11"
 
 [dev-dependencies]
-# gltf = "1.4.1"
 rerun = { version = "0.22.1", default-features = false, features = ["sdk"] }

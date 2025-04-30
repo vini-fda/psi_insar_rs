@@ -19,7 +19,7 @@ pub fn compute_warp_function(
     secondary: &Sentinel1SlcBurst,
     dem: &DEM,
 ) -> Array2<[u8; 4]> {
-    let (rows, cols) = (reference.data.raster_height, reference.data.raster_width);
+    let (cols, rows) = reference.data.raster_size();
     let ref_osh = reference.orbital_state_history();
     let sec_osh = secondary.orbital_state_history();
     let radar_coords = |ground_target_pos: Vector3<f64>,
