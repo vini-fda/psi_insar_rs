@@ -14,7 +14,9 @@ quick-xml = { version = "0.37.2", features = ["serde", "serialize"] }
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 serde_path_to_error = "0.1.17"
+spade = "2.13.1"
 thiserror = "2.0.11"
 
 [dev-dependencies]
 rerun = { version = "0.22.1", default-features = false, features = ["sdk"] }
+rand = "0.9.1"

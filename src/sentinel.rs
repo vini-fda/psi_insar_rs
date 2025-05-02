@@ -6,8 +6,12 @@ use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::OrbitalStateHistory;
+use crate::slc_image::SlcImage;
 use chrono::{DateTime, Utc};
-use gdal::{Dataset, raster::{GdalDataType, GdalType}};
+use gdal::{
+    Dataset,
+    raster::{GdalDataType, GdalType},
+};
 use num_complex::{Complex, Complex32};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -181,7 +185,7 @@ pub struct Sentinel1SlcBurst {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
-    pub data: Dataset,
+    pub data: SlcImage,
 }
 
 impl Sentinel1SlcBurst {
@@ -190,8 +194,8 @@ impl Sentinel1SlcBurst {
         granule_str: impl AsRef<str>,
     ) -> Result<Self, String> {
         let directory = directory.as_ref();
-        let granule = Sentinel1GranuleId::parse(granule_str.as_ref())
-            .map_err(|e| format!("ERROR: {}", e))?;
+        let granule =
+            Sentinel1GranuleId::parse(granule_str.as_ref()).map_err(|e| format!("ERROR: {}", e))?;
         // Extract mission and polarization from granule ID
         let mission = granule.mission;
         let mode = granule.mode;
@@ -234,7 +238,7 @@ impl Sentinel1SlcBurst {
             .expect("Failed to parse annotation XML");
 
         // Load data using GDAL
-        let data = Dataset::open(&measurement_path).expect("Failed to open measurement TIFF file");
+        let data = SlcImage::new(&measurement_path);
 
         // Create the SlcBurst instance
         Ok(Sentinel1SlcBurst {

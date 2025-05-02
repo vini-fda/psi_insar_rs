@@ -8,3 +8,4 @@ pub mod interpolation;
 pub mod metadata;
 pub mod satellite_orbit;
 pub mod sentinel;
+pub mod slc_image;

@@ -335,10 +335,14 @@ pub fn radar_coords_slc_annotation_to_pixel(
     None
 }
 
+/// Returns the radar coordinates in the domain of the annotation.
+///
+/// # Returns
+/// An array containing the azimuth index and the slant range index.
 pub fn radar_coords_slc_annotation_to_pixel_f32(
     zero_doppler: ZeroDopplerState,
     annotation: &SlcProductAnnotation,
-) -> (f32, f32) {
+) -> [f32; 2] {
     /// Speed of light in m/s
     const C_LIGHT: f64 = 299_792_458.0;
     let slant_range_time = annotation
@@ -373,7 +377,7 @@ pub fn radar_coords_slc_annotation_to_pixel_f32(
     // Column calculation:
     let slant_range_index =
         (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
-    (azimuth_index as f32, slant_range_index as f32)
+    [azimuth_index as f32, slant_range_index as f32]
 }
 
 #[cfg(test)]
@@ -452,9 +456,10 @@ mod manual_tests_satellite_orbit {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
-            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+            let [azimuth_idx, slant_range_idx] =
+                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col, row]);
+            points.push([slant_range_idx, azimuth_idx]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors(dem.vertex_colors())
@@ -471,9 +476,10 @@ mod manual_tests_satellite_orbit {
         for gcp in gcps {
             let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
-            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+            let [azimuth_idx, slant_range_idx] =
+                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col, row]);
+            points.push([slant_range_idx, azimuth_idx]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(255, 122, 100)])
@@ -491,9 +497,10 @@ mod manual_tests_satellite_orbit {
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
-            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+            let [azimuth_idx, slant_range_idx] =
+                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col, row]);
+            points.push([slant_range_idx, azimuth_idx]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors(dem.vertex_colors().iter().map(|&n| n & 0x0000FFFF))
@@ -504,9 +511,10 @@ mod manual_tests_satellite_orbit {
         for gcp in gcps {
             let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
-            let (row, col) = radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+            let [azimuth_idx, slant_range_idx] =
+                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
 
-            points.push([col, row]);
+            points.push([slant_range_idx, azimuth_idx]);
         }
         let points = rerun::Points2D::new(points)
             .with_colors([rerun::Color::from_rgb(122, 255, 100)])
@@ -666,7 +674,6 @@ mod manual_tests_satellite_orbit {
         let right = Unit::new_normalize(up.cross(&forward));
 
         // Compose rotation matrix from right, up, forward as columns
-        
 
         Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
     }
@@ -679,8 +686,6 @@ mod manual_tests_satellite_orbit {
         let up_raw = Unit::new_normalize(p_sat).into_inner(); // Radial from Earth center
         let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
         let right = Unit::new_normalize(up.cross(&forward));
-
-        
 
         Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
     }
