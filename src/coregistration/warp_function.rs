@@ -25,6 +25,8 @@ use crate::{
     sentinel::Sentinel1SlcBurst,
 };
 
+use super::interpolation2d::{BilinearKernel, KnabSincKernel, interpolate_2d};
+
 /// A trait for a warp function.
 pub trait WarpFunction {
     /// Maps reference image coordinates to their corresponding coordinates in the secondary image.
@@ -176,34 +178,26 @@ pub fn resample_secondary_to_reference(
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);
 
     let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
-    let [sec_slant_range_dim, sec_azimuth_dim] = secondary.data.raster_size();
     let mut resampled_data = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
     // The indices in the domain of the reference image
-    let indices: Vec<[f32; 2]> = (0..ref_slant_range_dim)
-        .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az as f32, ref_rg as f32]))
-        .collect();
+    let indices = (0..ref_slant_range_dim)
+        .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az, ref_rg]));
+    let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
+
+    let kernel = BilinearKernel::default();
+    let secondary_img = secondary.data.array_data();
 
     warp_function
-        .map_many(indices.clone())
+        .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))
         .enumerate()
         .filter_map(|(i, coords)| coords.map(|c| (i, c)))
-        .filter(|(_, [sec_az, sec_rg])| {
-            *sec_rg >= 0.0
-                && *sec_rg < sec_slant_range_dim as f32
-                && *sec_az >= 0.0
-                && *sec_az < sec_azimuth_dim as f32
-        })
         .for_each(|(i, [sec_az, sec_rg])| {
-            let [ref_az, ref_rg] = indices[i];
-            let ref_rg_usize = ref_rg.floor() as usize;
-            let ref_az_usize = ref_az.floor() as usize;
+            let [ref_az, ref_rg] = indices_usize[i];
 
-            if let Some(value) = secondary.data.value(sec_az as usize, sec_rg as usize) {
-                if let Some(resampled_value) = resampled_data.get_mut([ref_az_usize, ref_rg_usize])
-                {
-                    *resampled_value = value;
-                }
+            let value = interpolate_2d(secondary_img.view(), sec_az, sec_rg, &kernel);
+            if let Some(resampled_value) = resampled_data.get_mut([ref_az, ref_rg]) {
+                *resampled_value = value;
             }
         });
 

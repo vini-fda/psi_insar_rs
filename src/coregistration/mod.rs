@@ -12,6 +12,7 @@ use crate::{
 
 pub mod coarse_coregistration;
 pub mod dem_assisted_coregistration;
+pub mod interpolation2d;
 pub mod layover_detection;
 pub mod warp_function;
 
