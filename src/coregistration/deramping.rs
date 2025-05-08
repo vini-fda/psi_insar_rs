@@ -41,12 +41,16 @@ impl Default for Direction {
 }
 
 struct RelevantParameters {
-    /// Azimuth steering rate
+    /// Azimuth steering rate (radians/s)
     k_psi: f64,
     /// Doppler centroid frequency polynomial
     f_eta_c: Polynomial,
+    /// t0 for f_eta_c polynomial
+    f_eta_c_t0: f64,
     /// Azimuth FM rate polynomial
     k_a: Polynomial,
+    /// t0 for k_a polynomial
+    k_a_t0: f64,
     /// Radar frequency
     f_c: f64,
     /// Satellite velocity vector
@@ -67,11 +71,13 @@ impl RelevantParameters {
     /// Extracts the relevant parameters for the deramping from the Sentinel1SlcBurst metadata
     pub fn new(slc: &Sentinel1SlcBurst) -> Self {
         // k_psi: Azimuth steering rate
-        let k_psi = slc
+        let mut k_psi = slc
             .metadata
             .general_annotation
             .product_information
             .azimuth_steering_rate;
+        // Convert k_psi from degrees/s to radians/s
+        k_psi = k_psi * (PI / 180.0);
 
         // Nl_burst: Number of lines per burst
         let nl_burst_usize = slc.metadata.swath_timing.lines_per_burst;
@@ -119,6 +125,7 @@ impl RelevantParameters {
             .expect("dc_estimate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
 
         let f_eta_c_poly_container = selected_dc_estimate.data_dc_polynomial.clone();
+        let f_eta_c_t0_val = selected_dc_estimate.t0;
 
         // k_a: Azimuth FM rate polynomial
         // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
@@ -147,6 +154,7 @@ impl RelevantParameters {
             .expect("azimuth_fm_rate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
 
         let k_a_poly = selected_azimuth_fm_rate_item.azimuth_fm_rate_polynomial.coefficients.clone();
+        let k_a_t0_val = selected_azimuth_fm_rate_item.t0;
 
         // f_c: Radar frequency
         let f_c = slc
@@ -183,7 +191,9 @@ impl RelevantParameters {
         Self {
             k_psi,
             f_eta_c: f_eta_c_poly_container.polynomial,
+            f_eta_c_t0: f_eta_c_t0_val,
             k_a: k_a_poly,
+            k_a_t0: k_a_t0_val,
             f_c,
             v_s,
             nl_burst: nl_burst_usize,
@@ -221,7 +231,9 @@ impl DerampSlcBurst {
         let RelevantParameters {
             k_psi,
             f_eta_c,
+            f_eta_c_t0,
             k_a,
+            k_a_t0,
             f_c,
             v_s,
             nl_burst,
@@ -238,18 +250,14 @@ impl DerampSlcBurst {
 
         // Helper function to calculate k_a at a given range time tau
         let k_a_at_tau = |tau: f64| -> f64 {
-            let tau_diff = tau - tau_0;
-            k_a.coefficients[0]
-                + k_a.coefficients[1] * tau_diff
-                + k_a.coefficients[2] * tau_diff * tau_diff
+            let tau_diff = tau - k_a_t0;
+            k_a.evaluate(tau_diff)
         };
 
         // Helper function to calculate f_eta_c at a given range time tau
         let f_eta_c_at_tau = |tau: f64| -> f64 {
-            let tau_diff = tau - tau_0;
-            f_eta_c.coefficients[0]
-                + f_eta_c.coefficients[1] * tau_diff
-                + f_eta_c.coefficients[2] * tau_diff * tau_diff
+            let tau_diff = tau - f_eta_c_t0;
+            f_eta_c.evaluate(tau_diff)
         };
 
         // Helper function to calculate k_t at a given range time tau
