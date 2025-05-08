@@ -2,7 +2,6 @@ use crate::{
     metadata::annotation_xml::{Polynomial, Velocity},
     sentinel::Sentinel1SlcBurst,
 };
-use chrono::Duration;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use std::f64::consts::PI;
@@ -70,14 +69,12 @@ struct RelevantParameters {
 impl RelevantParameters {
     /// Extracts the relevant parameters for the deramping from the Sentinel1SlcBurst metadata
     pub fn new(slc: &Sentinel1SlcBurst) -> Self {
-        // k_psi: Azimuth steering rate
-        let mut k_psi = slc
+        // k_psi: Azimuth steering rate (radians/s)
+        let k_psi = slc
             .metadata
             .general_annotation
             .product_information
-            .azimuth_steering_rate;
-        // Convert k_psi from degrees/s to radians/s
-        k_psi = k_psi * (PI / 180.0);
+            .azimuth_steering_rate.to_radians();
 
         // Nl_burst: Number of lines per burst
         let nl_burst_usize = slc.metadata.swath_timing.lines_per_burst;
@@ -260,41 +257,75 @@ impl DerampSlcBurst {
             f_eta_c.evaluate(tau_diff)
         };
 
+        // Helper function to calculate eta_c at a given range time tau
+        // eta_c(tau) = -f_eta_c(tau) / k_a(tau)
+        let calculate_eta_c = |tau_val_for_eta_c: f64| -> f64 {
+            let f_eta_c_val = f_eta_c_at_tau(tau_val_for_eta_c);
+            let k_a_val = k_a_at_tau(tau_val_for_eta_c);
+            if k_a_val.abs() < 1e-9 { // Avoid division by zero or near-zero
+                // This case needs careful consideration based on SAR physics.
+                // Returning 0.0 implies eta_c = 0 if k_a is effectively zero.
+                // The markdown states k_a is always negative, so it shouldn't be zero.
+                // If it can be zero due to data issues, a panic or error might be more appropriate.
+                // For now, retaining a default to avoid panic during processing of potentially valid edge cases.
+                0.0
+            } else {
+                -f_eta_c_val / k_a_val
+            }
+        };
+
+        // Calculate eta_c at mid-swath range time, to be used in eta_ref calculation
+        // tau_mid_swath = tau(0) + (NS_swath / 2) * Δτ_s. NS_swath/2 is integer division for sample index.
+        let mid_swath_sample_index = ns_swath / 2; // Integer division gives the floor for odd ns_swath
+        let tau_mid_swath = tau_0 + mid_swath_sample_index as f64 * delta_tau_s;
+        let eta_c_at_mid_swath = calculate_eta_c(tau_mid_swath);
+
         // Helper function to calculate k_t at a given range time tau
         // k_t = (k_a * k_s) / (k_a - k_s)
         let k_t_at_tau = |tau: f64| -> f64 {
             let k_a_val = k_a_at_tau(tau);
+            // Add protection for k_a_val - k_s being zero if necessary,
+            // though the document doesn't specify handling for k_a = k_s.
+            if (k_a_val - k_s).abs() < 1e-9 {
+                 // Handle singularity: e.g., return a very large number or a representative value.
+                 // Or, if k_s is also very small, k_t might be considered 0.
+                 // This case implies alpha (Equ.3) is near zero.
+                 // k_t = k_s / alpha. If alpha is 0, k_t is infinite.
+                 // For now, let's return a large representative value or a flag.
+                 // This often indicates an issue or an extreme edge case in parameters.
+                 // Returning k_a_val as a fallback, though not physically robust without more context.
+                 // A proper handling might involve looking at limits or specific ESA guidance for this case.
+                 // For TOPSAR, k_a should generally be different from k_s.
+                 if k_s.abs() < 1e-9 { return 0.0; } // if k_s is zero, k_t is zero unless k_a is also zero.
+                 return 1e12; // Placeholder for a very large k_t
+            }
             (k_a_val * k_s) / (k_a_val - k_s)
-        };
-
-        // Helper function to calculate eta_ref at a given range time tau
-        // eta_ref = -f_eta_c / k_a
-        let eta_ref_at_tau = |tau: f64| -> f64 {
-            let f_eta_c_val = f_eta_c_at_tau(tau);
-            let k_a_val = k_a_at_tau(tau);
-            -f_eta_c_val / k_a_val
         };
 
         // The deramping phase function phi(eta, tau)
         // For deramping only: phi = -π * k_t(τ) * (η - η_ref(τ))²
+        // where η_ref(τ) = η_c(τ) - η_c_at_mid_swath
         // For deramping + demodulation: phi = -π * k_t(τ) * (η - η_ref(τ))² - 2π * f_eta_c(τ) * (η - η_ref(τ))
         let phi = |eta: f64, tau: f64| -> f64 {
-            let k_t = k_t_at_tau(tau);
-            let eta_ref = eta_ref_at_tau(tau);
-            let eta_diff = eta - eta_ref;
-            let phase = -PI * k_t * eta_diff * eta_diff;
+            let k_t_val = k_t_at_tau(tau);
+            
+            let current_eta_c = calculate_eta_c(tau);
+            let eta_ref_val = current_eta_c - eta_c_at_mid_swath;
+            
+            let eta_diff = eta - eta_ref_val;
+            let phase_deramp_only = -PI * k_t_val * eta_diff * eta_diff;
 
-            let phase = match mode {
-                DerampingMode::Standard => phase,
+            let final_phase = match mode {
+                DerampingMode::Standard => phase_deramp_only,
                 DerampingMode::FullDemodulation => {
-                    let f_eta_c_val = f_eta_c_at_tau(tau);
-                    phase - 2.0 * PI * f_eta_c_val * eta_diff
+                    let f_eta_c_val_at_tau = f_eta_c_at_tau(tau);
+                    phase_deramp_only - 2.0 * PI * f_eta_c_val_at_tau * eta_diff
                 }
             };
 
             match direction {
-                Direction::Forward => phase,
-                Direction::Backward => -phase,
+                Direction::Forward => final_phase,
+                Direction::Backward => -final_phase,
             }
         };
 
@@ -331,106 +362,4 @@ impl DerampSlcBurst {
 
         deramped
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use ndarray::s;
-
-    use crate::visualization::cubehelix_colormap;
-
-    use super::*;
-
-    // #[test]
-    // fn test_deramp() {
-    //     let mut slc = Sentinel1SlcBurst::load_from_directory(
-    //         "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-    //         "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
-    //     )
-    //     .unwrap();
-
-    //     // visualize the amplitude and phase of the original data
-    //     let original_data = slc.data.array_data();
-    //     // cut cols in half
-    //     let original_data = original_data
-    //         .slice(s![.., ..original_data.dim().1 / 2])
-    //         .to_owned();
-    //     let (cols, rows) = original_data.dim();
-    //     let normalized = original_data.map(|&x| x.norm());
-    //     let max_norm = normalized
-    //         .iter()
-    //         .copied()
-    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
-    //         .unwrap();
-    //     let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
-    //     let rr_image =
-    //         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
-    //     let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
-    //         .connect_grpc()
-    //         .unwrap();
-
-    //     rec.log("amplitude_visualization_original", &rr_image)
-    //         .unwrap();
-
-    //     // log also phase
-    //     let vector = original_data.as_slice_memory_order().unwrap().to_vec();
-    //     let rgb_vector: Vec<u8> = vector
-    //         .iter()
-    //         .flat_map(|&x| {
-    //             let phase = x.arg();
-    //             let normalized_phase =
-    //                 (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-    //             cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-    //         })
-    //         .collect();
-    //     let rr_image = rerun::Image::from_color_model_and_bytes(
-    //         rgb_vector,
-    //         [rows as u32, cols as u32],
-    //         rerun::ColorModel::RGB,
-    //         rerun::ChannelDatatype::U8,
-    //     );
-    //     rec.log("phase_visualization_original", &rr_image).unwrap();
-
-    //     // visualize the amplitude and phase of the deramped data
-    //     let deramp = DerampSlcBurst::new().set_mode(DerampingMode::Standard);
-
-    //     let deramped = deramp.apply_forward(&mut slc);
-    //     // cut cols in half
-    //     let deramped = deramped.slice(s![.., ..deramped.dim().1 / 2]).to_owned();
-    //     let (cols, rows) = deramped.dim();
-    //     let normalized = deramped.map(|&x| x.norm());
-    //     let max_norm = normalized
-    //         .iter()
-    //         .copied()
-    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
-    //         .unwrap();
-    //     let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
-    //     let rr_image =
-    //         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
-    //     // let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
-    //     //     .connect_grpc()
-    //     //     .unwrap();
-
-    //     rec.log("amplitude_visualization", &rr_image).unwrap();
-
-    //     // log also phase
-
-    //     let vector = deramped.as_slice_memory_order().unwrap().to_vec();
-    //     let rgb_vector: Vec<u8> = vector
-    //         .iter()
-    //         .flat_map(|&x| {
-    //             let phase = x.arg();
-    //             let normalized_phase =
-    //                 (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-    //             cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-    //         })
-    //         .collect();
-    //     let rr_image = rerun::Image::from_color_model_and_bytes(
-    //         rgb_vector,
-    //         [rows as u32, cols as u32],
-    //         rerun::ColorModel::RGB,
-    //         rerun::ChannelDatatype::U8,
-    //     );
-    //     rec.log("phase_visualization", &rr_image).unwrap();
-    // }
 }
