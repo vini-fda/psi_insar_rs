@@ -1139,9 +1139,9 @@ pub struct DcEstimateList {
 pub struct DcEstimate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    pub t0: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    pub t0: f64,
     #[serde(rename = "geometryDcPolynomial")]
     pub geometry_dc_polynomial: GeometryDcPolynomial,
     #[serde(rename = "dataDcPolynomial")]
@@ -1215,12 +1215,12 @@ mod polynomial_format {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DataDcPolynomial {
     #[serde(rename = "@count")]
     pub count: u32,
     #[serde(rename = "$text", with = "polynomial_format")]
-    pub coefficients: Polynomial,
+    pub polynomial: Polynomial,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1337,14 +1337,15 @@ pub struct BurstList {
 pub struct Burst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    #[serde(rename = "azimuthAnxTime")]
-    pub azimuth_anx_time: String,
-    #[serde(rename = "sensingTime")]
-    pub sensing_time: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    /// "ANX time" (seconds from ANX - Ascending Node Crossing)
+    #[serde(rename = "azimuthAnxTime", with = "string_to_f64")]
+    pub azimuth_anx_time: f64,
+    #[serde(rename = "sensingTime", with = "datetime_format")]
+    pub sensing_time: DateTime<Utc>,
     #[serde(rename = "byteOffset")]
-    pub byte_offset: String,
+    pub byte_offset: usize,
     #[serde(rename = "firstValidSample")]
     pub first_valid_sample: FirstValidSample,
     #[serde(rename = "lastValidSample")]
