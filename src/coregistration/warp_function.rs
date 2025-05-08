@@ -188,7 +188,7 @@ pub fn resample_secondary_to_reference(
         .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az, ref_rg]));
     let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
 
-    let kernel = BilinearKernel::default();
+    let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
 
     let secondary_img = deramp.apply_forward(&secondary);
