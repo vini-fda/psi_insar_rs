@@ -364,7 +364,7 @@ Figure 12. Reference zero-Doppler time ($\eta_{ref}$) as a function of range sam
 
 ### 6.7 Deramped phase ($\phi(\eta,\tau)$)
 
-The final step is to calculate the deramped phase for each azimuth and range pixel of the burst and apply this phase to the complex data.  Equ. 14 gives the phase (in radians) as a function of azimuth time relative to the centre of the burst $\eta$ (Equ. 5) and the Doppler Centroid Rate in the Focussed TOPS SLC Data ($k_t$) as given in Section 6.4 and the Reference zero-Doppler Azimuth Time ($\eta_{ref}$) as given in Section 6.6.    
+The final step is to calculate the deramped phase for each azimuth and range pixel of the burst and apply this phase to the complex data.  Equ. 14 gives the phase (in radians) as a function of azimuth time relative to the centre of the burst $\eta$ (Equ. 5) and the Doppler Centroid Rate in the Focused TOPS SLC Data ($k_t$) as given in Section 6.4 and the Reference zero-Doppler Azimuth Time ($\eta_{ref}$) as given in Section 6.6.    
 
 $\phi=-\pi \cdot k_{t}(\tau) \cdot (\eta-\eta_{ref}(\tau))^{2}$ (Equ. 14)    
 
