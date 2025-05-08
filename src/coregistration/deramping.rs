@@ -2,10 +2,10 @@ use crate::{
     metadata::annotation_xml::{Polynomial, Velocity},
     sentinel::Sentinel1SlcBurst,
 };
+use chrono::Duration;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use std::f64::consts::PI;
-use std::mem::size_of;
 
 #[derive(Debug, Clone, Copy)]
 pub enum DerampingMode {
@@ -73,19 +73,80 @@ impl RelevantParameters {
             .product_information
             .azimuth_steering_rate;
 
+        // Nl_burst: Number of lines per burst
+        let nl_burst_usize = slc.metadata.swath_timing.lines_per_burst;
+        let nl_burst_f64 = nl_burst_usize as f64;
+
+        // Δt_s: Azimuth time interval
+        let delta_t_s_val = slc
+            .metadata
+            .image_annotation
+            .image_information
+            .azimuth_time_interval;
+
+        // Current burst metadata for reference times
+        let current_burst_metadata = &slc.metadata.swath_timing.burst_list.burst;
+        let burst_start_anx_time = current_burst_metadata.azimuth_anx_time;
+        let ref_burst_utc_time = current_burst_metadata.azimuth_time; // DateTime<Utc>
+        let ref_burst_anx_time = current_burst_metadata.azimuth_anx_time; // f64
+
+        let eta_mid_anx_time = burst_start_anx_time + (nl_burst_f64 / 2.0) * delta_t_s_val;
+
         // f_eta_c: Doppler centroid frequency polynomial
-        let f_eta_c = &slc.metadata.doppler_centroid.dc_estimate_list.dc_estimate[0]
-            .data_dc_polynomial
-            .coefficients;
+        // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
+        let dc_estimate_list = &slc.metadata.doppler_centroid.dc_estimate_list.dc_estimate;
+
+        if dc_estimate_list.is_empty() {
+            panic!("Doppler centroid estimate list is empty. Cannot select f_eta_c polynomial.");
+        }
+
+        let selected_dc_estimate = dc_estimate_list
+            .iter()
+            .min_by(|a, b| {
+                // Convert DcEstimate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
+                let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
+                let item_a_anx_equivalent = ref_burst_anx_time + 
+                    duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+                
+                let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
+                let item_b_anx_equivalent = ref_burst_anx_time + 
+                    duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+
+                let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
+                let diff_b = (item_b_anx_equivalent - eta_mid_anx_time).abs();
+                diff_a.partial_cmp(&diff_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("dc_estimate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
+
+        let f_eta_c_poly_container = selected_dc_estimate.data_dc_polynomial.clone();
 
         // k_a: Azimuth FM rate polynomial
-        let k_a = &slc
-            .metadata
-            .general_annotation
-            .azimuth_fm_rate_list
-            .azimuth_fm_rate[0]
-            .azimuth_fm_rate_polynomial
-            .coefficients;
+        // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
+        let azimuth_fm_rate_list = &slc.metadata.general_annotation.azimuth_fm_rate_list.azimuth_fm_rate;
+
+        if azimuth_fm_rate_list.is_empty() {
+            panic!("Azimuth FM rate list is empty. Cannot select k_a polynomial.");
+        }
+
+        let selected_azimuth_fm_rate_item = azimuth_fm_rate_list
+            .iter()
+            .min_by(|a, b| {
+                // Convert AzimuthFmRate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
+                let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
+                let item_a_anx_equivalent = ref_burst_anx_time + 
+                    duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+                
+                let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
+                let item_b_anx_equivalent = ref_burst_anx_time + 
+                    duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+
+                let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
+                let diff_b = (item_b_anx_equivalent - eta_mid_anx_time).abs();
+                diff_a.partial_cmp(&diff_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("azimuth_fm_rate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
+
+        let k_a_poly = selected_azimuth_fm_rate_item.azimuth_fm_rate_polynomial.coefficients.clone();
 
         // f_c: Radar frequency
         let f_c = slc
@@ -96,16 +157,6 @@ impl RelevantParameters {
 
         // V_S: Satellite velocity vector [x,y,z]
         let v_s = slc.metadata.general_annotation.orbit_list.orbit[0].velocity;
-
-        // Nl_burst: Number of lines per burst
-        let nl_burst = slc.metadata.swath_timing.lines_per_burst;
-
-        // Δt_s: Azimuth time interval
-        let delta_t_s = slc
-            .metadata
-            .image_annotation
-            .image_information
-            .azimuth_time_interval;
 
         // NS_swath: Number of samples in swath
         let ns_swath = slc
@@ -131,12 +182,12 @@ impl RelevantParameters {
 
         Self {
             k_psi,
-            f_eta_c: f_eta_c.clone(),
-            k_a: k_a.clone(),
+            f_eta_c: f_eta_c_poly_container.polynomial,
+            k_a: k_a_poly,
             f_c,
             v_s,
-            nl_burst,
-            delta_t_s,
+            nl_burst: nl_burst_usize,
+            delta_t_s: delta_t_s_val,
             ns_swath,
             delta_tau_s,
             tau_0,
