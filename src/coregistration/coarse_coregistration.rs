@@ -1,4 +1,7 @@
-use gdal::{raster::{GdalDataType, GdalType}, Dataset};
+use gdal::{
+    Dataset,
+    raster::{GdalDataType, GdalType},
+};
 use ndarray::{Array2, s};
 use num_complex::{Complex, Complex32};
 use std::ops::Range;
@@ -309,7 +312,7 @@ impl GdalType for ComplexI16 {
 pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
     let dataset = Dataset::open(measurement_path).expect("Failed to open measurement TIFF file");
     let (width, height) = dataset.raster_size();
-    
+
     // Read the single band containing u32 values (pairs of i16)
     let band = dataset.rasterband(1).expect("Could not read band");
     let buffer = band
@@ -336,11 +339,11 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 
 #[cfg(test)]
 mod manual_tests {
-    use ndarray::{s, Array2};
+    use ndarray::{Array2, s};
 
     use crate::dem::DEM;
 
-    use super::{extract_data, CoarseCoregistration, CoregistrationResult};
+    use super::{CoarseCoregistration, CoregistrationResult, extract_data};
 
     fn normalize(data: &mut Array2<f32>) {
         let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));
@@ -359,7 +362,7 @@ mod manual_tests {
         let measurement_path_2 = "./download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
         let secondary_image = extract_data(measurement_path_2);
         let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let coregistration = CoarseCoregistration::new(255, 64).unwrap();
         let CoregistrationResult {
@@ -393,8 +396,8 @@ mod manual_tests {
             .expect("Could not finish recording");
         let mut kernel = secondary_image
             .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
-        .map(|c| c.norm().powf(0.3))
-        .to_owned();
+            .map(|c| c.norm().powf(0.3))
+            .to_owned();
         normalize(&mut kernel);
         let img_sec =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();

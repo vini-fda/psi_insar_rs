@@ -1317,9 +1317,9 @@ pub struct SwathTiming {
     #[serde(rename = "$text")]
     pub text: Option<String>,
     #[serde(rename = "linesPerBurst")]
-    pub lines_per_burst: u32,
+    pub lines_per_burst: usize,
     #[serde(rename = "samplesPerBurst")]
-    pub samples_per_burst: u32,
+    pub samples_per_burst: usize,
     #[serde(rename = "burstList")]
     pub burst_list: BurstList,
 }

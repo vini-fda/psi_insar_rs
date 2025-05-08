@@ -233,7 +233,7 @@ mod tests {
         let img =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, data_norm).unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_resample_secondary_to_reference")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         rr.log("resampled_data", &img)
             .expect("Could not log resampled_data to Rerun");

@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use gdal::{Dataset, raster::GdalType};
+use gdal::{
+    Dataset,
+    raster::{Buffer, GdalType},
+};
 use ndarray::Array2;
 use num_complex::Complex;
 
@@ -20,6 +23,12 @@ impl SlcImage {
     pub fn raster_size(&self) -> [usize; 2] {
         let (slant_range, azimuth) = self.data.raster_size();
         [slant_range, azimuth]
+    }
+
+    pub fn raw_buffer(&self) -> Buffer<ComplexI16> {
+        let band = self.data.rasterband(1).expect("Could not read band");
+        let buf: Buffer<ComplexI16> = band.read_band_as().unwrap();
+        buf
     }
 
     /// Returns the value of the pixel at the given azimuth and slant range indices.
@@ -61,7 +70,7 @@ impl SlcImage {
 }
 
 #[derive(Copy, Clone)]
-struct ComplexI16(Complex<i16>);
+pub struct ComplexI16(Complex<i16>);
 
 impl From<ComplexI16> for Complex<i16> {
     fn from(value: ComplexI16) -> Self {

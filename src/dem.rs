@@ -278,7 +278,7 @@ mod manual_tests {
     fn dem_mesh_test() {
         let dem = DEM::open_file("dem.tif");
         let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let (rows, cols) = dem.array_dim();
 

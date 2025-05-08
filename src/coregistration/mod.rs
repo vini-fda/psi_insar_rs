@@ -12,8 +12,10 @@ use crate::{
 
 pub mod coarse_coregistration;
 pub mod dem_assisted_coregistration;
+pub mod deramping;
 pub mod interpolation2d;
 pub mod layover_detection;
+pub mod spectrum;
 pub mod warp_function;
 
 /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
@@ -110,7 +112,7 @@ mod tests {
     fn testfn_dem() {
         let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance");
 
         // Collect vertices and heights
@@ -162,7 +164,7 @@ mod tests {
     fn testfn_dem_rgb() {
         let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance");
 
         // Collect vertices and heights
@@ -257,7 +259,7 @@ mod tests {
         let rho = rho.slice(s![0..rows, 0..cols / 2]).to_owned();
 
         let rr = rerun::RecordingStreamBuilder::new("test_warp_function")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let (rows, cols) = rho.dim();
         let (v, offset) = rho.into_raw_vec_and_offset();
@@ -274,7 +276,7 @@ mod tests {
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance");
 
         // Get orbital state history for radar coordinate conversion

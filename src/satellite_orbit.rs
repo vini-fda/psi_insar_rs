@@ -444,7 +444,7 @@ mod manual_tests_satellite_orbit {
     #[ignore]
     fn test_backgeocoding() {
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
@@ -526,7 +526,7 @@ mod manual_tests_satellite_orbit {
     #[ignore]
     fn simple() {
         let rec = rerun::RecordingStreamBuilder::new("simple_test_satellite_orbit")
-            .connect_tcp()
+            .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
