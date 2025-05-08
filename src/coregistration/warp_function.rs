@@ -299,4 +299,55 @@ mod tests {
         rr.log("reference_phase", &rr_image)
             .expect("Could not log reference_phase to Rerun");
     }
+
+    #[test]
+    fn test_resampled_phase_difference() {
+        let reference = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+
+        // Secondary resampled to reference (also deramped)
+        let resampled_sec_data = resample_secondary_to_reference(&reference, &secondary, &dem);
+        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference);
+
+        // cut cols by half in both images
+        let (rows, cols) = resampled_sec_data.dim();
+        let resampled_sec_data = resampled_sec_data.slice(s![.., 0..cols / 2]).to_owned();
+        let ref_deramp = ref_deramp.slice(s![.., 0..cols / 2]).to_owned();
+
+        let phase_sec = resampled_sec_data.map(|c| c.arg());
+        let phase_ref = ref_deramp.map(|c| c.arg());
+        // Compute the phase difference between the resampled secondary and the reference deramped data
+        let phase_diff = phase_sec - phase_ref;
+
+        // Log the phase difference
+        let rr = rerun::RecordingStreamBuilder::new("test_resampled_phase_difference")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let vector = phase_diff.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let phase_diff_img = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("phase_difference", &phase_diff_img)
+            .expect("Could not log phase_difference to Rerun");
+    }
 }
