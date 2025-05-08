@@ -25,7 +25,10 @@ use crate::{
     sentinel::Sentinel1SlcBurst,
 };
 
-use super::interpolation2d::{BilinearKernel, KnabSincKernel, interpolate_2d};
+use super::{
+    deramping::DerampSlcBurst,
+    interpolation2d::{BilinearKernel, KnabSincKernel, interpolate_2d},
+};
 
 /// A trait for a warp function.
 pub trait WarpFunction {
@@ -186,7 +189,9 @@ pub fn resample_secondary_to_reference(
     let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
 
     let kernel = BilinearKernel::default();
-    let secondary_img = secondary.data.array_data();
+    let deramp = DerampSlcBurst::new();
+
+    let secondary_img = deramp.apply_forward(&secondary);
 
     warp_function
         .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))
@@ -206,6 +211,7 @@ pub fn resample_secondary_to_reference(
 
 #[cfg(test)]
 mod tests {
+    use crate::visualization::cubehelix_colormap;
     use ndarray::s;
 
     use super::*;
@@ -223,10 +229,13 @@ mod tests {
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
+
         let resampled_data = resample_secondary_to_reference(&reference, &secondary, &dem);
         // lets reduce the number of samples by 1/2 in the cols
         let (rows, cols) = resampled_data.dim();
-        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]);
+        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
+
+        // Log amplitude for resampled data
         let data_norm = resampled_data.map(|c| c.norm());
         let max_val = data_norm.iter().fold(0.0f32, |a, &b| a.max(b));
         let data_norm = data_norm.map(|c| (c / max_val).powf(0.3));
@@ -235,19 +244,59 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_resample_secondary_to_reference")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        rr.log("resampled_data", &img)
-            .expect("Could not log resampled_data to Rerun");
+        rr.log("resampled_amplitude", &img)
+            .expect("Could not log resampled_amplitude to Rerun");
 
-        // Log the reference image
+        // Log phase for resampled data
+        let vector = resampled_data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("resampled_phase", &rr_image)
+            .expect("Could not log resampled_phase to Rerun");
+
+        // Log the reference image amplitude
         let ref_array = reference.data.array_data();
-        let ref_array = ref_array.slice(s![.., 0..cols / 2]);
+        let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
         let ref_array_norm = ref_array.map(|c| c.norm());
         let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));
         let ref_array_norm = ref_array_norm.map(|c| (c / max_val).powf(0.3));
         let ref_img =
             rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_array_norm)
                 .unwrap();
-        rr.log("reference_image", &ref_img)
-            .expect("Could not log reference_image to Rerun");
+        rr.log("reference_amplitude", &ref_img)
+            .expect("Could not log reference_amplitude to Rerun");
+
+        // Log phase for reference data
+        let vector = ref_array.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("reference_phase", &rr_image)
+            .expect("Could not log reference_phase to Rerun");
     }
 }

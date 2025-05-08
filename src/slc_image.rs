@@ -25,10 +25,22 @@ impl SlcImage {
         [slant_range, azimuth]
     }
 
-    pub fn raw_buffer(&self) -> Buffer<ComplexI16> {
+    /// Returns a buffer of the complex data in the image.
+    pub fn read_buffer(&self) -> Buffer<ComplexI16> {
         let band = self.data.rasterband(1).expect("Could not read band");
         let buf: Buffer<ComplexI16> = band.read_band_as().unwrap();
         buf
+    }
+
+    /// Writes the contents of the buffer to the image.
+    ///
+    /// ## Notes
+    /// While drivers make sure that the content of the block buffer before and after the call is equal,
+    /// some drivers might temporarily modify it, e.g. to do byte swapping. Therefore a `&mut` parameter is required.
+    pub fn write_buffer(&mut self, buffer: &mut Buffer<ComplexI16>) {
+        let mut band = self.data.rasterband(1).expect("Could not read band");
+        let size = self.data.raster_size();
+        band.write((0, 0), size, buffer);
     }
 
     /// Returns the value of the pixel at the given azimuth and slant range indices.

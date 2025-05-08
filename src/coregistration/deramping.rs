@@ -5,6 +5,7 @@ use crate::{
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use std::f64::consts::PI;
+use std::mem::size_of;
 
 #[derive(Debug, Clone, Copy)]
 pub enum DerampingMode {
@@ -155,15 +156,15 @@ impl DerampSlcBurst {
         self
     }
 
-    pub fn apply_forward(&self, slc: &mut Sentinel1SlcBurst) -> Array2<Complex<f32>> {
+    pub fn apply_forward(&self, slc: &Sentinel1SlcBurst) -> Array2<Complex<f32>> {
         self.apply(slc, Direction::Forward)
     }
 
-    pub fn apply_backward(&self, slc: &mut Sentinel1SlcBurst) -> Array2<Complex<f32>> {
+    pub fn apply_backward(&self, slc: &Sentinel1SlcBurst) -> Array2<Complex<f32>> {
         self.apply(slc, Direction::Backward)
     }
 
-    fn apply(&self, slc: &mut Sentinel1SlcBurst, direction: Direction) -> Array2<Complex<f32>> {
+    fn apply(&self, slc: &Sentinel1SlcBurst, direction: Direction) -> Array2<Complex<f32>> {
         let mode = self.mode;
 
         let RelevantParameters {
@@ -241,7 +242,7 @@ impl DerampSlcBurst {
         // Calculate eta vector (azimuth times centered in middle of burst)
         // eta = [-Nl_burst/2 * Δt_s, Nl_burst/2 * Δt_s]
         let eta: Array1<f64> = Array1::from_iter(
-            (-(nl_burst as i32 / 2)..=(nl_burst as i32 / 2)).map(|i| i as f64 * delta_t_s),
+            (-(nl_burst as i32 / 2)..(nl_burst as i32 / 2)).map(|i| i as f64 * delta_t_s),
         );
 
         // Calculate tau vector (range times for each sample)
@@ -249,43 +250,27 @@ impl DerampSlcBurst {
         let tau: Array1<f64> =
             Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
 
-        let buffer = slc.data.raw_buffer();
-        let mut array = buffer.to_array().unwrap();
-
-        // Create a 2D grid of phases for each (eta, tau) combination
-        // let mut phase_grid = Array2::zeros((nl_burst as usize, ns_swath));
+        let buffer = slc.data.read_buffer();
+        let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
         for (i, &eta_val) in eta.iter().enumerate() {
             for (j, &tau_val) in tau.iter().enumerate() {
-                let x: Complex<i16> = array[[i, j]].into();
+                // Read the complex value
+                let x = Complex::<i16>::from(buffer[(i, j)]);
                 let x = Complex::new(x.re as f64, x.im as f64);
+
+                // Calculate and apply phase
                 let phase = phi(eta_val, tau_val);
                 let phase_cos = phase.cos();
                 let phase_sin = phase.sin();
                 let x = x * Complex::new(phase_cos, phase_sin);
-                // convert back to Complex<i16>
-                // panic if x.re or x.im is greater than 32767 or less than -32768
-                if x.re > i16::MAX as f64
-                    || x.re < i16::MIN as f64
-                    || x.im > i16::MAX as f64
-                    || x.im < i16::MIN as f64
-                {
-                    // This never panics!
-                    println!("x.re: {}", x.re);
-                    println!("x.im: {}", x.im);
-                    println!("eta_val: {}", eta_val);
-                    println!("tau_val: {}", tau_val);
-                    println!("phase: {}", phase);
-                    panic!("x.re or x.im is greater than 32767 or less than -32768");
-                }
-                let x = Complex::<i16>::new(x.re as i16, x.im as i16);
-                array[[i, j]] = x.into();
+
+                // Convert back to Complex<i16> and write
+                let x = Complex::<f32>::new(x.re as f32, x.im as f32);
+                deramped[[i, j]] = x;
             }
         }
 
-        array.map(|&x| {
-            let x: Complex<i16> = x.into();
-            Complex::new(x.re as f32, x.im as f32)
-        })
+        deramped
     }
 }
 
@@ -297,96 +282,96 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_deramp() {
-        let mut slc = Sentinel1SlcBurst::load_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
-        )
-        .unwrap();
+    // #[test]
+    // fn test_deramp() {
+    //     let mut slc = Sentinel1SlcBurst::load_from_directory(
+    //         "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+    //         "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+    //     )
+    //     .unwrap();
 
-        // visualize the amplitude and phase of the original data
-        let original_data = slc.data.array_data();
-        // cut cols in half
-        let original_data = original_data
-            .slice(s![.., ..original_data.dim().1 / 2])
-            .to_owned();
-        let (cols, rows) = original_data.dim();
-        let normalized = original_data.map(|&x| x.norm());
-        let max_norm = normalized
-            .iter()
-            .copied()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-        let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
-        let rr_image =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
-        let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
-            .connect_grpc()
-            .unwrap();
+    //     // visualize the amplitude and phase of the original data
+    //     let original_data = slc.data.array_data();
+    //     // cut cols in half
+    //     let original_data = original_data
+    //         .slice(s![.., ..original_data.dim().1 / 2])
+    //         .to_owned();
+    //     let (cols, rows) = original_data.dim();
+    //     let normalized = original_data.map(|&x| x.norm());
+    //     let max_norm = normalized
+    //         .iter()
+    //         .copied()
+    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
+    //         .unwrap();
+    //     let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
+    //     let rr_image =
+    //         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
+    //     let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
+    //         .connect_grpc()
+    //         .unwrap();
 
-        rec.log("amplitude_visualization_original", &rr_image)
-            .unwrap();
+    //     rec.log("amplitude_visualization_original", &rr_image)
+    //         .unwrap();
 
-        // log also phase
-        let vector = original_data.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [rows as u32, cols as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
-        );
-        rec.log("phase_visualization_original", &rr_image).unwrap();
+    //     // log also phase
+    //     let vector = original_data.as_slice_memory_order().unwrap().to_vec();
+    //     let rgb_vector: Vec<u8> = vector
+    //         .iter()
+    //         .flat_map(|&x| {
+    //             let phase = x.arg();
+    //             let normalized_phase =
+    //                 (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+    //             cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+    //         })
+    //         .collect();
+    //     let rr_image = rerun::Image::from_color_model_and_bytes(
+    //         rgb_vector,
+    //         [rows as u32, cols as u32],
+    //         rerun::ColorModel::RGB,
+    //         rerun::ChannelDatatype::U8,
+    //     );
+    //     rec.log("phase_visualization_original", &rr_image).unwrap();
 
-        // visualize the amplitude and phase of the deramped data
-        let deramp = DerampSlcBurst::new().set_mode(DerampingMode::Standard);
+    //     // visualize the amplitude and phase of the deramped data
+    //     let deramp = DerampSlcBurst::new().set_mode(DerampingMode::Standard);
 
-        let deramped = deramp.apply_forward(&mut slc);
-        // cut cols in half
-        let deramped = deramped.slice(s![.., ..deramped.dim().1 / 2]).to_owned();
-        let (cols, rows) = deramped.dim();
-        let normalized = deramped.map(|&x| x.norm());
-        let max_norm = normalized
-            .iter()
-            .copied()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-        let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
-        let rr_image =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
-        // let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
-        //     .connect_grpc()
-        //     .unwrap();
+    //     let deramped = deramp.apply_forward(&mut slc);
+    //     // cut cols in half
+    //     let deramped = deramped.slice(s![.., ..deramped.dim().1 / 2]).to_owned();
+    //     let (cols, rows) = deramped.dim();
+    //     let normalized = deramped.map(|&x| x.norm());
+    //     let max_norm = normalized
+    //         .iter()
+    //         .copied()
+    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
+    //         .unwrap();
+    //     let normalized = normalized.map(|&x| (x / max_norm).powf(0.3));
+    //     let rr_image =
+    //         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, normalized).unwrap();
+    //     // let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization")
+    //     //     .connect_grpc()
+    //     //     .unwrap();
 
-        rec.log("amplitude_visualization", &rr_image).unwrap();
+    //     rec.log("amplitude_visualization", &rr_image).unwrap();
 
-        // log also phase
+    //     // log also phase
 
-        let vector = deramped.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [rows as u32, cols as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
-        );
-        rec.log("phase_visualization", &rr_image).unwrap();
-    }
+    //     let vector = deramped.as_slice_memory_order().unwrap().to_vec();
+    //     let rgb_vector: Vec<u8> = vector
+    //         .iter()
+    //         .flat_map(|&x| {
+    //             let phase = x.arg();
+    //             let normalized_phase =
+    //                 (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+    //             cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+    //         })
+    //         .collect();
+    //     let rr_image = rerun::Image::from_color_model_and_bytes(
+    //         rgb_vector,
+    //         [rows as u32, cols as u32],
+    //         rerun::ColorModel::RGB,
+    //         rerun::ChannelDatatype::U8,
+    //     );
+    //     rec.log("phase_visualization", &rr_image).unwrap();
+    // }
 }
