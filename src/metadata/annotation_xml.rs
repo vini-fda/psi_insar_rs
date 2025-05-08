@@ -1166,17 +1166,59 @@ pub struct GeometryDcPolynomial {
     pub text: Option<String>,
 }
 
-/// Represents a polynomial with coefficients stored in descending order of degree
+/// Represents a polynomial of the form `p(x) = a₀ + a₁x + a₂x² + ... + aₙxⁿ`,
+/// where coefficients are stored in ascending order of degree.
+///
+/// The polynomial is represented internally as a vector `[a₀, a₁, a₂, ..., aₙ]`,
+/// where `aᵢ` is the coefficient of `xⁱ`.
+///
+/// # Examples
+///
+/// ```
+/// # use crate::metadata::annotation_xml::Polynomial;
+/// // Create a polynomial p(x) = 3 + 2x - 5x²
+/// let poly = Polynomial { coefficients: vec![3.0, 2.0, -5.0] };
+/// assert_eq!(poly.evaluate(0.0), 3.0);
+/// assert_eq!(poly.evaluate(1.0), 0.0);
+/// assert_eq!(poly.evaluate(2.0), -13.0);
+/// ```
+///
+/// # Special cases
+///
+/// - Empty coefficients: Returns 0.0 for any input
+/// - Constant polynomial (single coefficient): Returns that constant regardless of input
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Polynomial {
+    /// Coefficients in ascending order of degree (a₀, a₁, a₂, ..., aₙ)
     pub coefficients: Vec<f64>,
 }
 
 impl Polynomial {
-    /// Evaluate the polynomial at x
+    /// Evaluates the polynomial at a given point `x` using Horner's method.
+    ///
+    /// Mathematically computes: a₀ + a₁x + a₂x² + ... + aₙxⁿ
+    ///
+    /// # Implementation details
+    ///
+    /// Uses Horner's method for numerical stability and efficiency:
+    /// p(x) = a₀ + x(a₁ + x(a₂ + ... + x(aₙ₋₁ + x·aₙ)...))
+    ///
+    /// # Complexity
+    ///
+    /// - Time: O(n) where n is the degree of the polynomial
+    /// - Space: O(1)
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The point at which to evaluate the polynomial
+    ///
+    /// # Returns
+    ///
+    /// The value of the polynomial at point `x`
     pub fn evaluate(&self, x: f64) -> f64 {
         self.coefficients
             .iter()
+            .rev()
             .fold(0.0, |acc, &coef| acc * x + coef)
     }
 }
