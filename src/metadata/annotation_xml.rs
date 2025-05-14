@@ -241,10 +241,10 @@ pub struct ProductInformation {
     pub projection: String,
     #[serde(rename = "rangeSamplingRate", with = "string_to_f64")]
     pub range_sampling_rate: f64,
-    #[serde(rename = "radarFrequency")]
-    pub radar_frequency: String,
-    #[serde(rename = "azimuthSteeringRate")]
-    pub azimuth_steering_rate: String,
+    #[serde(rename = "radarFrequency", with = "string_to_f64")]
+    pub radar_frequency: f64,
+    #[serde(rename = "azimuthSteeringRate", with = "string_to_f64")]
+    pub azimuth_steering_rate: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -867,9 +867,10 @@ pub struct AzimuthFmRateList {
 pub struct AzimuthFmRate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    pub t0: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    #[serde(with = "string_to_f64")]
+    pub t0: f64,
     #[serde(rename = "azimuthFmRatePolynomial")]
     pub azimuth_fm_rate_polynomial: AzimuthFmRatePolynomial,
 }
@@ -878,8 +879,8 @@ pub struct AzimuthFmRate {
 pub struct AzimuthFmRatePolynomial {
     #[serde(rename = "@count")]
     pub count: u32,
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
+    #[serde(rename = "$text", with = "polynomial_format")]
+    pub coefficients: Polynomial,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -920,9 +921,9 @@ pub struct ImageInformation {
     pub range_pixel_spacing: f64,
     #[serde(rename = "azimuthPixelSpacing", with = "string_to_f64")]
     pub azimuth_pixel_spacing: f64,
-    #[serde(rename = "azimuthTimeInterval")]
+    #[serde(rename = "azimuthTimeInterval", with = "string_to_f64")]
     pub azimuth_time_interval: f64,
-    #[serde(rename = "azimuthFrequency")]
+    #[serde(rename = "azimuthFrequency", with = "string_to_f64")]
     pub azimuth_frequency: f64,
     #[serde(rename = "numberOfSamples", with = "string_to_usize")]
     pub number_of_samples: usize,
@@ -1138,9 +1139,9 @@ pub struct DcEstimateList {
 pub struct DcEstimate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    pub t0: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    pub t0: f64,
     #[serde(rename = "geometryDcPolynomial")]
     pub geometry_dc_polynomial: GeometryDcPolynomial,
     #[serde(rename = "dataDcPolynomial")]
@@ -1165,12 +1166,103 @@ pub struct GeometryDcPolynomial {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// Represents a polynomial of the form `p(x) = a₀ + a₁x + a₂x² + ... + aₙxⁿ`,
+/// where coefficients are stored in ascending order of degree.
+///
+/// The polynomial is represented internally as a vector `[a₀, a₁, a₂, ..., aₙ]`,
+/// where `aᵢ` is the coefficient of `xⁱ`.
+///
+/// # Examples
+///
+/// ```
+/// # use crate::metadata::annotation_xml::Polynomial;
+/// // Create a polynomial p(x) = 3 + 2x - 5x²
+/// let poly = Polynomial { coefficients: vec![3.0, 2.0, -5.0] };
+/// assert_eq!(poly.evaluate(0.0), 3.0);
+/// assert_eq!(poly.evaluate(1.0), 0.0);
+/// assert_eq!(poly.evaluate(2.0), -13.0);
+/// ```
+///
+/// # Special cases
+///
+/// - Empty coefficients: Returns 0.0 for any input
+/// - Constant polynomial (single coefficient): Returns that constant regardless of input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Polynomial {
+    /// Coefficients in ascending order of degree (a₀, a₁, a₂, ..., aₙ)
+    pub coefficients: Vec<f64>,
+}
+
+impl Polynomial {
+    /// Evaluates the polynomial at a given point `x` using Horner's method.
+    ///
+    /// Mathematically computes: a₀ + a₁x + a₂x² + ... + aₙxⁿ
+    ///
+    /// # Implementation details
+    ///
+    /// Uses Horner's method for numerical stability and efficiency:
+    /// p(x) = a₀ + x(a₁ + x(a₂ + ... + x(aₙ₋₁ + x·aₙ)...))
+    ///
+    /// # Complexity
+    ///
+    /// - Time: O(n) where n is the degree of the polynomial
+    /// - Space: O(1)
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The point at which to evaluate the polynomial
+    ///
+    /// # Returns
+    ///
+    /// The value of the polynomial at point `x`
+    pub fn evaluate(&self, x: f64) -> f64 {
+        self.coefficients
+            .iter()
+            .rev()
+            .fold(0.0, |acc, &coef| acc * x + coef)
+    }
+}
+
+/// Custom serializer/deserializer for Polynomial
+mod polynomial_format {
+    use super::Polynomial;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Polynomial, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        let coefficients: Result<Vec<f64>, _> = s
+            .split_whitespace()
+            .map(|s| s.parse::<f64>().map_err(serde::de::Error::custom))
+            .collect();
+
+        Ok(Polynomial {
+            coefficients: coefficients?,
+        })
+    }
+
+    pub fn serialize<S>(value: &Polynomial, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = value
+            .coefficients
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        serializer.serialize_str(&s)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DataDcPolynomial {
     #[serde(rename = "@count")]
     pub count: u32,
-    #[serde(rename = "$text")]
-    pub text: Option<String>,
+    #[serde(rename = "$text", with = "polynomial_format")]
+    pub polynomial: Polynomial,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1267,9 +1359,9 @@ pub struct SwathTiming {
     #[serde(rename = "$text")]
     pub text: Option<String>,
     #[serde(rename = "linesPerBurst")]
-    pub lines_per_burst: String,
+    pub lines_per_burst: usize,
     #[serde(rename = "samplesPerBurst")]
-    pub samples_per_burst: String,
+    pub samples_per_burst: usize,
     #[serde(rename = "burstList")]
     pub burst_list: BurstList,
 }
@@ -1287,14 +1379,15 @@ pub struct BurstList {
 pub struct Burst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    #[serde(rename = "azimuthTime")]
-    pub azimuth_time: String,
-    #[serde(rename = "azimuthAnxTime")]
-    pub azimuth_anx_time: String,
-    #[serde(rename = "sensingTime")]
-    pub sensing_time: String,
+    #[serde(rename = "azimuthTime", with = "datetime_format")]
+    pub azimuth_time: DateTime<Utc>,
+    /// "ANX time" (seconds from ANX - Ascending Node Crossing)
+    #[serde(rename = "azimuthAnxTime", with = "string_to_f64")]
+    pub azimuth_anx_time: f64,
+    #[serde(rename = "sensingTime", with = "datetime_format")]
+    pub sensing_time: DateTime<Utc>,
     #[serde(rename = "byteOffset")]
-    pub byte_offset: String,
+    pub byte_offset: usize,
     #[serde(rename = "firstValidSample")]
     pub first_valid_sample: FirstValidSample,
     #[serde(rename = "lastValidSample")]
