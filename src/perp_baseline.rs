@@ -83,12 +83,14 @@
 
 use nalgebra::Vector3;
 use rustfft::num_traits::Zero;
+use spade::{DelaunayTriangulation, HasPosition, Triangulation};
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
-    satellite_orbit::pixel_coords_to_radar_coords,
+    metadata::annotation_xml::GeolocationGrid,
+    satellite_orbit::{RadarCoords, pixel_coords_to_radar_coords},
     sentinel::Sentinel1SlcBurst,
 };
 
@@ -183,6 +185,108 @@ pub fn theta_from_pixel_index(
     ));
     let theta = l.dot(&normal).acos();
     theta
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ExactMapping {
+    pub azimuth_index: f64,
+    pub slant_range_index: f64,
+    pub lat: f64,
+    pub lon: f64,
+    pub height: f64,
+}
+
+impl HasPosition for ExactMapping {
+    type Scalar = f64;
+
+    fn position(&self) -> spade::Point2<Self::Scalar> {
+        [self.azimuth_index, self.slant_range_index].into()
+    }
+}
+
+pub struct GeolocationGridInterpolator {
+    triangulation: DelaunayTriangulation<ExactMapping>,
+}
+
+impl GeolocationGridInterpolator {
+    pub fn new(grid: &GeolocationGrid) -> Self {
+        let points = &grid.geolocation_grid_point_list.geolocation_grid_point;
+        let mut triangulation = DelaunayTriangulation::<ExactMapping>::new();
+        for p in points {
+            let mapping = ExactMapping {
+                azimuth_index: p.line as f64,
+                slant_range_index: p.pixel as f64,
+                lat: p.latitude,
+                lon: p.longitude,
+                height: p.height,
+            };
+            triangulation
+                .insert(mapping)
+                .expect("Failed to insert mapping");
+        }
+        Self { triangulation }
+    }
+
+    pub fn interpolate(&self, azimuth_index: f64, slant_range_index: f64) -> [Option<f64>; 3] {
+        let nn = self.triangulation.natural_neighbor();
+
+        let interp_lat =
+            nn.interpolate(|v| v.data().lat, [azimuth_index, slant_range_index].into());
+        let interp_lon =
+            nn.interpolate(|v| v.data().lon, [azimuth_index, slant_range_index].into());
+        let interp_height = nn.interpolate(
+            |v| v.data().height,
+            [azimuth_index, slant_range_index].into(),
+        );
+        [interp_lat, interp_lon, interp_height]
+    }
+}
+
+pub fn flat_earth_dphi_efficient(
+    primary_burst: &Sentinel1SlcBurst,
+    secondary_burst: &Sentinel1SlcBurst,
+    azimuth_index: f64,
+    slant_range_index: f64,
+    dem: &DEM,
+) -> f64 {
+    let osh_primary = primary_burst.orbital_state_history();
+    let annotation_1 = &primary_burst.metadata;
+    let radar_coords_1 =
+        pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
+    let mut current_min = std::f64::MAX;
+    let mut ground_target_lat = 0.0;
+    let mut ground_target_lon = 0.0;
+    let mut ground_target_pos = Vector3::<f64>::zero();
+    let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
+    let sat_vel_hat = sat_vel.normalize();
+    // 2D root finding to find the ground target position
+    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        ground_target_lat = lat;
+        ground_target_lon = lon;
+        let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
+        let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
+        if val < current_min {
+            current_min = val;
+            ground_target_pos = ground_pos;
+        }
+    }
+    println!("min_dot = {}", current_min);
+    let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
+    // find corresponding ground target on secondary acquisition
+    let osh_secondary = secondary_burst.orbital_state_history();
+    let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
+    let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
+    let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+    let r = (s_1 - ground_target_pos).norm();
+    let l = (s_1 - ground_target_pos).normalize();
+    let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+    let theta = l.dot(&normal).acos();
+    let s = annotation_1
+        .image_annotation
+        .image_information
+        .range_pixel_spacing;
+    let dphi = (4.0 * std::f64::consts::PI * bperp * s) / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+    dphi
 }
 
 pub fn flat_earth_dphi(
