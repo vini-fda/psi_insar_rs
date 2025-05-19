@@ -1,7 +1,4 @@
-use crate::{
-    dem::DEM, satellite_orbit::radar_coords_slc_annotation_to_pixel_f32,
-    sentinel::Sentinel1SlcBurst,
-};
+use crate::{dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst};
 
 /// Checks for layover in the radar image by comparing vertex ordering in geographic and radar coordinates.
 /// Layover occurs when the relative ordering of points in geographic space is inverted in radar coordinates.
@@ -30,7 +27,7 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
         let zero_doppler = osh.find_zero_doppler_state(pos.into());
         let [azimuth_idx, slant_range_idx] =
-            radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &burst.metadata);
+            radar_coords_to_pixel_coords(zero_doppler, &burst.metadata);
         (azimuth_idx, slant_range_idx)
     };
 

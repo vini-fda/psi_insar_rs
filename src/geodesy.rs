@@ -100,3 +100,36 @@ pub fn ecef_to_geodetic(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 
     (lat_deg, lon_deg, h)
 }
+
+/// Calculates the local geodetic normal vector (pointing "up") for the WGS84 ellipsoid.
+///
+/// The normal vector is expressed in ECEF coordinates and is a unit vector.
+/// Its direction is defined by the geodetic latitude and longitude.
+///
+/// # Arguments
+///
+/// * `lat_deg` - Geodetic latitude in degrees.
+/// * `lon_deg` - Geodetic longitude in degrees.
+///
+/// # Returns
+///
+/// An array `[nx, ny, nz]` representing the ECEF components of the unit normal vector.
+///
+pub fn local_normal(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
+    // Convert degrees to radians
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+
+    let cos_lat = lat_rad.cos();
+    let sin_lat = lat_rad.sin();
+    let cos_lon = lon_rad.cos();
+    let sin_lon = lon_rad.sin();
+
+    // Components of the normal vector in ECEF coordinates.
+    // This vector is, by definition of geodetic coordinates, a unit vector.
+    let nx = cos_lat * cos_lon;
+    let ny = cos_lat * sin_lon;
+    let nz = sin_lat;
+
+    [nx, ny, nz]
+}

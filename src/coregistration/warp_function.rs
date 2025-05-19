@@ -21,7 +21,7 @@ use std::iter::Map;
 use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
-    satellite_orbit::{OrbitalStateHistory, radar_coords_slc_annotation_to_pixel_f32},
+    satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
 };
 
@@ -81,7 +81,7 @@ impl DelaunayWarpFunction {
          -> [f32; 2] {
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
 
-            radar_coords_slc_annotation_to_pixel_f32(zero_doppler, annotation)
+            radar_coords_to_pixel_coords(zero_doppler, annotation)
         };
         let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
         for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
