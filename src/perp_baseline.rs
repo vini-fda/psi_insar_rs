@@ -242,6 +242,102 @@ impl GeolocationGridInterpolator {
     }
 }
 
+const GROUND_TARGET_SEARCH_WINDOW_HALF_SIZE: u32 = 32;
+
+/// Efficiently finds the ground target using an initial guess from the geolocation grid
+/// and a localized search on the DEM.
+///
+/// # Arguments
+///
+/// * `sat_pos` - Satellite position in ECEF.
+/// * `sat_vel` - Satellite velocity in ECEF.
+/// * `azimuth_index_center` - Central azimuth index for the search.
+/// * `slant_range_index_center` - Central slant range index for the search.
+/// * `dem` - Digital Elevation Model.
+/// * `interpolator` - Geolocation grid interpolator.
+///
+/// # Returns
+///
+/// A result containing a tuple of (ECEF ground position, latitude, longitude, min_dot_product_value)
+/// or an error string if no suitable target is found.
+fn find_ground_target_efficient(
+    sat_pos: &Vector3<f64>,
+    sat_vel: &Vector3<f64>,
+    azimuth_index_center: f64,
+    slant_range_index_center: f64,
+    dem: &DEM,
+    interpolator: &GeolocationGridInterpolator,
+) -> Result<(Vector3<f64>, f64, f64, f64), String> {
+    let mut min_dot_product = std::f64::MAX;
+    let mut best_ground_target_ecef_opt: Option<Vector3<f64>> = None;
+    let mut best_lat_opt: Option<f64> = None;
+    let mut best_lon_opt: Option<f64> = None;
+
+    let sat_vel_hat = sat_vel.normalize();
+
+    let [initial_lat_opt, initial_lon_opt, _initial_height_opt] =
+        interpolator.interpolate(azimuth_index_center, slant_range_index_center);
+
+    if let (Some(initial_lat), Some(initial_lon)) = (initial_lat_opt, initial_lon_opt) {
+        const LOCAL_DEM_SEARCH_RADIUS_DEGREES: f64 = 0.01; // Approx 1.1 km. Adjust as needed.
+
+        // Iterate over DEM points and filter those within the search radius of the initial guess
+        for (_, _, dem_point_lat, dem_point_lon, dem_point_height) in dem.indexed_lat_lon_height() {
+            if (dem_point_lat - initial_lat).abs() <= LOCAL_DEM_SEARCH_RADIUS_DEGREES
+                && (dem_point_lon - initial_lon).abs() <= LOCAL_DEM_SEARCH_RADIUS_DEGREES
+            {
+                let ground_pos_ecef = Vector3::from(geodetic_to_ecef(
+                    dem_point_lat,
+                    dem_point_lon,
+                    dem_point_height,
+                ));
+                let val = (ground_pos_ecef - sat_pos).dot(&sat_vel_hat).abs();
+
+                if val < min_dot_product {
+                    min_dot_product = val;
+                    best_ground_target_ecef_opt = Some(ground_pos_ecef);
+                    best_lat_opt = Some(dem_point_lat);
+                    best_lon_opt = Some(dem_point_lon);
+                }
+            }
+        }
+
+        if best_ground_target_ecef_opt.is_none() {
+            // No DEM point found within the search radius that improved the min_dot_product
+            return Err(format!(
+                "No suitable DEM point found in localized search (radius {} deg) around initial guess ({:.6}, {:.6}) for az_idx: {}, sr_idx: {}",
+                LOCAL_DEM_SEARCH_RADIUS_DEGREES,
+                initial_lat,
+                initial_lon,
+                azimuth_index_center,
+                slant_range_index_center
+            ));
+        }
+    } else {
+        // Initial interpolation failed
+        return Err(format!(
+            "Initial geolocation grid interpolation failed for az_idx: {}, sr_idx: {}",
+            azimuth_index_center, slant_range_index_center
+        ));
+    }
+
+    // If best_ground_target_ecef_opt is Some, then best_lat_opt and best_lon_opt were set with it.
+    if let (Some(ecef), Some(lat), Some(lon)) =
+        (best_ground_target_ecef_opt, best_lat_opt, best_lon_opt)
+    {
+        Ok((ecef, lat, lon, min_dot_product))
+    } else {
+        // This state should ideally not be reached due to the checks above.
+        // If initial_lat_opt/initial_lon_opt was Some, and best_ground_target_ecef_opt remained None,
+        // the specific error for that is returned. If initial_lat_opt/initial_lon_opt was None, that error is returned.
+        // This is a fallback for any unhandled logical path.
+        Err(format!(
+            "Failed to find ground target for az_idx: {}, sr_idx: {}. Unexpected internal state.",
+            azimuth_index_center, slant_range_index_center
+        ))
+    }
+}
+
 pub fn flat_earth_dphi_efficient(
     primary_burst: &Sentinel1SlcBurst,
     secondary_burst: &Sentinel1SlcBurst,
@@ -253,25 +349,37 @@ pub fn flat_earth_dphi_efficient(
     let annotation_1 = &primary_burst.metadata;
     let radar_coords_1 =
         pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-    let mut current_min = std::f64::MAX;
-    let mut ground_target_lat = 0.0;
-    let mut ground_target_lon = 0.0;
-    let mut ground_target_pos = Vector3::<f64>::zero();
-    let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
-    let sat_vel_hat = sat_vel.normalize();
-    // 2D root finding to find the ground target position
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
-        ground_target_lat = lat;
-        ground_target_lon = lon;
-        let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
-        let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
-        if val < current_min {
-            current_min = val;
-            ground_target_pos = ground_pos;
-        }
+
+    let (sat_pos_primary, sat_vel_primary) = osh_primary.interp_pos_vel(radar_coords_1.time);
+
+    let interpolator = GeolocationGridInterpolator::new(&annotation_1.geolocation_grid);
+
+    let (ground_target_pos, ground_target_lat, ground_target_lon, min_dot_val) =
+        find_ground_target_efficient(
+            &sat_pos_primary,
+            &sat_vel_primary,
+            azimuth_index,
+            slant_range_index,
+            dem,
+            &interpolator,
+        )
+        .unwrap_or_else(|e| {
+            // Handle error appropriately, e.g., by logging and returning NaN or panicking
+            eprintln!("Error in find_ground_target_efficient: {}", e);
+            //panic!("Error in find_ground_target_efficient: {}", e);
+            // Fallback or specific error value
+            (Vector3::zero(), 0.0, 0.0, std::f64::MAX) // Example fallback
+        });
+
+    if ground_target_pos == Vector3::zero() && ground_target_lat == 0.0 && ground_target_lon == 0.0
+    {
+        // Or however you want to signal failure if find_ground_target_efficient failed and returned a default
+        return std::f64::NAN;
     }
-    println!("min_dot = {}", current_min);
-    let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
+
+    println!("min_dot (efficient) = {}", min_dot_val); // Optional: for debugging
+
+    let s_1 = sat_pos_primary;
     // find corresponding ground target on secondary acquisition
     let osh_secondary = secondary_burst.orbital_state_history();
     let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
