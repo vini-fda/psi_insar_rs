@@ -397,59 +397,198 @@ pub fn flat_earth_dphi_efficient(
     dphi
 }
 
-pub fn flat_earth_dphi(
-    primary_burst: &Sentinel1SlcBurst,
-    secondary_burst: &Sentinel1SlcBurst,
-    azimuth_index: f64,
-    slant_range_index: f64,
-    dem: &DEM,
-) -> f64 {
-    let osh_primary = primary_burst.orbital_state_history();
-    let annotation_1 = &primary_burst.metadata;
-    let radar_coords_1 =
-        pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-    let mut current_min = std::f64::MAX;
-    let mut ground_target_lat = 0.0;
-    let mut ground_target_lon = 0.0;
-    let mut ground_target_pos = Vector3::<f64>::zero();
-    let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
-    let sat_vel_hat = sat_vel.normalize();
-    // 2D root finding to find the ground target position
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
-        ground_target_lat = lat;
-        ground_target_lon = lon;
-        let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
-        let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
-        if val < current_min {
-            current_min = val;
-            ground_target_pos = ground_pos;
-        }
-    }
-    println!("min_dot = {}", current_min);
-    let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
-    // find corresponding ground target on secondary acquisition
-    let osh_secondary = secondary_burst.orbital_state_history();
-    let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
-    let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
-    let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
-    let r = (s_1 - ground_target_pos).norm();
-    let l = (s_1 - ground_target_pos).normalize();
-    let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
-    let theta = l.dot(&normal).acos();
-    let s = annotation_1
-        .image_annotation
-        .image_information
-        .range_pixel_spacing;
-    let dphi = (4.0 * std::f64::consts::PI * bperp * s) / (r * SENTINEL_1_WAVELENGTH * theta.tan());
-    dphi
-}
-
 #[cfg(test)]
 mod tests {
     use ndarray::Array2;
-    use rerun::Image;
+    use rerun::{Image, RecordingStream};
 
     use super::*;
+
+    pub fn flat_earth_dphi(
+        primary_burst: &Sentinel1SlcBurst,
+        secondary_burst: &Sentinel1SlcBurst,
+        azimuth_index: f64,
+        slant_range_index: f64,
+        dem: &DEM,
+        rr: &RecordingStream,
+    ) -> f64 {
+        let osh_primary = primary_burst.orbital_state_history();
+        let annotation_1 = &primary_burst.metadata;
+        let radar_coords_1 =
+            pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
+        let mut current_min = std::f64::MAX;
+        let mut ground_target_lat = 0.0;
+        let mut ground_target_lon = 0.0;
+        let mut ground_target_pos = Vector3::<f64>::zero();
+        let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
+        let distance_to_target = radar_coords_1.distance_to_target;
+        const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
+        let sat_vel_hat = sat_vel.normalize();
+        // 2D root finding to find the ground target position
+        let mut considered_lat_lon = Vec::new();
+        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+            let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
+            let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
+            let r = (ground_pos - sat_pos).norm();
+            let distance_to_target_diff = (r - distance_to_target).abs();
+            if distance_to_target_diff > MAX_DISTANCE_TO_TARGET_DIFF {
+                continue;
+            }
+            if val < current_min {
+                current_min = val;
+                ground_target_pos = ground_pos;
+                ground_target_lat = lat;
+                ground_target_lon = lon;
+                considered_lat_lon.push([lat, lon]);
+            }
+        }
+        rr.log(
+            "lat_lon",
+            &rerun::GeoPoints::from_lat_lon(considered_lat_lon),
+        )
+        .unwrap();
+
+        let geolocation_points = annotation_1
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point
+            .iter()
+            .map(|x| [x.latitude, x.longitude]);
+        rr.log(
+            "geolocation_points",
+            &rerun::GeoPoints::from_lat_lon(geolocation_points),
+        )
+        .unwrap();
+
+        let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
+        // find corresponding ground target on secondary acquisition
+        let osh_secondary = secondary_burst.orbital_state_history();
+        let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
+        let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
+        let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+        let r = (s_1 - ground_target_pos).norm();
+        let l = (s_1 - ground_target_pos).normalize();
+        let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+        let theta = l.dot(&normal).acos();
+        let s = annotation_1
+            .image_annotation
+            .image_information
+            .range_pixel_spacing;
+        let dphi =
+            (4.0 * std::f64::consts::PI * bperp * s) / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+        dphi
+    }
+
+    pub fn flat_earth_dphi_efficient(
+        primary_burst: &Sentinel1SlcBurst,
+        secondary_burst: &Sentinel1SlcBurst,
+        dem: &DEM,
+        rr: &RecordingStream,
+    ) -> f64 {
+        let osh_primary = primary_burst.orbital_state_history();
+        let annotation_1 = &primary_burst.metadata;
+
+        let mut refined_geolocation_grid = annotation_1.geolocation_grid.clone();
+
+        for geolocation_point in refined_geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point
+            .iter_mut()
+        {
+            let azimuth_index = geolocation_point.line as f64;
+            let slant_range_index = geolocation_point.pixel as f64;
+            let radar_coords_1 =
+                pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
+
+            let mut current_min = std::f64::MAX;
+            let mut ground_target_lat = 0.0;
+            let mut ground_target_lon = 0.0;
+            let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
+            let distance_to_target = radar_coords_1.distance_to_target;
+            const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
+            let sat_vel_hat = sat_vel.normalize();
+            // 2D root finding to find the ground target position
+            let mut considered_lat_lon = Vec::new();
+            for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+                let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
+                let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
+                let r = (ground_pos - sat_pos).norm();
+                let distance_to_target_diff = (r - distance_to_target).abs();
+                if distance_to_target_diff > MAX_DISTANCE_TO_TARGET_DIFF {
+                    continue;
+                }
+                if val < current_min {
+                    current_min = val;
+                    ground_target_lat = lat;
+                    ground_target_lon = lon;
+                    considered_lat_lon.push([lat, lon]);
+                }
+            }
+            // Apply refined values
+            geolocation_point.latitude = ground_target_lat;
+            geolocation_point.longitude = ground_target_lon;
+        }
+
+        let interpolator = GeolocationGridInterpolator::new(&refined_geolocation_grid);
+
+        let azimuth_index_range = 0..1400;
+        let slant_range_index_range = 0..1;
+
+        for azimuth_index in azimuth_index_range.clone() {
+            for slant_range_index in slant_range_index_range.clone() {
+                let azimuth_index = azimuth_index as f64;
+                let slant_range_index = slant_range_index as f64;
+                let [interp_lat_opt, interp_lon_opt, _] =
+                    interpolator.interpolate(azimuth_index, slant_range_index);
+                let interp_lat = interp_lat_opt.unwrap();
+                let interp_lon = interp_lon_opt.unwrap();
+                let height = dem.get_height_at_lat_lon(interp_lat, interp_lon);
+                rr.log(
+                    "lat_lon_interpolated",
+                    &rerun::GeoPoints::from_lat_lon([[interp_lat, interp_lon]]),
+                )
+                .unwrap();
+                let _ = flat_earth_dphi(
+                    primary_burst,
+                    secondary_burst,
+                    azimuth_index,
+                    slant_range_index,
+                    dem,
+                    rr,
+                );
+                let ground_target_pos =
+                    Vector3::from(geodetic_to_ecef(interp_lat, interp_lon, height));
+
+                let radar_coords_1 =
+                    pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
+                let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
+                // find corresponding ground target on secondary acquisition
+                let osh_secondary = secondary_burst.orbital_state_history();
+                let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
+                let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
+                let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+                let r = (s_1 - ground_target_pos).norm();
+                let l = (s_1 - ground_target_pos).normalize();
+                let normal = Vector3::from(local_normal(interp_lat, interp_lon));
+                let theta = l.dot(&normal).acos();
+                let s = annotation_1
+                    .image_annotation
+                    .image_information
+                    .range_pixel_spacing;
+                let dphi = (4.0 * std::f64::consts::PI * bperp * s)
+                    / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+                println!(
+                    "azimuth_index: {}, slant_range_index: {}, dphi: {}, bperp: {}, theta: {}",
+                    azimuth_index,
+                    slant_range_index,
+                    dphi.to_degrees(),
+                    bperp,
+                    theta.to_degrees()
+                );
+            }
+        }
+        0.0
+    }
 
     #[test]
     fn test_perp_baseline_from_pixel_index() {
@@ -501,17 +640,21 @@ mod tests {
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
+        let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        rr.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
         let [range_size, az_size] = primary.data.raster_size();
-        for i in 0..az_size {
-            for j in 0..1 {
-                let dphi = flat_earth_dphi(&primary, &secondary, i as f64, j as f64, &dem);
-                println!(
-                    "azimuth_index: {}, slant_range_index: {}, dphi: {}",
-                    i,
-                    j,
-                    dphi.to_degrees()
-                );
-            }
-        }
+
+        let dphi = flat_earth_dphi_efficient(&primary, &secondary, &dem, &rr);
     }
 }

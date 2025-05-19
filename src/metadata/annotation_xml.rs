@@ -1410,7 +1410,7 @@ pub struct LastValidSample {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGrid {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1418,7 +1418,7 @@ pub struct GeolocationGrid {
     pub geolocation_grid_point_list: GeolocationGridPointList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGridPointList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1428,7 +1428,7 @@ pub struct GeolocationGridPointList {
     pub geolocation_grid_point: Vec<GeolocationGridPoint>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGridPoint {
     #[serde(rename = "$text")]
     pub text: Option<String>,
