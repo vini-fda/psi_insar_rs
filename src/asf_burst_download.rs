@@ -134,6 +134,18 @@ fn extract_form_data(
     }
 }
 
+// A query is like this "key=value&key2=value2"
+pub fn parse_query_into_pairs(query: &str) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    for pair in query.split('&') {
+        let parts: Vec<&str> = pair.splitn(2, '=').collect();
+        if parts.len() == 2 {
+            v.push((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+    v
+}
+
 /// Download a single zip file from ASF after authenticating with Earthdata Login.
 ///
 /// # Arguments
@@ -225,9 +237,83 @@ pub fn download_file(
             login_submit_resp.status(),
             login_submit_resp.get_uri()
         );
-        // After this, the agent should have the necessary cookies.
-        // The response from login might be the data, a redirect to it, or another intermediate page.
-        // We will try the original target_url again with the agent which now has cookies.
+
+        // The URL after login submission (e.g., .../oauth/authorize) contains
+        // a redirect_uri parameter that points to the ASF authentication service.
+        // We must explicitly navigate the agent to this URI to complete the auth flow
+        // and get the asf-urs cookie.
+        let oauth_authorize_url = login_submit_resp.get_uri(); // This is &Url from the previous response
+
+        let mut asf_next_redirect_url_str = None;
+        // Extract the redirect_uri query parameter
+        if let Some(query) = oauth_authorize_url.query() {
+            for (key, value) in parse_query_into_pairs(query) {
+                if key == "redirect_uri" {
+                    asf_next_redirect_url_str = Some(value);
+                    break;
+                }
+            }
+        }
+
+        if let Some(redirect_url_to_asf) = asf_next_redirect_url_str {
+            println!(
+                "Extracted ASF redirect_uri from OAuth step: {}",
+                redirect_url_to_asf
+            );
+            println!(
+                "Agent now visiting ASF auth URL to establish session: {}",
+                redirect_url_to_asf
+            );
+
+            // Make the agent visit this URL. The agent will follow subsequent redirects
+            // (e.g., from auth.asf.alaska.edu/login to auth.asf.alaska.edu/loginservice)
+            // and hopefully land on a page within an ASF domain, setting the asf-urs cookie.
+            let asf_auth_final_resp = agent.get(&redirect_url_to_asf).call()?; // agent follows redirects
+
+            println!(
+                "ASF auth redirect sequence finished. Status: {}. Final URL: {}",
+                asf_auth_final_resp.status(),
+                asf_auth_final_resp.get_uri()
+            );
+
+            // Check if this step itself resulted in a non-success status code at its *final* destination.
+            // A success status (2xx) indicates the agent successfully navigated the ASF auth part.
+            if !asf_auth_final_resp.status().is_success() {
+                let status = asf_auth_final_resp.status();
+                let error_url_at_asf_step = asf_auth_final_resp.get_uri().to_string();
+                let error_body_content = asf_auth_final_resp
+                    .into_body()
+                    .read_to_string()
+                    .unwrap_or_else(|e| {
+                        format!(
+                            "Failed to read error response body from ASF auth step: {}",
+                            e
+                        )
+                    });
+
+                return Err(AsfDownloadError::AuthenticationError(format!(
+                    "ASF authentication step via redirect_uri failed with status: {}. Final URL reached: {}. Response body: {}",
+                    status, error_url_at_asf_step, error_body_content
+                )));
+            }
+            println!(
+                "ASF auth step completed (final status {}). Agent should now have the asf-urs cookie.",
+                asf_auth_final_resp.status()
+            );
+            // If successful, the agent's cookie jar should now contain the asf-urs cookie.
+            // The existing step 4 will then attempt the download with the updated agent.
+        } else {
+            // This is a critical failure in the OAuth flow.
+            println!(
+                "Error: Could not find 'redirect_uri' in query parameters of {}. This is required to complete ASF authentication.",
+                oauth_authorize_url
+            );
+            return Err(AsfDownloadError::AuthenticationError(format!(
+                "Missing redirect_uri in Earthdata OAuth step after login: {}. Cannot proceed with ASF authentication.",
+                oauth_authorize_url
+            )));
+        }
+        // After this, the agent should have the necessary cookies from both URS and ASF.
     }
 
     // 4. Attempt to download the actual file using the (now hopefully authenticated) agent
