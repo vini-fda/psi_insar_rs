@@ -51,7 +51,7 @@ pub trait WarpFunction {
 }
 
 pub struct DelaunayWarpFunction {
-    triangulation: DelaunayTriangulation<ExactMapping>,
+    pub triangulation: DelaunayTriangulation<ExactMapping>,
 }
 
 /// A point which contains a single exact mapping of the reference coordinates to the secondary coordinates.

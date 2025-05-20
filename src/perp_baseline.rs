@@ -81,16 +81,27 @@
 // #   # )
 // #   # bperp_value = baseline_info['B_perpendicular_signed']
 
-use nalgebra::Vector3;
+use std::iter::Map;
+
+use nalgebra::{Complex, Vector3};
+use ndarray::Array2;
 use rustfft::num_traits::Zero;
 use spade::{DelaunayTriangulation, HasPosition, Triangulation};
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
+    coregistration::{
+        deramping::DerampSlcBurst,
+        interpolation2d::{KnabSincKernel, interpolate_2d},
+        warp_function::WarpFunction,
+    },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
-    metadata::annotation_xml::GeolocationGrid,
-    satellite_orbit::{RadarCoords, pixel_coords_to_radar_coords},
+    metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
+    satellite_orbit::{
+        OrbitalStateHistory, RadarCoords, pixel_coords_to_radar_coords,
+        radar_coords_to_pixel_coords,
+    },
     sentinel::Sentinel1SlcBurst,
 };
 
@@ -105,6 +116,9 @@ use crate::{
 /// # Returns
 ///
 /// The perpendicular baseline between the two satellites, at the given ground point.
+///
+/// - B⊥ > 0: If secondary satellite is farther from the ground track than the reference satellite.
+/// - B⊥ < 0: If secondary satellite is closer to the ground track than the reference satellite.
 ///
 /// # Example
 ///
@@ -128,9 +142,13 @@ use crate::{
 pub fn perp_baseline(s_1: &Vector3<f64>, s_2: &Vector3<f64>, p: &Vector3<f64>) -> f64 {
     let b = s_2 - s_1;
     let l = (p - s_1).normalize();
-    let b_parallel = b.dot(&l);
-    let b_perp = (b.norm() - b_parallel).abs();
-    b_perp
+    let b_parallel = b.dot(&l) * l;
+    let b_perp = (b - b_parallel).norm();
+    if (s_1 - p).norm() < (s_2 - p).norm() {
+        b_perp
+    } else {
+        -b_perp
+    }
 }
 
 pub fn perp_baseline_from_pixel_index(
@@ -242,6 +260,244 @@ impl GeolocationGridInterpolator {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FlatEarthComponents {
+    pub azimuth_index: f64,
+    pub slant_range_index: f64,
+    pub theta: f64,
+    pub bperp: f64,
+    pub r: f64,
+}
+
+impl HasPosition for FlatEarthComponents {
+    type Scalar = f64;
+
+    fn position(&self) -> spade::Point2<Self::Scalar> {
+        [self.azimuth_index, self.slant_range_index].into()
+    }
+}
+
+/// Interpolates `theta` and `bperp` for a given pixel index.
+///
+/// The underlying data is a sparse grid of points, which are interpolated to get the values at the
+/// pixel index.
+pub struct FlatEarthComponentsInterpolator {
+    triangulation: DelaunayTriangulation<FlatEarthComponents>,
+    azimuth_size: usize,
+    slant_range_size: usize,
+    slant_range_pixel_spacing: f64,
+}
+
+impl FlatEarthComponentsInterpolator {
+    pub fn from_grid_params(
+        primary_burst: &Sentinel1SlcBurst,
+        secondary_burst: &Sentinel1SlcBurst,
+        dem: &DEM,
+        azimuth_samples: usize,
+        slant_range_samples: usize,
+    ) -> Self {
+        let [slant_range_size, azimuth_size] = primary_burst.data.raster_size();
+        let azimuth_spacing = azimuth_size as f64 / azimuth_samples as f64;
+        let slant_range_spacing = slant_range_size as f64 / slant_range_samples as f64;
+        let slant_range_pixel_spacing = primary_burst
+            .metadata
+            .image_annotation
+            .image_information
+            .range_pixel_spacing;
+        let mut points = Vec::new();
+        for i in 0..azimuth_samples {
+            for j in 0..slant_range_samples {
+                let azimuth_index = i as f64 * azimuth_spacing;
+                let slant_range_index = j as f64 * slant_range_spacing;
+                let [theta, bperp, r] = Self::compute_components_precisely(
+                    primary_burst,
+                    secondary_burst,
+                    azimuth_index,
+                    slant_range_index,
+                    dem,
+                );
+                points.push(FlatEarthComponents {
+                    azimuth_index,
+                    slant_range_index,
+                    theta,
+                    bperp,
+                    r,
+                });
+            }
+        }
+        Self::new(
+            points,
+            azimuth_size,
+            slant_range_size,
+            slant_range_pixel_spacing,
+        )
+    }
+
+    pub fn new(
+        points: impl IntoIterator<Item = impl Into<FlatEarthComponents>>,
+        azimuth_size: usize,
+        slant_range_size: usize,
+        slant_range_pixel_spacing: f64,
+    ) -> Self {
+        let mut triangulation = DelaunayTriangulation::<FlatEarthComponents>::new();
+        for p in points {
+            triangulation
+                .insert(p.into())
+                .expect("Failed to insert mapping");
+        }
+        Self {
+            triangulation,
+            azimuth_size,
+            slant_range_size,
+            slant_range_pixel_spacing,
+        }
+    }
+
+    /// Interpolates `theta`, `bperp` and `r` for a given pixel index.
+    ///
+    /// Note: this method is not recommended for consecutive interpolations. Instead, use
+    /// `interpolate_many` with a batch of pixel indices.
+    pub fn interpolate(&self, azimuth_index: f64, slant_range_index: f64) -> [Option<f64>; 3] {
+        let nn = self.triangulation.natural_neighbor();
+
+        let interp_theta = nn.interpolate(
+            |v| v.data().theta,
+            [azimuth_index, slant_range_index].into(),
+        );
+        let interp_bperp = nn.interpolate(
+            |v| v.data().bperp,
+            [azimuth_index, slant_range_index].into(),
+        );
+        let interp_r = nn.interpolate(|v| v.data().r, [azimuth_index, slant_range_index].into());
+        [interp_theta, interp_bperp, interp_r]
+    }
+
+    /// Efficiently interpolates `theta` and `bperp` for a given set of pixel indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `indices` - A vector of pixel indices, where each index is an array of [azimuth index, slant range index].
+    ///
+    /// # Returns
+    ///
+    /// A vector of `[Option<f64>; 2]`, where each value contains the interpolated `theta` and `bperp` values,
+    /// or `None` if the point is outside the convex hull of the triangulation.
+    pub fn interpolate_many(
+        &self,
+        indices: impl IntoIterator<Item = [f64; 2]>,
+    ) -> Vec<[Option<f64>; 3]> {
+        let nn = self.triangulation.natural_neighbor();
+        indices
+            .into_iter()
+            .map(|[azimuth_index, slant_range_index]| {
+                let interp_theta = nn.interpolate(
+                    |v| v.data().theta,
+                    [azimuth_index, slant_range_index].into(),
+                );
+                let interp_bperp = nn.interpolate(
+                    |v| v.data().bperp,
+                    [azimuth_index, slant_range_index].into(),
+                );
+                let interp_r =
+                    nn.interpolate(|v| v.data().r, [azimuth_index, slant_range_index].into());
+                [interp_theta, interp_bperp, interp_r]
+            })
+            .collect()
+    }
+
+    /// Calculates the approximate flat earth phase array by accumulating the phase difference `dphi`
+    /// between pixels that are adjacent in the slant range direction.
+    pub fn calculate_array(&self) -> Array2<f64> {
+        let azimuth_size = self.azimuth_size;
+        let slant_range_size = self.slant_range_size;
+        let s = self.slant_range_pixel_spacing;
+        let mut array = Array2::<f64>::zeros((azimuth_size, slant_range_size));
+        let nn = self.triangulation.natural_neighbor();
+        for i in 0..azimuth_size {
+            for j in 0..(slant_range_size - 1) {
+                let i_f64 = i as f64;
+                let j_f64 = j as f64;
+                let theta = nn
+                    .interpolate(|v| v.data().theta, [i_f64, j_f64].into())
+                    .unwrap_or_default();
+                let bperp = nn
+                    .interpolate(|v| v.data().bperp, [i_f64, j_f64].into())
+                    .unwrap_or_default();
+                let r = nn
+                    .interpolate(|v| v.data().r, [i_f64, j_f64].into())
+                    .unwrap_or_default();
+
+                let dphi = (4.0 * std::f64::consts::PI * bperp * s)
+                    / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+                array[[i, j + 1]] = array[[i, j]] + dphi;
+            }
+        }
+        array
+    }
+
+    /// Computes `theta`, `bperp` and `r` for a given pixel index.
+    ///
+    /// # Arguments
+    ///
+    /// - `primary_burst` - The primary burst.
+    /// - `secondary_burst` - The secondary burst.
+    /// - `azimuth_index` - The azimuth index.
+    /// - `slant_range_index` - The slant range index.
+    /// - `dem` - The digital elevation model.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `[f64; 3]`, where each value contains the computed `theta`, `bperp` and `r` values.
+    fn compute_components_precisely(
+        primary_burst: &Sentinel1SlcBurst,
+        secondary_burst: &Sentinel1SlcBurst,
+        azimuth_index: f64,
+        slant_range_index: f64,
+        dem: &DEM,
+    ) -> [f64; 3] {
+        let osh_1 = primary_burst.orbital_state_history();
+        let annotation_1 = &primary_burst.metadata;
+        let radar_coords_1 =
+            pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
+        let mut current_min = std::f64::MAX;
+        let mut ground_target_lat = 0.0;
+        let mut ground_target_lon = 0.0;
+        let mut ground_target_pos = Vector3::<f64>::zero();
+        let (sat_pos, sat_vel) = &osh_1.interp_pos_vel(radar_coords_1.time);
+        let distance_to_target = radar_coords_1.distance_to_target;
+        const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
+        let sat_vel_hat = sat_vel.normalize();
+        // 2D root finding to find the ground target position
+        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+            let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
+            let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
+            let r = (ground_pos - sat_pos).norm();
+            let distance_to_target_diff = (r - distance_to_target).abs();
+            if distance_to_target_diff > MAX_DISTANCE_TO_TARGET_DIFF {
+                continue;
+            }
+            if val < current_min {
+                current_min = val;
+                ground_target_pos = ground_pos;
+                ground_target_lat = lat;
+                ground_target_lon = lon;
+            }
+        }
+
+        let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
+        // find corresponding ground target on secondary acquisition
+        let osh_2 = secondary_burst.orbital_state_history();
+        let radar_coords_2 = osh_2.find_zero_doppler_state(ground_target_pos);
+        let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
+        let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+        let r = (s_1 - ground_target_pos).norm();
+        let l = (s_1 - ground_target_pos).normalize();
+        let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+        let theta = l.dot(&normal).acos();
+        [theta, bperp, r]
+    }
+}
+
 pub fn flat_earth_dphi(
     primary_burst: &Sentinel1SlcBurst,
     secondary_burst: &Sentinel1SlcBurst,
@@ -249,7 +505,7 @@ pub fn flat_earth_dphi(
     slant_range_index: f64,
     dem: &DEM,
 ) -> f64 {
-    let osh_primary = primary_burst.orbital_state_history();
+    let osh_1 = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
     let radar_coords_1 =
         pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
@@ -257,7 +513,7 @@ pub fn flat_earth_dphi(
     let mut ground_target_lat = 0.0;
     let mut ground_target_lon = 0.0;
     let mut ground_target_pos = Vector3::<f64>::zero();
-    let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
+    let (sat_pos, sat_vel) = &osh_1.interp_pos_vel(radar_coords_1.time);
     let distance_to_target = radar_coords_1.distance_to_target;
     const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
     let sat_vel_hat = sat_vel.normalize();
@@ -278,11 +534,11 @@ pub fn flat_earth_dphi(
         }
     }
 
-    let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
+    let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
     // find corresponding ground target on secondary acquisition
-    let osh_secondary = secondary_burst.orbital_state_history();
-    let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
-    let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
+    let osh_2 = secondary_burst.orbital_state_history();
+    let radar_coords_2 = osh_2.find_zero_doppler_state(ground_target_pos);
+    let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
     let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
     let r = (s_1 - ground_target_pos).norm();
     let l = (s_1 - ground_target_pos).normalize();
@@ -305,117 +561,233 @@ pub fn flat_earth_dphi(
     dphi
 }
 
+// -- Enchanced Delaunay Warp Function --
+
+pub struct EnhancedDelaunayWarpFunction {
+    pub triangulation: DelaunayTriangulation<WarpFunctionExactMapping>,
+}
+
+/// A point which contains a single exact mapping of the reference coordinates to the secondary coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct WarpFunctionExactMapping {
+    pub reference_coords: [f64; 2],
+    pub secondary_coords: [f64; 2],
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl HasPosition for WarpFunctionExactMapping {
+    type Scalar = f64;
+
+    fn position(&self) -> spade::Point2<Self::Scalar> {
+        self.reference_coords.into()
+    }
+}
+
+impl EnhancedDelaunayWarpFunction {
+    /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
+    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
+        let [azimuth_size, slant_range_size] = reference.data.raster_size();
+        let ref_osh = reference.orbital_state_history();
+        let sec_osh = secondary.orbital_state_history();
+        let radar_coords = |ground_target_pos: Vector3<f64>,
+                            osh: &OrbitalStateHistory,
+                            annotation: &SlcProductAnnotation|
+         -> [f64; 2] {
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+
+            radar_coords_to_pixel_coords(zero_doppler, annotation)
+        };
+        let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
+        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
+            let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
+
+            if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f64)
+                && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f64)
+            {
+                let mapping = WarpFunctionExactMapping {
+                    reference_coords: rc_ref,
+                    secondary_coords: rc_sec,
+                    lat,
+                    lon,
+                };
+                triangulation
+                    .insert(mapping)
+                    .expect("Failed to insert mapping");
+            }
+        }
+
+        Self { triangulation }
+    }
+
+    /// Maps multiple reference image coordinates to their corresponding coordinates in the secondary image.
+    ///
+    /// This method efficiently computes the mapped coordinates for multiple points by reusing the
+    /// natural neighbor interpolation object. It's more efficient than calling `map()` multiple times
+    /// as it avoids recreating the interpolation object for each point.
+    ///
+    /// # Arguments
+    ///
+    /// * `ref_coords` - An iterator of 2D arrays, each containing [azimuth, range] coordinates in the reference image
+    ///
+    /// # Returns
+    ///
+    /// An iterator over optional coordinates, where each element is:
+    /// * `Some([azimuth, range])` - The coordinates in the secondary image that correspond to the
+    ///   input reference coordinates
+    /// * `None` - If the corresponding input coordinates are outside the convex hull of the triangulation
+    fn map_many<'a, I>(
+        &'a self,
+        ref_coords: I,
+    ) -> Map<I::IntoIter, impl FnMut(I::Item) -> Option<[f64; 2]> + 'a>
+    where
+        I: IntoIterator<Item = [f64; 2]>,
+        I::IntoIter: 'a,
+    {
+        let nn = self.triangulation.natural_neighbor();
+        ref_coords.into_iter().map(move |point| {
+            let compute_mapped_coord = |dimension: usize| {
+                nn.interpolate(|v| v.data().secondary_coords[dimension], point.into())
+            };
+            let mapped_azimuth = compute_mapped_coord(0)?;
+            let mapped_range = compute_mapped_coord(1)?;
+
+            Some([mapped_azimuth, mapped_range])
+        })
+    }
+}
+
+pub fn coregister_and_remove_flat_phase(
+    reference: &Sentinel1SlcBurst,
+    secondary: &Sentinel1SlcBurst,
+    dem: &DEM,
+) -> Array2<f32> {
+    let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+    let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+
+    // The indices in the domain of the reference image
+    let indices = (0..ref_slant_range_dim)
+        .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az, ref_rg]));
+    let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
+
+    let kernel = KnabSincKernel::default();
+    let deramp = DerampSlcBurst::new();
+
+    let reference_img = deramp.apply_forward(&reference);
+    let secondary_img = deramp.apply_forward(&secondary);
+
+    warp_function
+        .map_many(indices.clone().map(|[az, rg]| [az as f64, rg as f64]))
+        .enumerate()
+        .filter_map(|(i, coords)| coords.map(|c| (i, c)))
+        .for_each(|(i, [sec_az, sec_rg])| {
+            let [ref_az, ref_rg] = indices_usize[i];
+
+            let value = interpolate_2d(secondary_img.view(), sec_az as f32, sec_rg as f32, &kernel);
+            if let Some(resampled_value) = coregistered_secondary_img.get_mut([ref_az, ref_rg]) {
+                *resampled_value = value;
+            }
+        });
+    let osh_1 = reference.orbital_state_history();
+    let annotation_1 = &reference.metadata;
+    let s = annotation_1
+        .image_annotation
+        .image_information
+        .range_pixel_spacing;
+    let osh_2 = secondary.orbital_state_history();
+    let annotation_2 = &secondary.metadata;
+    let nn = warp_function.triangulation.natural_neighbor();
+    let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+    for i in 0..ref_azimuth_dim {
+        for j in 0..ref_slant_range_dim {
+            phase_diff[[i, j]] =
+                reference_img[[i, j]].arg() - coregistered_secondary_img[[i, j]].arg();
+        }
+    }
+    for ref_az in 0..ref_azimuth_dim {
+        let mut accumulated_dphi = 0.0;
+        let mut current_height = None;
+        for ref_rg in 0..ref_slant_range_dim {
+            let ref_coords = [ref_az as f64, ref_rg as f64];
+            // Helper function to compute mapped coordinate for a given dimension
+            let compute_mapped_coord = |dimension: usize| {
+                nn.interpolate(|v| v.data().secondary_coords[dimension], ref_coords.into())
+            };
+            let sec_az = compute_mapped_coord(0);
+            let sec_rg = compute_mapped_coord(1);
+
+            // Now compute the ground target position
+            let ground_target_lat = nn.interpolate(|v| v.data().lat, ref_coords.into());
+            let ground_target_lon = nn.interpolate(|v| v.data().lon, ref_coords.into());
+
+            // if any are None, skip
+            if sec_az.is_none()
+                || sec_rg.is_none()
+                || ground_target_lat.is_none()
+                || ground_target_lon.is_none()
+            {
+                continue;
+            }
+            let sec_az = sec_az.unwrap();
+            let sec_rg = sec_rg.unwrap();
+            let ground_target_lat = ground_target_lat.unwrap();
+            let ground_target_lon = ground_target_lon.unwrap();
+
+            let ground_target_pos =
+                Vector3::from(dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon));
+
+            let radar_coords_1 =
+                pixel_coords_to_radar_coords(ref_az as f64, ref_rg as f64, annotation_1);
+            let radar_coords_2 =
+                pixel_coords_to_radar_coords(sec_az as f64, sec_rg as f64, annotation_2);
+            let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
+            let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
+
+            let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+            let l = (s_1 - ground_target_pos).normalize();
+            let r = (s_1 - ground_target_pos).norm();
+            let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+            let theta = l.dot(&normal).acos();
+
+            phase_diff[[ref_az, ref_rg]] -= accumulated_dphi as f32;
+
+            let height = dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon);
+
+            if let Some(current_height) = current_height {
+                let height_diff = height - current_height;
+                let height_diff_dphi = (4.0 * std::f64::consts::PI * bperp * height_diff)
+                    / (r * SENTINEL_1_WAVELENGTH * theta.sin());
+                accumulated_dphi -= height_diff_dphi;
+            }
+
+            current_height = Some(height);
+
+            let dphi = (4.0 * std::f64::consts::PI * bperp * s)
+                / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+            accumulated_dphi += dphi;
+        }
+    }
+
+    phase_diff
+}
+
 #[cfg(test)]
 mod tests {
-    use ndarray::Array2;
+    use ndarray::{Array2, s};
     use rerun::{Image, RecordingStream};
 
-    use crate::visualization::cubehelix_colormap;
+    use crate::{
+        coregistration::{
+            deramping::DerampSlcBurst, warp_function::resample_secondary_to_reference,
+        },
+        visualization::cubehelix_colormap,
+    };
 
     use super::*;
-
-    pub fn flat_earth_dphi_efficient(
-        primary_burst: &Sentinel1SlcBurst,
-        secondary_burst: &Sentinel1SlcBurst,
-        dem: &DEM,
-        rr: &RecordingStream,
-    ) -> f64 {
-        let osh_primary = primary_burst.orbital_state_history();
-        let annotation_1 = &primary_burst.metadata;
-
-        let mut refined_geolocation_grid = annotation_1.geolocation_grid.clone();
-
-        for geolocation_point in refined_geolocation_grid
-            .geolocation_grid_point_list
-            .geolocation_grid_point
-            .iter_mut()
-        {
-            let azimuth_index = geolocation_point.line as f64;
-            let slant_range_index = geolocation_point.pixel as f64;
-            let radar_coords_1 =
-                pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-
-            let mut current_min = std::f64::MAX;
-            let mut ground_target_lat = 0.0;
-            let mut ground_target_lon = 0.0;
-            let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords_1.time);
-            let distance_to_target = radar_coords_1.distance_to_target;
-            const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
-            let sat_vel_hat = sat_vel.normalize();
-            // 2D root finding to find the ground target position
-            let mut considered_lat_lon = Vec::new();
-            for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
-                let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
-                let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
-                let r = (ground_pos - sat_pos).norm();
-                let distance_to_target_diff = (r - distance_to_target).abs();
-                if distance_to_target_diff > MAX_DISTANCE_TO_TARGET_DIFF {
-                    continue;
-                }
-                if val < current_min {
-                    current_min = val;
-                    ground_target_lat = lat;
-                    ground_target_lon = lon;
-                    considered_lat_lon.push([lat, lon]);
-                }
-            }
-            // Apply refined values
-            geolocation_point.latitude = ground_target_lat;
-            geolocation_point.longitude = ground_target_lon;
-        }
-
-        let interpolator = GeolocationGridInterpolator::new(&refined_geolocation_grid);
-
-        let azimuth_index_range = 0..1400;
-        let slant_range_index_range = 0..1;
-
-        for azimuth_index in azimuth_index_range.clone() {
-            for slant_range_index in slant_range_index_range.clone() {
-                let azimuth_index = azimuth_index as f64;
-                let slant_range_index = slant_range_index as f64;
-                let [interp_lat_opt, interp_lon_opt, _] =
-                    interpolator.interpolate(azimuth_index, slant_range_index);
-                let interp_lat = interp_lat_opt.unwrap();
-                let interp_lon = interp_lon_opt.unwrap();
-                let height = dem.get_height_at_lat_lon(interp_lat, interp_lon);
-                rr.log(
-                    "lat_lon_interpolated",
-                    &rerun::GeoPoints::from_lat_lon([[interp_lat, interp_lon]]),
-                )
-                .unwrap();
-                let ground_target_pos =
-                    Vector3::from(geodetic_to_ecef(interp_lat, interp_lon, height));
-
-                let radar_coords_1 =
-                    pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-                let (s_1, _) = osh_primary.interp_pos_vel(radar_coords_1.time);
-                // find corresponding ground target on secondary acquisition
-                let osh_secondary = secondary_burst.orbital_state_history();
-                let radar_coords_2 = osh_secondary.find_zero_doppler_state(ground_target_pos);
-                let (s_2, _) = osh_secondary.interp_pos_vel(radar_coords_2.time);
-                let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
-                let r = (s_1 - ground_target_pos).norm();
-                let l = (s_1 - ground_target_pos).normalize();
-                let normal = Vector3::from(local_normal(interp_lat, interp_lon));
-                let theta = l.dot(&normal).acos();
-                let s = annotation_1
-                    .image_annotation
-                    .image_information
-                    .range_pixel_spacing;
-                let dphi = (4.0 * std::f64::consts::PI * bperp * s)
-                    / (r * SENTINEL_1_WAVELENGTH * theta.tan());
-                println!(
-                    "azimuth_index: {}, slant_range_index: {}, dphi: {}, bperp: {}, theta: {}",
-                    azimuth_index,
-                    slant_range_index,
-                    dphi.to_degrees(),
-                    bperp,
-                    theta.to_degrees()
-                );
-            }
-        }
-        0.0
-    }
 
     #[test]
     fn test_perp_baseline_from_pixel_index() {
@@ -500,5 +872,98 @@ mod tests {
             rerun::ChannelDatatype::U8,
         );
         rr.log_static("dphi", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn test_interpolated_flat_earth_dphi() {
+        let primary = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+        let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        rr.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
+        let interpolator =
+            FlatEarthComponentsInterpolator::from_grid_params(&primary, &secondary, &dem, 140, 20);
+        let wrap_phase = |phase: f64| {
+            phase - 2.0 * std::f64::consts::PI * (phase / (2.0 * std::f64::consts::PI)).floor()
+        };
+        let data = interpolator
+            .calculate_array()
+            .map(|phase| wrap_phase(*phase));
+        let data = data.slice(s![.., 0..data.dim().1 / 2]).to_owned();
+        let (az_size, rg_size) = data.dim();
+        let vector = data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase = phase / (2.0 * std::f64::consts::PI);
+                cubehelix_colormap(normalized_phase as f32).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [rg_size as u32, az_size as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log_static("dphi", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn test_interpolated_flat_earth_removal() {
+        let primary = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+        let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let wrap_phase = |phase: f32| {
+            phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
+        };
+        let phase = coregister_and_remove_flat_phase(&primary, &secondary, &dem)
+            .map(|phase| wrap_phase(*phase) as f32);
+        let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
+        let (az_size, rg_size) = phase.dim();
+        let vector = phase.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase = phase / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [rg_size as u32, az_size as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log_static("phase", &rr_image).unwrap();
     }
 }

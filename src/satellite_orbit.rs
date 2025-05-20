@@ -15,6 +15,7 @@ use crate::{
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
+use num_traits::Float;
 use rustfft::num_traits::Zero;
 
 /// The radar coordinates of a ground target captured by a satellite.
@@ -293,10 +294,10 @@ impl From<&ListOfOsvs> for OrbitalStateHistory {
 /// # Panics
 /// Panics if the zero-Doppler time is outside the range of the SLC image.
 #[inline(always)]
-pub fn radar_coords_to_pixel_coords(
+pub fn radar_coords_to_pixel_coords<T: Float>(
     zero_doppler: RadarCoords,
     annotation: &SlcProductAnnotation,
-) -> [f32; 2] {
+) -> [T; 2] {
     let slant_range_time = annotation
         .image_annotation
         .image_information
@@ -329,7 +330,22 @@ pub fn radar_coords_to_pixel_coords(
     // Column calculation:
     let slant_range_index =
         (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
-    [azimuth_index as f32, slant_range_index as f32]
+    [
+        T::from(azimuth_index).expect(
+            format!(
+                "could not convert azimuth_index to {}",
+                std::any::type_name::<T>()
+            )
+            .as_str(),
+        ),
+        T::from(slant_range_index).expect(
+            format!(
+                "could not convert slant_range_index to {}",
+                std::any::type_name::<T>()
+            )
+            .as_str(),
+        ),
+    ]
 }
 
 /// Converts the pixel coordinates (azimuth index and slant range index) to the radar coordinates (azimuth time and slant range distance to target).
@@ -432,7 +448,7 @@ mod manual_tests_satellite_orbit {
 
         let zero_doppler = osh.find_zero_doppler_state(pos.into());
         println!("Zero-Doppler time = {:?}", zero_doppler);
-        let [row, col] = radar_coords_to_pixel_coords(zero_doppler, &annotation);
+        let [row, col]: [f32; 2] = radar_coords_to_pixel_coords(zero_doppler, &annotation);
         println!("Found pixel at {row}, {col}");
     }
 
