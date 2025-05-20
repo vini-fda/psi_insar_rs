@@ -12,3 +12,4 @@ Cargo.lock
 *.py
 *.tif
 *.glb
+.env

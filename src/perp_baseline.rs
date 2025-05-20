@@ -784,6 +784,7 @@ mod tests {
         coregistration::{
             deramping::DerampSlcBurst, warp_function::resample_secondary_to_reference,
         },
+        dem::CopernicusDemType,
         visualization::cubehelix_colormap,
     };
 
@@ -939,7 +940,20 @@ mod tests {
             "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let [min_lat, max_lat, min_lon, max_lon] = &primary
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.05;
+        let offset_lon = 0.05;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -965,5 +979,29 @@ mod tests {
             rerun::ChannelDatatype::U8,
         );
         rr.log_static("phase", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn get_bounding_box_lat_lon() {
+        let burst = Sentinel1SlcBurst::load_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
+        )
+        .unwrap();
+        let metadata = &burst.metadata;
+        let [min_lat, max_lat, min_lon, max_lon] = &metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.005;
+        let offset_lon = 0.005;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        println!("dem: {:?}", dem.corners_lat_lon());
     }
 }

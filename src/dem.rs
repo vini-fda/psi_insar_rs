@@ -9,7 +9,53 @@ pub struct DEM {
     pub data: gdal::Dataset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopernicusDemType {
+    Cop30,
+    Cop90,
+}
+
+impl std::fmt::Display for CopernicusDemType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CopernicusDemType::Cop30 => write!(f, "COP30"),
+            CopernicusDemType::Cop90 => write!(f, "COP90"),
+        }
+    }
+}
+
 impl DEM {
+    /// Download a DEM from the OpenTopography API.
+    ///
+    /// # Arguments
+    ///
+    /// - `bounds` [min_lat, max_lat, min_lon, max_lon] - The bounding box of the DEM.
+    /// - `dem_type` - The type of DEM to download.
+    ///
+    /// # Returns
+    ///
+    /// - A new [`DEM`].
+    ///
+    pub fn download_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> Self {
+        let [min_lat, max_lat, min_lon, max_lon] = bounds;
+        let api_key =
+            std::env::var("OPENTOPOGRAPHY_API_KEY").expect("OPENTOPOGRAPHY_API_KEY not set");
+        let url = format!(
+            "https://portal.opentopography.org/API/globaldem?demtype={}&south={}&north={}&west={}&east={}&outputFormat=GTiff&API_Key={}",
+            dem_type, min_lat, max_lat, min_lon, max_lon, api_key
+        );
+        let response = ureq::get(url).call().expect("Failed to download DEM");
+        if response.status() == 200 {
+            let body = response.into_body();
+            let mut reader = body.into_reader();
+            let file_path = std::env::temp_dir().join(format!("dem_{}.tif", dem_type));
+            let mut dem_file = std::fs::File::create(file_path.clone()).unwrap();
+            std::io::copy(&mut reader, &mut dem_file).unwrap();
+            Self::open_file(file_path)
+        } else {
+            panic!("Failed to download DEM");
+        }
+    }
     /// Opens the DEM file and returns the DEM struct
     pub fn open_file<P: AsRef<Path>>(dem_file_path: P) -> Self {
         let data = gdal::Dataset::open(dem_file_path).expect("Failed to open DEM GeoTIFF file");
