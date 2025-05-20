@@ -242,16 +242,19 @@ pub fn download_file(
         // a redirect_uri parameter that points to the ASF authentication service.
         // We must explicitly navigate the agent to this URI to complete the auth flow
         // and get the asf-urs cookie.
-        let oauth_authorize_url = login_submit_resp.get_uri(); // This is &Url from the previous response
+        let oauth_authorize_http_uri = login_submit_resp.get_uri(); // This is &http::Uri from the previous response
+
+        // Convert http::Uri to String, then parse into url::Url to use query_pairs()
+        let oauth_authorize_url_str = oauth_authorize_http_uri.to_string();
+        let oauth_authorize_url = Url::parse(&oauth_authorize_url_str)?;
 
         let mut asf_next_redirect_url_str = None;
-        // Extract the redirect_uri query parameter
-        if let Some(query) = oauth_authorize_url.query() {
-            for (key, value) in parse_query_into_pairs(query) {
-                if key == "redirect_uri" {
-                    asf_next_redirect_url_str = Some(value);
-                    break;
-                }
+        // Extract the redirect_uri query parameter using query_pairs() from the parsed url::Url
+        // query_pairs() handles URL decoding automatically.
+        for (key, value) in oauth_authorize_url.query_pairs() {
+            if key == "redirect_uri" {
+                asf_next_redirect_url_str = Some(value.into_owned()); // value is Cow<str>, convert to String
+                break;
             }
         }
 
@@ -306,11 +309,11 @@ pub fn download_file(
             // This is a critical failure in the OAuth flow.
             println!(
                 "Error: Could not find 'redirect_uri' in query parameters of {}. This is required to complete ASF authentication.",
-                oauth_authorize_url
+                oauth_authorize_url_str
             );
             return Err(AsfDownloadError::AuthenticationError(format!(
                 "Missing redirect_uri in Earthdata OAuth step after login: {}. Cannot proceed with ASF authentication.",
-                oauth_authorize_url
+                oauth_authorize_url_str
             )));
         }
         // After this, the agent should have the necessary cookies from both URS and ASF.
