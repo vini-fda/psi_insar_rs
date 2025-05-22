@@ -12,4 +12,5 @@ Cargo.lock
 *.py
 *.tif
 *.glb
+*.npy
 .env

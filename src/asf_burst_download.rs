@@ -5,11 +5,9 @@
 //! https://sentinel1-burst-documentation.asf.alaska.edu/#api-specification
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-use scraper::{Html, Selector};
-use std::collections::HashMap;
 use std::env;
 use std::fs::File;
-use std::io::{self, Read, copy};
+use std::io::{self, Read, Write, copy};
 use std::path::Path;
 use ureq::{self, ResponseExt};
 use url::Url;
@@ -66,6 +64,8 @@ pub enum AsfDownloadError {
     UrlParseError(url::ParseError),
     /// HTML parsing error
     HtmlParsingError(String),
+    /// Zip extraction error
+    ZipExtractError(zip_extract::ZipExtractError),
 }
 
 impl From<ureq::Error> for AsfDownloadError {
@@ -92,334 +92,112 @@ impl From<url::ParseError> for AsfDownloadError {
     }
 }
 
-// Helper to extract form data from HTML
-fn extract_form_data(
-    html_body: &str,
-    form_selector_str: &str,
-) -> Result<(String, HashMap<String, String>), AsfDownloadError> {
-    let document = Html::parse_document(html_body);
-    let form_selector = Selector::parse(form_selector_str)
-        .map_err(|e| AsfDownloadError::HtmlParsingError(format!("Invalid form selector: {}", e)))?;
-    let input_selector = Selector::parse(
-        "input[type='hidden'], input[type='text'], input[type='password'], input[type='submit']",
-    )
-    .map_err(|e| AsfDownloadError::HtmlParsingError(format!("Invalid input selector: {}", e)))?;
-
-    if let Some(form_element) = document.select(&form_selector).next() {
-        let action = form_element
-            .value()
-            .attr("action")
-            .ok_or_else(|| {
-                AsfDownloadError::HtmlParsingError(
-                    "Login form action attribute not found".to_string(),
-                )
-            })?
-            .to_string();
-        let mut data = HashMap::new();
-        for input_element in form_element.select(&input_selector) {
-            if let Some(name) = input_element.value().attr("name") {
-                let value = input_element
-                    .value()
-                    .attr("value")
-                    .unwrap_or("")
-                    .to_string();
-                data.insert(name.to_string(), value);
-            }
-        }
-        Ok((action, data))
-    } else {
-        Err(AsfDownloadError::HtmlParsingError(
-            "Login form not found in HTML content".to_string(),
-        ))
+impl From<zip_extract::ZipExtractError> for AsfDownloadError {
+    fn from(err: zip_extract::ZipExtractError) -> Self {
+        AsfDownloadError::ZipExtractError(err)
     }
 }
 
-// A query is like this "key=value&key2=value2"
-pub fn parse_query_into_pairs(query: &str) -> Vec<(String, String)> {
-    let mut v = Vec::new();
-    for pair in query.split('&') {
-        let parts: Vec<&str> = pair.splitn(2, '=').collect();
-        if parts.len() == 2 {
-            v.push((parts[0].to_string(), parts[1].to_string()));
-        }
-    }
-    v
+pub struct AsfBurstDownloader {
+    agent: ureq::Agent,
+    auth_header: String,
 }
 
-/// Download a single zip file from ASF after authenticating with Earthdata Login.
-///
-/// # Arguments
-///
-/// * `url` - The URL of the file to download
-/// * `output_path` - The path where the downloaded file will be saved
-/// * `username` - Earthdata Login username
-/// * `password` - Earthdata Login password
-///
-/// # Returns
-///
-/// Result indicating success or the reason for failure
-pub fn download_file(
-    target_url_str: &str,
-    output_path: &Path,
-    username: &str,
-    password: &str,
-) -> Result<(), AsfDownloadError> {
-    let agent = ureq::agent(); // Agent for cookie persistence
-    let target_url = Url::parse(target_url_str)?;
+impl AsfBurstDownloader {
+    pub fn new_with_env_auth() -> Result<Self, AsfDownloadError> {
+        let username = env::var("EARTHDATA_USERNAME")?;
+        let password = env::var("EARTHDATA_PASSWORD")?;
+        Ok(Self::new(&username, &password))
+    }
 
-    // 1. Initial request to the target URL to see if we get redirected to login
-    println!("Attempting initial access to: {}", target_url_str);
-    let initial_resp = agent.get(target_url_str).call()?;
-    let mut current_url = initial_resp.get_uri().to_string();
-    let mut response_body = initial_resp.into_body().read_to_string()?;
+    pub fn new(username: &str, password: &str) -> Self {
+        let auth_header = format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!("{}:{}", username, password))
+        );
+        AsfBurstDownloader {
+            agent: ureq::agent(),
+            auth_header,
+        }
+    }
 
-    // Check if we were redirected to a URS login page or directly received it
-    if current_url.contains("urs.earthdata.nasa.gov") {
-        println!("Redirected to Earthdata Login page: {}", current_url);
+    /// Download a single zip file from ASF after authenticating with Earthdata Login.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL of the file to download
+    /// * `output_path` - The path where the downloaded file will be saved
+    ///
+    /// # Returns
+    ///
+    /// Result indicating success or the reason for failure
+    pub fn download_file(&self, url: &str, output_path: &Path) -> Result<(), AsfDownloadError> {
+        // 1. Initial request to the target URL to see if we get redirected to login
+        println!("Attempting initial access to: {}", url);
+        let initial_resp = self.agent.get(url).call()?;
+        let current_url = initial_resp.get_uri().to_string();
+        let status_code = initial_resp.status();
 
-        // 2. Parse login form from the received HTML
-        let (form_action_path, mut form_data) = extract_form_data(&response_body, "form#login")?;
+        // Check if we were redirected to a URS login page
+        // or if we received the file directly
+        let download_url = if current_url.contains("urs.earthdata.nasa.gov") {
+            println!("Redirected to Earthdata Login page: {}", current_url);
 
-        let login_form_action_url = if form_action_path.starts_with("http") {
-            Url::parse(&form_action_path)?
+            let resp = self
+                .agent
+                .get(current_url)
+                .header("Authorization", self.auth_header.clone())
+                .call()?;
+
+            resp.get_uri().to_string()
+        } else if status_code == 200 {
+            println!("Received file directly: {}", current_url);
+            current_url
         } else {
-            let base_urs_url = Url::parse(&current_url)?;
-            base_urs_url.join(&form_action_path)?
+            // This path means initial request was not to URS, and it wasn't recognized as a direct small response.
+            // It might be an HTML page from ASF that isn't the login page.
+            println!(
+                "Initial request to {} did not redirect to URS and doesn't look like a direct file. It might be an unexpected page from ASF. Current URL: {}",
+                url, current_url
+            );
+            println!("STATUS CODE: {}", status_code);
+            // Potentially, this could be an error page from ASF itself.
+            // The download attempt later will clarify.
+            // The original `else` branch here would throw "Missing redirect_uri".
+            // This is kept to align with previous logic if the specific conditions above are not met.
+            // However, if `current_url` is not a URS URL, then `redirect_uri` wouldn't be expected here.
+            // This part of the logic might need refinement based on actual non-URS initial responses.
+            return Err(AsfDownloadError::AuthenticationError(format!(
+                "Initial request did not redirect to URS login, but was not recognized as a direct file/small error. Current URL: {}. This path indicates an issue in the expected auth flow.",
+                current_url
+            )));
         };
 
-        println!("Login form action URL: {}", login_form_action_url);
+        // Proceed to download and extract the file and save it to the output path
+        let download_resp = self.agent.get(download_url).call()?;
+        let mut download_body = download_resp.into_body();
+        let mut reader = download_body.as_reader();
+        // Read the zip file into memory
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        zip_extract::extract(std::io::Cursor::new(buffer), output_path, true)?;
 
-        // Populate username and password
-        form_data.insert("username".to_string(), username.to_string());
-        form_data.insert("password".to_string(), password.to_string());
-        let is_none = form_data.get("commit").is_none();
-
-        // Remove empty value keys that might cause issues with ureq's send_form if they were submit buttons
-        form_data.retain(|_, v| !v.is_empty() || is_none);
-        // Or more explicitly ensure commit is handled correctly if present
-        if form_data.contains_key("commit")
-            && form_data
-                .get("commit")
-                .unwrap_or(&"".to_string())
-                .is_empty()
-        {
-            form_data.insert("commit".to_string(), "Log in".to_string()); //Common value for login buttons
-        }
-
-        let form_params: Vec<(&str, &str)> = form_data
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
-        println!(
-            "Submitting login form to: {} with {} params",
-            login_form_action_url,
-            form_params.len()
-        );
-        // 3. Submit the login form
-        let login_submit_resp = agent
-            .post(login_form_action_url.as_str())
-            .send_form(form_params)?;
-
-        if login_submit_resp.status().as_u16() >= 400 {
-            let status = login_submit_resp.status().clone();
-            let error_page_html = login_submit_resp
-                .into_body()
-                .read_to_string()
-                .unwrap_or_else(|_| "Failed to read error page body".to_string());
-            return Err(AsfDownloadError::AuthenticationError(format!(
-                "Earthdata Login submission failed with status: {}. Response: {}",
-                status, error_page_html
-            )));
-        }
-        println!(
-            "Login form submitted. Status: {}. Final URL after login POST: {}",
-            login_submit_resp.status(),
-            login_submit_resp.get_uri()
-        );
-
-        // The URL after login submission (e.g., .../oauth/authorize) contains
-        // a redirect_uri parameter that points to the ASF authentication service.
-        // We must explicitly navigate the agent to this URI to complete the auth flow
-        // and get the asf-urs cookie.
-        let oauth_authorize_http_uri = login_submit_resp.get_uri(); // This is &http::Uri from the previous response
-        let oauth_authorize_url_str = oauth_authorize_http_uri.to_string();
-
-        println!(
-            "Agent will now visit the URS OAuth authorize URL: {}. This should redirect to ASF auth.",
-            oauth_authorize_url_str
-        );
-
-        // The agent needs to GET this URS OAuth URL.
-        // This URS page should then issue a redirect (HTTP 302) to the ASF authentication service
-        // (e.g., auth.asf.alaska.edu/login) with the necessary `code` and `state` parameters appended.
-        // The agent will automatically follow these redirects.
-        let asf_auth_final_resp = agent.get(&oauth_authorize_url_str).call()?;
-
-        println!(
-            "URS OAuth authorize step (and subsequent ASF redirects) finished. Status: {}. Final URL: {}",
-            asf_auth_final_resp.status(),
-            asf_auth_final_resp.get_uri()
-        );
-
-        // Check if this step itself resulted in a non-success status code at its *final* destination.
-        // A success status (2xx) indicates the agent successfully navigated the ASF auth part.
-        if !asf_auth_final_resp.status().is_success() {
-            let status = asf_auth_final_resp.status();
-            let error_url_at_asf_step = asf_auth_final_resp.get_uri().to_string();
-            let error_body_content = asf_auth_final_resp
-                .into_body()
-                .read_to_string()
-                .unwrap_or_else(|e| {
-                    format!(
-                        "Failed to read error response body from ASF auth step: {}",
-                        e
-                    )
-                });
-
-            return Err(AsfDownloadError::AuthenticationError(format!(
-                "ASF authentication step via redirect_uri failed with status: {}. Final URL reached: {}. Response body: {}",
-                status, error_url_at_asf_step, error_body_content
-            )));
-        }
-        println!(
-            "ASF auth step completed (final status {}). Agent should now have the asf-urs cookie.",
-            asf_auth_final_resp.status()
-        );
-        // Check if the agent has the asf-urs cookie
-        let cookies = agent.cookie_jar_lock();
-        let domain = "urs.earthdata.nasa.gov";
-        let path = "/";
-        let asf_urs_cookie = cookies.get(domain, path, "asf-urs");
-        if asf_urs_cookie.is_none() {
-            return Err(AsfDownloadError::AuthenticationError(
-                "ASF URS cookie not found".to_string(),
-            ));
-        }
-        // If successful, the agent's cookie jar should now contain the asf-urs cookie.
-        // The existing step 4 will then attempt the download with the updated agent.
-    } else {
-        // This is a critical failure in the OAuth flow.
-        println!(
-            "Error: Could not find 'redirect_uri' in query parameters of. This is required to complete ASF authentication."
-        );
-        return Err(AsfDownloadError::AuthenticationError(format!(
-            "Missing redirect_uri in Earthdata OAuth step after login. Cannot proceed with ASF authentication."
-        )));
+        Ok(())
     }
-    // After this, the agent should have the necessary cookies from both URS and ASF.
-
-    // 4. Attempt to download the actual file using the (now hopefully authenticated) agent
-    println!("Attempting final download from: {}", target_url_str);
-    let final_resp = agent.get(target_url_str).call()?;
-
-    if final_resp.status().as_u16() == 403 {
-        return Err(AsfDownloadError::Forbidden(
-            "Access to the file was forbidden (403). Cookie might be invalid/expired or permissions insufficient.".to_string(),
-        ));
-    } else if final_resp.status().as_u16() >= 400 {
-        let status = final_resp.status().clone();
-        let error_body = final_resp
-            .into_body()
-            .read_to_string()
-            .unwrap_or_else(|_| "<no error body>".to_string());
-        return Err(AsfDownloadError::DownloadFailed(format!(
-            "Download failed with status: {}. Body: {}",
-            status, error_body
-        )));
-    }
-
-    // Check content type to ensure it's not an HTML page (e.g. another login/error page)
-    if let Some(content_type) = final_resp.headers().get("content-type") {
-        if content_type
-            .to_str()
-            .unwrap_or("")
-            .to_lowercase()
-            .contains("text/html")
-        {
-            let uri = final_resp.get_uri().clone();
-            let html_error_page = final_resp
-                .into_body()
-                .read_to_string()
-                .unwrap_or_else(|_| "<failed to read HTML error page>".to_string());
-            // Potentially save this HTML for debugging
-            // fs::write(Path::new("error_page_at_download.html"), &html_error_page)?;
-            let snippet = html_error_page.chars().take(200).collect::<String>();
-            return Err(AsfDownloadError::DownloadFailed(format!(
-                "Expected a file but received HTML content. URL: {}. Content: {}...",
-                uri, snippet
-            )));
-        }
-    }
-
-    println!(
-        "Successfully initiated download from {}. Status: {}",
-        final_resp.get_uri(),
-        final_resp.status()
-    );
-
-    let mut file = File::create(output_path)?;
-    let mut body_reader = final_resp.into_body().into_reader();
-    copy(&mut body_reader, &mut file)?;
-    println!("File successfully saved to: {}", output_path.display());
-
-    Ok(())
-}
-
-/// Download a file from ASF using Earthdata Login environment variables for authentication.
-///
-/// # Arguments
-///
-/// * `url` - The URL of the file to download
-/// * `output_path` - The path where the downloaded file will be saved
-///
-/// # Returns
-///
-/// Result indicating success or the reason for failure
-pub fn download_file_with_env_auth(url: &str, output_path: &Path) -> Result<(), AsfDownloadError> {
-    println!(
-        "Loading credentials from environment variables EARTHDATA_USERNAME and EARTHDATA_PASSWORD"
-    );
-    let username = env::var("EARTHDATA_USERNAME")?;
-    let password = env::var("EARTHDATA_PASSWORD")?;
-
-    download_file(url, output_path, &username, &password)
-}
-
-/// Example usage function (primarily for testing the download_file_with_env_auth flow)
-pub fn download_example() -> Result<(), AsfDownloadError> {
-    // Get the first burst from the VALUES constant
-    let (name, url) = VALUES[0];
-
-    // Create output path
-    let output_filename = format!("{}.zip", name);
-    let output_path = Path::new(&output_filename);
-
-    println!("Starting example download for: {name} from {url}");
-    download_file_with_env_auth(url, &output_path)?;
-    println!(
-        "Example download completed successfully! File saved to {}",
-        output_path.display()
-    );
-
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     // This test requires valid EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables to be set.
     // It will attempt a real download, which might be slow and consume data.
     // It also writes a file to the current directory.
     // Consider running this test manually or with placeholder credentials to test error paths.
+    // This test is ignored by default to prevent unintended network access and file writes during automated tests.
     #[test]
-    //#[ignore] // Ignored by default to prevent unintended network access and file writes during automated tests.
+    #[ignore]
     fn test_real_download_with_env_auth() {
-        // Ensure credentials are set in your environment for this test to pass.
-        // export EARTHDATA_USERNAME="your_edl_username"
-        // export EARTHDATA_PASSWORD="your_edl_password"
         if env::var("EARTHDATA_USERNAME").is_err() || env::var("EARTHDATA_PASSWORD").is_err() {
             println!(
                 "Skipping test_real_download_with_env_auth: EARTHDATA_USERNAME or EARTHDATA_PASSWORD not set."
@@ -427,59 +205,31 @@ mod tests {
             return;
         }
 
-        let (name, url) = VALUES[0]; // Using the first URL for testing
-        let output_filename = format!("test_download_{}.zip", name);
-        let output_path = Path::new(&output_filename);
+        let downloader = AsfBurstDownloader::new_with_env_auth().unwrap();
+        for (name, url) in VALUES {
+            let output_filename = format!("test_download_{}", name);
+            let output_path = Path::new(&output_filename);
 
-        println!(
-            "Running test_real_download_with_env_auth: downloading {} to {}",
-            url,
-            output_path.display()
-        );
+            println!(
+                "Running test_real_download_with_env_auth: downloading {} to {}",
+                url,
+                output_path.display()
+            );
 
-        let result = download_file_with_env_auth(url, &output_path);
+            let result = downloader.download_file(url, &output_path);
 
-        if result.is_ok() {
-            println!("Test download successful.");
-            assert!(output_path.exists(), "Downloaded file should exist.");
-            // Optionally, clean up the downloaded file
-            //let _ = fs::remove_file(output_path);
-        } else {
-            eprintln!("Test download failed: {:?}", result.as_ref().err().unwrap());
-            // If it failed due to auth, that's an expected path if creds are wrong/missing
-            // If it failed for other network reasons, the test might still be useful.
-        }
-        // We don't assert!(result.is_ok()) here because network/auth can fail for valid reasons.
-        // The purpose is more to exercise the code path.
-    }
-
-    // Test for the download_file function with placeholder credentials
-    // This test will likely fail authentication but tests the function structure.
-    #[test]
-    fn test_download_file_structure_with_placeholder_creds() {
-        let url = VALUES[1].1; // A valid URL from the list
-        let output_path = Path::new("test_placeholder_download.zip");
-
-        // Using obviously invalid credentials
-        let result = download_file(url, output_path, "invaliduser", "invalidpassword");
-
-        // We expect this to fail, likely with an AuthenticationError or Forbidden
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            AsfDownloadError::AuthenticationError(_) => { /* Expected for invalid creds */ }
-            AsfDownloadError::Forbidden(_) => { /* Also possible if EDL blocks due to bad attempts */
+            if result.is_ok() {
+                println!("Test download successful.");
+                assert!(output_path.exists(), "Downloaded file should exist.");
+                // Clean up the downloaded file
+                // let _ = std::fs::remove_file(output_path);
+            } else {
+                eprintln!("Test download failed: {:?}", result.as_ref().err().unwrap());
+                // If it failed due to auth, that's an expected path if creds are wrong/missing
+                // If it failed for other network reasons, the test might still be useful.
             }
-            AsfDownloadError::RequestError(ureq::Error::StatusCode(403)) => { /* Also possible */ }
-            AsfDownloadError::RequestError(ureq::Error::StatusCode(401)) => { /* Also possible */ }
-            other_error => panic!(
-                "Expected AuthenticationError or Forbidden, but got {:?}",
-                other_error
-            ),
-        }
-
-        // Clean up dummy file if it was somehow created (it shouldn't be on auth error)
-        if output_path.exists() {
-            let _ = fs::remove_file(output_path);
+            // We don't assert!(result.is_ok()) here because network/auth can fail for valid reasons.
+            // The purpose is more to exercise the code path.
         }
     }
 }

@@ -638,7 +638,7 @@ impl EnhancedDelaunayWarpFunction {
     /// * `Some([azimuth, range])` - The coordinates in the secondary image that correspond to the
     ///   input reference coordinates
     /// * `None` - If the corresponding input coordinates are outside the convex hull of the triangulation
-    fn map_many<'a, I>(
+    pub fn map_many<'a, I>(
         &'a self,
         ref_coords: I,
     ) -> Map<I::IntoIter, impl FnMut(I::Item) -> Option<[f64; 2]> + 'a>
@@ -792,14 +792,12 @@ mod tests {
 
     #[test]
     fn test_perp_baseline_from_pixel_index() {
-        let primary = Sentinel1SlcBurst::load_from_directory(
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -829,14 +827,12 @@ mod tests {
 
     #[test]
     fn test_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_from_directory(
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -877,14 +873,12 @@ mod tests {
 
     #[test]
     fn test_interpolated_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_from_directory(
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -930,14 +924,12 @@ mod tests {
 
     #[test]
     fn test_interpolated_flat_earth_removal() {
-        let primary = Sentinel1SlcBurst::load_from_directory(
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let [min_lat, max_lat, min_lon, max_lon] = &primary
@@ -983,9 +975,8 @@ mod tests {
 
     #[test]
     fn get_bounding_box_lat_lon() {
-        let burst = Sentinel1SlcBurst::load_from_directory(
+        let burst = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
         let metadata = &burst.metadata;

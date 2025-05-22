@@ -405,7 +405,7 @@ mod manual_tests_satellite_orbit {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        geodesy::geodetic_to_ecef,
+        geodesy::{geodetic_to_ecef, local_normal},
         metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
         satellite_orbit::radar_coords_to_pixel_coords,
     };
@@ -558,37 +558,74 @@ mod manual_tests_satellite_orbit {
         // Record time-series of satellite position
         let n = orbital_history.time.len();
         for k in 0..n {
-            let pos = orbital_history.position[k];
+            let sat_pos = orbital_history.position[k];
             let vel = orbital_history.velocity[k];
             let time = orbital_history.time[k];
             let look_rot3x3 = look_rotation_from_velocity_and_position(
                 vel.map(|c| c as f32),
-                pos.map(|c| c as f32),
+                sat_pos.map(|c| c as f32),
             );
             rec.set_time_nanos("satellite_time", time.timestamp_nanos_opt().unwrap());
 
-            let pos = rerun::Position3D::new(pos.x as f32, pos.y as f32, pos.z as f32);
+            // log normals as arrows
+            let mut normals = vec![];
+            let mut sat_look_vectors = vec![];
+            let mut positions = vec![];
+            for gcp in &annotation
+                .geolocation_grid
+                .geolocation_grid_point_list
+                .geolocation_grid_point
+            {
+                let gcp_pos =
+                    geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height).map(|val| val as f32);
+                let gcp_pos_vec3 = Vector3::<f32>::from(gcp_pos);
+                let l = (sat_pos.map(|c| c as f32) - gcp_pos_vec3).normalize();
+                sat_look_vectors.push([l.x * 1000.0, l.y * 1000.0, l.z * 1000.0]);
+                let normal = local_normal(gcp.latitude, gcp.longitude).map(|val| val as f32);
+                let normal_vec3 = Vector3::<f32>::from(normal);
+                let theta = l.dot(&normal_vec3).acos();
+                let log_title = format!("theta for gcp {}, {}", gcp.latitude, gcp.longitude);
+                rec.log(
+                    log_title,
+                    &rerun::TextLog::new(format!("{}", theta.to_degrees())),
+                )
+                .unwrap();
+                normals.push(normal.map(|c| c * 1000.0));
+                positions.push(gcp_pos);
+            }
+            rec.log(
+                "geo_normals",
+                &rerun::Arrows3D::from_vectors(normals).with_origins(positions.clone()),
+            )
+            .unwrap();
+            rec.log(
+                "satellite_look_vectors",
+                &rerun::Arrows3D::from_vectors(sat_look_vectors).with_origins(positions),
+            )
+            .unwrap();
+            let sat_pos =
+                rerun::Position3D::new(sat_pos.x as f32, sat_pos.y as f32, sat_pos.z as f32);
             rec.log(
                 "satellite_position",
-                &rerun::Points3D::new([pos])
+                &rerun::Points3D::new([sat_pos])
                     .with_colors([Color::WHITE])
                     .with_radii([1500.0]),
             )
             .unwrap();
             let arrow_vel =
                 rerun::Arrows3D::from_vectors([(vel.x as f32, vel.y as f32, vel.z as f32)])
-                    .with_origins([pos]);
+                    .with_origins([sat_pos]);
             rec.log("satellite_velocity", &arrow_vel).unwrap();
 
             // Pinhole camera
             let ground_target = geodetic_to_ecef(19.49831428810679, -98.59301000370277, 0.0);
             let ground_target_vec3 = Vector3::<f32>::from(ground_target.map(|val| val as f32));
-            let pos_vec3 = Vector3::<f32>::new(pos.x(), pos.y(), pos.z());
+            let pos_vec3 = Vector3::<f32>::new(sat_pos.x(), sat_pos.y(), sat_pos.z());
             let rot3x3 = look_at_ground_target(pos_vec3, ground_target_vec3);
             rec.log(
                 "universe/camera",
                 &rerun::Transform3D::from_translation_mat3x3(
-                    [pos.x(), pos.y(), pos.z()],
+                    [sat_pos.x(), sat_pos.y(), sat_pos.z()],
                     rerun::Mat3x3(rot3x3.data.0.as_flattened().try_into().unwrap()),
                 ),
             )

@@ -109,9 +109,8 @@ mod tests {
 
     #[test]
     fn test_spectrum() {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
 
@@ -128,9 +127,8 @@ mod tests {
 
     #[test]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
 
@@ -195,9 +193,8 @@ mod tests {
 
     #[test]
     fn test_spectrogram() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
 
@@ -262,9 +259,8 @@ mod tests {
 
     #[test]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
 

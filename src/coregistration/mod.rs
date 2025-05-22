@@ -242,14 +242,12 @@ mod tests {
 
     #[test]
     fn test_warp_function() {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -269,9 +267,8 @@ mod tests {
     #[test]
     fn testfn_dem_radar_coords() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
