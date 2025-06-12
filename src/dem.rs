@@ -119,6 +119,67 @@ impl DEM {
         geodetic_to_ecef(lat, lon, height + geoid_height)
     }
 
+    /// Gets the normal vector at a specific latitude/longitude position using the DEM data.
+    /// The normal is estimated by calculating the cross product of two tangent vectors
+    /// determined from neighboring points.
+    ///
+    /// If normal estimation fails (e.g., point or its neighbors are out of bounds),
+    /// falls back to the ellipsoid's local_normal.
+    ///
+    /// # Returns
+    ///
+    /// A unit normal vector in ECEF coordinates [nx, ny, nz]
+    pub fn get_normal_at_lat_lon(&self, lat: f64, lon: f64) -> [f64; 3] {
+        // Get index in the DEM grid
+        let [row, col] = self.get_index_at_lat_lon(lat, lon);
+        let (rows, cols) = self.array_dim();
+
+        // Check if neighbors would be within bounds
+        if row == 0 || col == 0 || row >= rows - 1 || col >= cols - 1 {
+            // Fall back to ellipsoid normal if too close to edge
+            return crate::geodesy::local_normal(lat, lon);
+        }
+
+        // Get ECEF coordinates of the center point and neighbors
+        let p0 = self.get_ecef_at_pixel(row, col);
+
+        // Get east and north neighbors
+        let p_east = self.get_ecef_at_pixel(row, col + 1);
+        let p_north = self.get_ecef_at_pixel(row - 1, col); // Row decreases as latitude increases
+
+        // Calculate tangent vectors
+        let tangent_east = [p_east[0] - p0[0], p_east[1] - p0[1], p_east[2] - p0[2]];
+
+        let tangent_north = [p_north[0] - p0[0], p_north[1] - p0[1], p_north[2] - p0[2]];
+
+        // Cross product to get normal vector
+        let normal = [
+            tangent_east[1] * tangent_north[2] - tangent_east[2] * tangent_north[1],
+            tangent_east[2] * tangent_north[0] - tangent_east[0] * tangent_north[2],
+            tangent_east[0] * tangent_north[1] - tangent_east[1] * tangent_north[0],
+        ];
+
+        // Calculate magnitude
+        let magnitude =
+            (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+
+        if magnitude > 1e-10 {
+            // Normalize
+            let local_normal = [
+                normal[0] / magnitude,
+                normal[1] / magnitude,
+                normal[2] / magnitude,
+            ];
+            // The reference frame vector in the ECEF frame
+            let global_normal = crate::geodesy::local_normal(lat, lon);
+            // Perform basis change
+            todo!()
+        } else {
+            // Fall back to ellipsoid normal if calculation failed
+            crate::geodesy::local_normal(lat, lon)
+        }
+    }
+
     /// Copies the DEM raster data into a new, owned, 2D ndarray and returns it.
     pub fn read_raster_data(&self) -> Array2<f32> {
         let data = &self.data;

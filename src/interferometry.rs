@@ -114,7 +114,8 @@ pub fn coregister_and_remove_flat_phase(
 
                 let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
                 let l = (s_1 - ground_target_pos).normalize();
-                let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+                let normal =
+                    Vector3::from(dem.get_normal_at_lat_lon(ground_target_lat, ground_target_lon));
                 let theta = l.dot(&normal).acos();
 
                 phase_diff[[ref_az, ref_rg]] -= accumulated_dphi as f32;
@@ -192,16 +193,16 @@ mod tests {
     #[test]
     fn test_stack_interferograms() {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
         let secondaries = [
-            "S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
+            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
         .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
