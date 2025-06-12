@@ -1,6 +1,9 @@
 use std::path::Path;
 
 use crate::{
+    constants::C_LIGHT,
+    dem::DEM,
+    geodesy::geodetic_to_ecef,
     interpolation::{
         unit_derivative_interval_cubic_hermite_spline_interpolation,
         unit_interval_cubic_hermite_spline_interpolation,
@@ -12,9 +15,15 @@ use crate::{
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
+use num_traits::Float;
+use rustfft::num_traits::Zero;
 
+/// The radar coordinates of a ground target captured by a satellite.
+///
+/// - `time`: The zero-Doppler time.
+/// - `distance_to_target`: The distance from the satellite to the ground target.
 #[derive(Clone, Copy, Debug)]
-pub struct ZeroDopplerState {
+pub struct RadarCoords {
     /// The zero-Doppler time.
     pub time: DateTime<Utc>,
     /// The distance from the satellite to the ground target.
@@ -103,15 +112,18 @@ impl OrbitalStateHistory {
         (pos_interp, vel_interp)
     }
 
-    /// Calculate the zero-Doppler time for a given ground target and satellite trajectory.
+    /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
+    ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
     /// is perpendicular to the vector pointing from the satellite to the ground target:
+    ///
     ///     v(t) · (ground_target_pos - s(t)) = 0
+    ///
     /// This condition implies a dot product of zero between the velocity vector and
     /// the look vector, indicating orthogonality.
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
-    pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> ZeroDopplerState {
+    pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> RadarCoords {
         const NUM_BISECTION_ITER: usize = 32;
         const TOLERANCE: f64 = 1e-9;
         let time = self.time.as_slice();
@@ -126,7 +138,7 @@ impl OrbitalStateHistory {
         let state = |t: DateTime<Utc>| {
             let (sat_pos, _) = self.interp_pos_vel(t);
             let distance_to_target = (ground_target_pos - sat_pos).norm();
-            ZeroDopplerState {
+            RadarCoords {
                 time: t,
                 distance_to_target,
             }
@@ -161,6 +173,33 @@ impl OrbitalStateHistory {
         }
 
         panic!("Zero-Doppler point not found in trajectory window.");
+    }
+
+    /// Calculate the ground target position for a given zero-Doppler state (time and distance to target) and satellite trajectory.
+    ///
+    /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
+    /// is perpendicular to the vector pointing from the satellite to the ground target:
+    ///
+    ///     v(t) · (ground_target_pos - s(t)) = 0
+    ///
+    /// This condition implies a dot product of zero between the velocity vector and
+    /// the look vector, indicating orthogonality.
+    ///
+    /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
+    pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEM) -> Vector3<f64> {
+        let mut current_min = std::f64::MAX;
+        let mut optimal_ground_pos = Vector3::<f64>::zero();
+        let (sat_pos, sat_vel) = self.interp_pos_vel(radar_coords.time);
+        let sat_vel_hat = sat_vel.normalize();
+        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+            let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
+            let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
+            if val < current_min {
+                current_min = val;
+                optimal_ground_pos = ground_pos;
+            }
+        }
+        optimal_ground_pos
     }
 
     /// Creates an upsampled version of Self, inserting k >= 1 samples inbetween every two samples in the original
@@ -247,104 +286,18 @@ impl From<&ListOfOsvs> for OrbitalStateHistory {
     }
 }
 
-pub fn radar_coords_slc_annotation_to_pixel(
-    zero_doppler: ZeroDopplerState,
-    annotation: &SlcProductAnnotation,
-) -> Option<(usize, usize)> {
-    /// Speed of light in m/s
-    const C_LIGHT: f64 = 299_792_458.0;
-    let slant_range_time = annotation
-        .image_annotation
-        .image_information
-        .slant_range_time;
-    let near_edge_slant_range = 0.5 * C_LIGHT * slant_range_time;
-    let t_start = annotation
-        .image_annotation
-        .image_information
-        .product_first_line_utc_time;
-    let stop_time = annotation.ads_header.stop_time;
-    let prf = annotation
-        .general_annotation
-        .downlink_information_list
-        .downlink_information
-        .prf;
-    // ADC Sampling Rate (?) TODO: LEARN
-    // let fs = annotation
-    //     .general_annotation
-    //     .product_information
-    //     .range_sampling_rate;
-    let range_spacing = annotation
-        .image_annotation
-        .image_information
-        .range_pixel_spacing;
-    let azimuth_time_interval = annotation
-        .image_annotation
-        .image_information
-        .azimuth_time_interval;
-
-    // Number of azimuth lines (rows)
-    let num_rows = annotation
-        .image_annotation
-        .image_information
-        .number_of_lines;
-    // Number of range samples per azimuth line (columns)
-    let num_cols = annotation
-        .image_annotation
-        .image_information
-        .number_of_samples;
-
-    // Time difference in seconds
-    let delta_time = zero_doppler.time.signed_duration_since(t_start);
-    let delta_time_secs = delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
-
-    let total_delta_time = stop_time.signed_duration_since(t_start);
-    let total_delta_time_secs = total_delta_time.num_microseconds().unwrap() as f64 * 1.0e-6;
-
-    // Row calculation: (time - t_start) * prf (DOES NOT WORK)
-    // TODO: Understand why this doesn't work
-    // let row = delta_time_secs * prf;
-
-    // Linear interpolation (this seems to work better)
-    // let row = (delta_time_secs / total_delta_time_secs) * (num_rows as f64);
-
-    // Calculation using azimuth_time_interval (similar to linear interp)
-    // This is what the official SNAP microwave toolbox performs:
-    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-io/src/main/java/eu/esa/sar/io/sentinel1/Sentinel1Level1Directory.java
-    // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-op-insar/src/main/java/eu/esa/sar/insar/gpf/support/SARPosition.java
-    let azimuth_index = delta_time_secs / azimuth_time_interval;
-
-    // Column calculation:
-    let slant_range_index =
-        (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
-    println!(
-        "DEBUG | (azimuth, slant range) = {:?}, delta_r = {}, r_0 = {}",
-        (azimuth_index, slant_range_index),
-        range_spacing,
-        near_edge_slant_range
-    );
-    // Check bounds and return if within image
-    if azimuth_index >= 0.0 && slant_range_index >= 0.0 {
-        let row_idx = azimuth_index.round() as usize;
-        let col_idx = slant_range_index.round() as usize;
-
-        if row_idx < num_rows && col_idx < num_cols {
-            return Some((row_idx, col_idx));
-        }
-    }
-
-    None
-}
-
-/// Returns the radar coordinates in the domain of the annotation.
+/// Converts the radar coordinates (azimuth time and slant range distance to target) to the pixel coordinates (azimuth index and slant range index) in the SLC image.
 ///
 /// # Returns
-/// An array containing the azimuth index and the slant range index.
-pub fn radar_coords_slc_annotation_to_pixel_f32(
-    zero_doppler: ZeroDopplerState,
+/// An array containing the azimuth index and the slant range index, both as `f32`.
+///
+/// # Panics
+/// Panics if the zero-Doppler time is outside the range of the SLC image.
+#[inline(always)]
+pub fn radar_coords_to_pixel_coords<T: Float>(
+    zero_doppler: RadarCoords,
     annotation: &SlcProductAnnotation,
-) -> [f32; 2] {
-    /// Speed of light in m/s
-    const C_LIGHT: f64 = 299_792_458.0;
+) -> [T; 2] {
     let slant_range_time = annotation
         .image_annotation
         .image_information
@@ -377,7 +330,69 @@ pub fn radar_coords_slc_annotation_to_pixel_f32(
     // Column calculation:
     let slant_range_index =
         (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
-    [azimuth_index as f32, slant_range_index as f32]
+    [
+        T::from(azimuth_index).expect(
+            format!(
+                "could not convert azimuth_index to {}",
+                std::any::type_name::<T>()
+            )
+            .as_str(),
+        ),
+        T::from(slant_range_index).expect(
+            format!(
+                "could not convert slant_range_index to {}",
+                std::any::type_name::<T>()
+            )
+            .as_str(),
+        ),
+    ]
+}
+
+/// Converts the pixel coordinates (azimuth index and slant range index) to the radar coordinates (azimuth time and slant range distance to target).
+///
+/// # Returns
+/// The radar coordinates.
+///
+/// # Panics
+/// Panics if either the azimuth index or the slant range index is out of bounds.
+#[inline(always)]
+pub fn pixel_coords_to_radar_coords(
+    azimuth_index: f64,
+    slant_range_index: f64,
+    annotation: &SlcProductAnnotation,
+) -> RadarCoords {
+    let slant_range_time = annotation
+        .image_annotation
+        .image_information
+        .slant_range_time;
+    let near_edge_slant_range = 0.5 * C_LIGHT * slant_range_time;
+
+    let t_start = annotation
+        .image_annotation
+        .image_information
+        .product_first_line_utc_time;
+
+    let range_spacing = annotation
+        .image_annotation
+        .image_information
+        .range_pixel_spacing;
+    let azimuth_time_interval = annotation
+        .image_annotation
+        .image_information
+        .azimuth_time_interval;
+
+    // Reverse azimuth index calculation to get time
+    let delta_time_secs = azimuth_index * azimuth_time_interval;
+    let delta_time_nanos = (delta_time_secs * 1_000_000_000.0).round() as i64;
+    let zero_doppler_time = t_start + TimeDelta::nanoseconds(delta_time_nanos);
+
+    // Reverse slant range index calculation to get distance
+    let distance_to_target = slant_range_index * range_spacing + near_edge_slant_range;
+
+    RadarCoords {
+        time: zero_doppler_time,
+        distance_to_target,
+    }
 }
 
 #[cfg(test)]
@@ -390,11 +405,9 @@ mod manual_tests_satellite_orbit {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        geodesy::geodetic_to_ecef,
+        geodesy::{geodetic_to_ecef, local_normal},
         metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
-        satellite_orbit::{
-            radar_coords_slc_annotation_to_pixel, radar_coords_slc_annotation_to_pixel_f32,
-        },
+        satellite_orbit::radar_coords_to_pixel_coords,
     };
 
     /// Reads the first `<orbitList>` element found in the XML file at `path`.
@@ -435,9 +448,8 @@ mod manual_tests_satellite_orbit {
 
         let zero_doppler = osh.find_zero_doppler_state(pos.into());
         println!("Zero-Doppler time = {:?}", zero_doppler);
-        if let Some((row, col)) = radar_coords_slc_annotation_to_pixel(zero_doppler, &annotation) {
-            println!("Found pixel at {row}, {col}");
-        }
+        let [row, col]: [f32; 2] = radar_coords_to_pixel_coords(zero_doppler, &annotation);
+        println!("Found pixel at {row}, {col}");
     }
 
     #[test]
@@ -457,7 +469,7 @@ mod manual_tests_satellite_orbit {
             let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
             let [azimuth_idx, slant_range_idx] =
-                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+                radar_coords_to_pixel_coords(zero_doppler, &annotation);
 
             points.push([slant_range_idx, azimuth_idx]);
         }
@@ -477,7 +489,7 @@ mod manual_tests_satellite_orbit {
             let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let [azimuth_idx, slant_range_idx] =
-                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+                radar_coords_to_pixel_coords(zero_doppler, &annotation);
 
             points.push([slant_range_idx, azimuth_idx]);
         }
@@ -498,7 +510,7 @@ mod manual_tests_satellite_orbit {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let [azimuth_idx, slant_range_idx] =
-                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+                radar_coords_to_pixel_coords(zero_doppler, &annotation);
 
             points.push([slant_range_idx, azimuth_idx]);
         }
@@ -512,7 +524,7 @@ mod manual_tests_satellite_orbit {
             let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let [azimuth_idx, slant_range_idx] =
-                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &annotation);
+                radar_coords_to_pixel_coords(zero_doppler, &annotation);
 
             points.push([slant_range_idx, azimuth_idx]);
         }
@@ -546,37 +558,74 @@ mod manual_tests_satellite_orbit {
         // Record time-series of satellite position
         let n = orbital_history.time.len();
         for k in 0..n {
-            let pos = orbital_history.position[k];
+            let sat_pos = orbital_history.position[k];
             let vel = orbital_history.velocity[k];
             let time = orbital_history.time[k];
             let look_rot3x3 = look_rotation_from_velocity_and_position(
                 vel.map(|c| c as f32),
-                pos.map(|c| c as f32),
+                sat_pos.map(|c| c as f32),
             );
             rec.set_time_nanos("satellite_time", time.timestamp_nanos_opt().unwrap());
 
-            let pos = rerun::Position3D::new(pos.x as f32, pos.y as f32, pos.z as f32);
+            // log normals as arrows
+            let mut normals = vec![];
+            let mut sat_look_vectors = vec![];
+            let mut positions = vec![];
+            for gcp in &annotation
+                .geolocation_grid
+                .geolocation_grid_point_list
+                .geolocation_grid_point
+            {
+                let gcp_pos =
+                    geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height).map(|val| val as f32);
+                let gcp_pos_vec3 = Vector3::<f32>::from(gcp_pos);
+                let l = (sat_pos.map(|c| c as f32) - gcp_pos_vec3).normalize();
+                sat_look_vectors.push([l.x * 1000.0, l.y * 1000.0, l.z * 1000.0]);
+                let normal = local_normal(gcp.latitude, gcp.longitude).map(|val| val as f32);
+                let normal_vec3 = Vector3::<f32>::from(normal);
+                let theta = l.dot(&normal_vec3).acos();
+                let log_title = format!("theta for gcp {}, {}", gcp.latitude, gcp.longitude);
+                rec.log(
+                    log_title,
+                    &rerun::TextLog::new(format!("{}", theta.to_degrees())),
+                )
+                .unwrap();
+                normals.push(normal.map(|c| c * 1000.0));
+                positions.push(gcp_pos);
+            }
+            rec.log(
+                "geo_normals",
+                &rerun::Arrows3D::from_vectors(normals).with_origins(positions.clone()),
+            )
+            .unwrap();
+            rec.log(
+                "satellite_look_vectors",
+                &rerun::Arrows3D::from_vectors(sat_look_vectors).with_origins(positions),
+            )
+            .unwrap();
+            let sat_pos =
+                rerun::Position3D::new(sat_pos.x as f32, sat_pos.y as f32, sat_pos.z as f32);
             rec.log(
                 "satellite_position",
-                &rerun::Points3D::new([pos])
+                &rerun::Points3D::new([sat_pos])
                     .with_colors([Color::WHITE])
                     .with_radii([1500.0]),
             )
             .unwrap();
             let arrow_vel =
                 rerun::Arrows3D::from_vectors([(vel.x as f32, vel.y as f32, vel.z as f32)])
-                    .with_origins([pos]);
+                    .with_origins([sat_pos]);
             rec.log("satellite_velocity", &arrow_vel).unwrap();
 
             // Pinhole camera
             let ground_target = geodetic_to_ecef(19.49831428810679, -98.59301000370277, 0.0);
             let ground_target_vec3 = Vector3::<f32>::from(ground_target.map(|val| val as f32));
-            let pos_vec3 = Vector3::<f32>::new(pos.x(), pos.y(), pos.z());
+            let pos_vec3 = Vector3::<f32>::new(sat_pos.x(), sat_pos.y(), sat_pos.z());
             let rot3x3 = look_at_ground_target(pos_vec3, ground_target_vec3);
             rec.log(
                 "universe/camera",
                 &rerun::Transform3D::from_translation_mat3x3(
-                    [pos.x(), pos.y(), pos.z()],
+                    [sat_pos.x(), sat_pos.y(), sat_pos.z()],
                     rerun::Mat3x3(rot3x3.data.0.as_flattened().try_into().unwrap()),
                 ),
             )

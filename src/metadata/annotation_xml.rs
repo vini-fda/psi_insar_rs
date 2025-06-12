@@ -1410,7 +1410,7 @@ pub struct LastValidSample {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGrid {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1418,7 +1418,7 @@ pub struct GeolocationGrid {
     pub geolocation_grid_point_list: GeolocationGridPointList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGridPointList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1428,7 +1428,28 @@ pub struct GeolocationGridPointList {
     pub geolocation_grid_point: Vec<GeolocationGridPoint>,
 }
 
-#[derive(Serialize, Deserialize)]
+impl GeolocationGridPointList {
+    /// Get the bounding box of the geolocation grid points.
+    ///
+    /// # Returns
+    /// An array containing the minimum and maximum latitude and longitude values,
+    /// in the order `[min_lat, max_lat, min_lon, max_lon]`.
+    pub fn get_bounding_box_lat_lon(&self) -> [f64; 4] {
+        let mut min_lat = f64::MAX;
+        let mut max_lat = f64::MIN;
+        let mut min_lon = f64::MAX;
+        let mut max_lon = f64::MIN;
+        for point in &self.geolocation_grid_point {
+            min_lat = min_lat.min(point.latitude);
+            max_lat = max_lat.max(point.latitude);
+            min_lon = min_lon.min(point.longitude);
+            max_lon = max_lon.max(point.longitude);
+        }
+        [min_lat, max_lat, min_lon, max_lon]
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeolocationGridPoint {
     #[serde(rename = "$text")]
     pub text: Option<String>,

@@ -461,6 +461,8 @@ pub enum GranuleIdError {
     InvalidMission(String),
     #[error("invalid mode: {0}")]
     InvalidMode(String),
+    #[error("invalid subswath: {0}")]
+    InvalidSubswath(String),
     #[error("invalid product type: {0}")]
     InvalidProductType(String),
     #[error("invalid resolution: {0}")]
@@ -596,6 +598,134 @@ impl AsRef<Sentinel1GranuleId> for Sentinel1GranuleId {
     }
 }
 
+/// Represents a Sentinel-1 Internal Dataset Filename
+///
+/// Format: mission-modebeam-producttype-polarisation-startdatetime-stopdatetime-absolutorbitnumber-missiondatatakeid-relativeslicenumber.fileextension
+/// (Based on the naming standard for data set files in Sentinel-1 Level-1 and Level-2 products)
+///
+/// Where:
+/// - mission: Mission identifier (s1a or s1b)
+/// - mode_beam: Mode/beam identifier + subswath (e.g., iw3, ew1)
+/// - product_type: Product type (slc, grd, ocn)
+/// - polarisation: Polarization (sh, sv, dh, dv, hh, hv, vv, vh)
+/// - start_time: Start date and time
+/// - stop_time: End date and time
+/// - orbit_number: Absolute orbit number (6 digits)
+/// - data_take_id: Mission data-take identifier (6 hexadecimal digits)
+/// - slice_number: Relative slice number (usually 3 digits like 001)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct Sentinel1TIFFFileName {
+    /// Mission identifier (s1a, s1b)
+    pub mission: Mission,
+    /// Mode/beam identifier combined with subswath number (iw1, iw2, iw3, ew1..ew5)
+    pub mode_subswath: ModeSubswath,
+    /// Product type (slc, grd, ocn for L1/L2 files)
+    pub product_type: ProductType,
+    /// Polarization (sh, sv, dh, dv, hh, hv, vv, vh)
+    pub polarization: PolarizationMode,
+    /// Start date and time (YYYYMMDDTHHMMSS)
+    pub start_time: DateTime<Utc>,
+    /// End date and time (YYYYMMDDTHHMMSS)
+    pub stop_time: DateTime<Utc>,
+    /// Absolute orbit number (6 digits like OOOOOO)
+    pub orbit_number: String,
+    /// Mission data-take identifier (6 hexadecimal digits like DDDDDD)
+    pub data_take_id: String,
+    /// Relative slice number (sequence number, e.g., 001)
+    pub slice_number: String,
+    /// Original filename string, without the file extension
+    #[serde(skip)]
+    pub raw_filename: String,
+}
+
+impl Sentinel1TIFFFileName {
+    pub fn parse(filename: &str) -> Result<Self, GranuleIdError> {
+        let filename = filename.to_ascii_uppercase();
+        let mission = Mission::from_str(&filename[0..3])?;
+        let mode_subswath = ModeSubswath::from_str(&filename[4..7])?;
+        let product_type = ProductType::from_str(&filename[8..11])?;
+        let polarization = PolarizationMode::from_str(&filename[12..14])?;
+        let start_time = NaiveDateTime::parse_from_str(&filename[15..30], "%Y%m%dT%H%M%S")?;
+        let start_time = DateTime::from_naive_utc_and_offset(start_time, Utc);
+        let stop_time = NaiveDateTime::parse_from_str(&filename[31..46], "%Y%m%dT%H%M%S")?;
+        let stop_time = DateTime::from_naive_utc_and_offset(stop_time, Utc);
+        let orbit_number = filename[47..53].to_string();
+        let data_take_id = filename[54..60].to_string();
+        let slice_number = filename[61..].to_string();
+
+        Ok(Sentinel1TIFFFileName {
+            mission,
+            mode_subswath,
+            product_type,
+            polarization,
+            start_time,
+            stop_time,
+            orbit_number,
+            data_take_id,
+            slice_number,
+            raw_filename: filename.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subswath(u8);
+
+impl Subswath {
+    pub fn new(value: u8) -> Result<Self, GranuleIdError> {
+        if value < 1 || value > 5 {
+            return Err(GranuleIdError::InvalidSubswath(format!(
+                "Invalid subswath: {}",
+                value
+            )));
+        }
+        Ok(Subswath(value))
+    }
+}
+
+impl FromStr for Subswath {
+    type Err = GranuleIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s[..1].parse::<u8>() {
+            Ok(c) => Subswath::new(c),
+            Err(_) => Err(GranuleIdError::InvalidSubswath(format!(
+                "Invalid subswath: {}",
+                &s[..1]
+            ))),
+        }
+    }
+}
+
+impl fmt::Display for Subswath {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeSubswath {
+    pub mode: Mode,
+    pub subswath: Subswath,
+}
+
+impl FromStr for ModeSubswath {
+    type Err = GranuleIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mode = Mode::from_str(&s[0..2])?;
+        let subswath = Subswath::from_str(&s[2..3])?;
+        Ok(ModeSubswath { mode, subswath })
+    }
+}
+
+impl fmt::Display for ModeSubswath {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}{}", self.mode, self.subswath)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +786,22 @@ mod tests {
         let deserialized: Sentinel1GranuleId = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(parsed, deserialized);
+    }
+
+    #[test]
+    fn test_tiff_file_name() {
+        let file_name = "s1a-iw3-slc-vv-20150916t122546-20150916t122549-007740-00ac19-001";
+        let parsed = Sentinel1TIFFFileName::parse(file_name).unwrap();
+
+        assert_eq!(parsed.mission, Mission::S1A);
+        assert_eq!(
+            parsed.mode_subswath,
+            ModeSubswath {
+                mode: Mode::IW,
+                subswath: Subswath::new(3).unwrap()
+            }
+        );
+        assert_eq!(parsed.product_type, ProductType::SLC);
+        assert_eq!(parsed.polarization, PolarizationMode::VV);
     }
 }

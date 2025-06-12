@@ -6,7 +6,7 @@ use ndarray::Array2;
 use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
-    satellite_orbit::{OrbitalStateHistory, radar_coords_slc_annotation_to_pixel_f32},
+    satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
 };
 
@@ -32,7 +32,7 @@ pub fn compute_warp_function(
                         annotation: &SlcProductAnnotation|
      -> [f32; 2] {
         let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
-        radar_coords_slc_annotation_to_pixel_f32(zero_doppler, annotation)
+        radar_coords_to_pixel_coords(zero_doppler, annotation)
     };
     let mut rho = Array2::<[f32; 2]>::default((slant_range_size, azimuth_size));
     for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
@@ -102,8 +102,7 @@ mod tests {
     use ndarray::{Dimension, s};
 
     use crate::{
-        dem::DEM, satellite_orbit::radar_coords_slc_annotation_to_pixel_f32,
-        sentinel::Sentinel1SlcBurst,
+        dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst,
     };
 
     use super::compute_warp_function;
@@ -243,14 +242,12 @@ mod tests {
 
     #[test]
     fn test_warp_function() {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -270,9 +267,8 @@ mod tests {
     #[test]
     fn testfn_dem_radar_coords() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
@@ -290,7 +286,7 @@ mod tests {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = ref_osh.find_zero_doppler_state(pos.into());
             let [azimuth, slant_range] =
-                radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &reference.metadata);
+                radar_coords_to_pixel_coords(zero_doppler, &reference.metadata);
 
             vertices.push([slant_range, azimuth, 0.0]); // Using col as x, row as y
             lons.push(lon);

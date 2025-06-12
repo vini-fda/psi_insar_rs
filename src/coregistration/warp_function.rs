@@ -21,7 +21,7 @@ use std::iter::Map;
 use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
-    satellite_orbit::{OrbitalStateHistory, radar_coords_slc_annotation_to_pixel_f32},
+    satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
 };
 
@@ -51,7 +51,7 @@ pub trait WarpFunction {
 }
 
 pub struct DelaunayWarpFunction {
-    triangulation: DelaunayTriangulation<ExactMapping>,
+    pub triangulation: DelaunayTriangulation<ExactMapping>,
 }
 
 /// A point which contains a single exact mapping of the reference coordinates to the secondary coordinates.
@@ -81,7 +81,7 @@ impl DelaunayWarpFunction {
          -> [f32; 2] {
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
 
-            radar_coords_slc_annotation_to_pixel_f32(zero_doppler, annotation)
+            radar_coords_to_pixel_coords(zero_doppler, annotation)
         };
         let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
         for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
@@ -218,14 +218,12 @@ mod tests {
 
     #[test]
     fn test_resample_secondary_to_reference() {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -302,14 +300,12 @@ mod tests {
 
     #[test]
     fn test_resampled_phase_difference() {
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");

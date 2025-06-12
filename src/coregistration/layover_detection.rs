@@ -1,7 +1,4 @@
-use crate::{
-    dem::DEM, satellite_orbit::radar_coords_slc_annotation_to_pixel_f32,
-    sentinel::Sentinel1SlcBurst,
-};
+use crate::{dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst};
 
 /// Checks for layover in the radar image by comparing vertex ordering in geographic and radar coordinates.
 /// Layover occurs when the relative ordering of points in geographic space is inverted in radar coordinates.
@@ -30,7 +27,7 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
         let zero_doppler = osh.find_zero_doppler_state(pos.into());
         let [azimuth_idx, slant_range_idx] =
-            radar_coords_slc_annotation_to_pixel_f32(zero_doppler, &burst.metadata);
+            radar_coords_to_pixel_coords(zero_doppler, &burst.metadata);
         (azimuth_idx, slant_range_idx)
     };
 
@@ -303,14 +300,12 @@ mod tests {
     #[test]
     fn test_check_layover() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcBurst::load_from_directory(
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_from_directory(
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-            "S1A_IW_SLC__1SVV_20151010T122546_20151010T122550_008090_00B578_BFAD",
         )
         .unwrap();
 

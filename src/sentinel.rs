@@ -1,6 +1,6 @@
 use crate::granule_id::{
     DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProductType,
-    Sentinel1GranuleId,
+    Sentinel1GranuleId, Sentinel1TIFFFileName,
 };
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
@@ -173,53 +173,58 @@ impl GdalType for ComplexI16 {
 /// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
 pub struct Sentinel1SlcBurst {
-    pub mission: Mission,
-    pub mode: Mode,
-    pub product_type: ProductType,
-    pub polarization: PolarizationMode,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub orbit_number: OrbitNumber,
-    pub data_take_id: DataTakeId,
-    pub product_id: String,
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
+    pub granule_id: Sentinel1TIFFFileName,
     pub data: SlcImage,
 }
 
 impl Sentinel1SlcBurst {
-    pub fn load_from_directory(
-        directory: impl AsRef<Path>,
-        granule_str: impl AsRef<str>,
-    ) -> Result<Self, String> {
+    /// Load the burst from a directory, choosing the first .tiff file in the measurement directory.
+    pub fn load_first_from_directory(directory: impl AsRef<Path>) -> Result<Self, String> {
         let directory = directory.as_ref();
-        let granule =
-            Sentinel1GranuleId::parse(granule_str.as_ref()).map_err(|e| format!("ERROR: {}", e))?;
-        // Extract mission and polarization from granule ID
-        let mission = granule.mission;
-        let mode = granule.mode;
-        let product_type = granule.product_type;
-        let polarization = granule.polarization;
-        let start_time = granule.start_time;
-        let end_time = granule.end_time;
-        let orbit_number = granule.orbit_number;
-        let data_take_id = granule.data_take_id;
-        let product_id = granule.product_id.clone();
+        let measurement_dir = directory.join("measurement");
 
-        // formatted times
-        let start_datetime_fmt = start_time.format("%Y%m%dT%H%M%S");
-        let end_datetime_fmt = end_time.format("%Y%m%dT%H%M%S");
+        // Check if directory exists
+        if !measurement_dir.exists() {
+            return Err(format!(
+                "Measurement directory does not exist: {}",
+                measurement_dir.display()
+            ));
+        }
 
-        let sub_swath = IWSwath::IW3;
-        let slug = format!(
-                "{mission}-{sub_swath}-{product_type}-{polarization}-{start_datetime_fmt}-{end_datetime_fmt}-{orbit_number}-{data_take_id}-001"
-            ).to_lowercase();
+        // Find file matching pattern
+        let entries = std::fs::read_dir(&measurement_dir)
+            .map_err(|e| format!("Failed to read measurement directory: {}", e))?;
+
+        let mut granule_str = None;
+        for entry_result in entries {
+            let entry =
+                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+            let file_name = entry.file_name();
+            if let Some(file_name) = file_name.to_str() {
+                if file_name.ends_with(".tiff") || file_name.ends_with(".tif") {
+                    let removed_extension = file_name.split(".").next().unwrap();
+                    granule_str = Some(removed_extension.to_string());
+                }
+            }
+        }
+
+        if granule_str.is_none() {
+            return Err("No TIFF file found in measurement directory".to_string());
+        }
+
+        let granule_str = granule_str.unwrap();
+
+        let granule_id =
+            Sentinel1TIFFFileName::parse(&granule_str).map_err(|e| format!("ERROR: {}", e))?;
+
         // Construct paths to necessary files
-        let calibration_path = Self::find_calibration_xml(directory, &slug)?;
-        let noise_path = Self::find_noise_xml(directory, &slug)?;
-        let annotation_path = Self::find_annotation_xml(directory, &slug)?;
-        let measurement_path = Self::find_measurement_tiff(directory, &slug)?;
+        let calibration_path = Self::find_calibration_xml(directory, &granule_str)?;
+        let noise_path = Self::find_noise_xml(directory, &granule_str)?;
+        let annotation_path = Self::find_annotation_xml(directory, &granule_str)?;
+        let measurement_path = Self::find_measurement_tiff(directory, &granule_str)?;
 
         // Parse calibration XML
         let calibration_xml_content = std::fs::read_to_string(&calibration_path)
@@ -242,18 +247,10 @@ impl Sentinel1SlcBurst {
 
         // Create the SlcBurst instance
         Ok(Sentinel1SlcBurst {
-            mission,
-            mode,
-            product_type,
-            polarization,
-            start_time,
-            end_time,
-            orbit_number,
-            data_take_id,
-            product_id,
             calibration,
             noise,
             metadata,
+            granule_id,
             data,
         })
     }
@@ -468,10 +465,6 @@ mod tests {
         let root = PathBuf::from(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         );
-        let _ = Sentinel1SlcBurst::load_from_directory(
-            &root,
-            "S1A_IW_SLC__1SVV_20151022T122546_20151022T122549_008265_00BA51_422D",
-        )
-        .expect("Failed to load burst");
+        let _ = Sentinel1SlcBurst::load_first_from_directory(&root).expect("Failed to load burst");
     }
 }

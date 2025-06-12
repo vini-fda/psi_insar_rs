@@ -1,6 +1,8 @@
 use ndarray::ArrayView2;
 use num_complex::Complex;
+use num_traits::{Float, NumCast};
 use std::cmp::{max, min};
+use std::ops::AddAssign;
 
 /// Maximum support radius allowed for any kernel.
 /// This determines the size of the fixed array used for intermediate values.
@@ -8,6 +10,9 @@ pub const MAX_SUPPORT: usize = 8;
 
 /// A trait for 1D interpolation kernels.
 pub trait Kernel {
+    // associated type
+    type T: Float;
+
     /// Evaluates the kernel at a given distance from the center.
     ///
     /// Args:
@@ -15,7 +20,7 @@ pub trait Kernel {
     ///
     /// Returns:
     ///     The kernel weight at distance t.
-    fn evaluate(&self, t: f32) -> f32;
+    fn evaluate(&self, t: Self::T) -> Self::T;
 
     /// Returns the support radius of the kernel.
     /// This is the number of neighboring samples to consider on each side.
@@ -26,11 +31,15 @@ pub trait Kernel {
 /// Bilinear (Tent/Triangle) kernel.
 /// K(t) = max(0, 1 - |t|)
 /// Support radius: 1
-pub struct BilinearKernel;
+pub struct BilinearKernel<T: Float> {
+    _marker: std::marker::PhantomData<T>,
+}
 
-impl Kernel for BilinearKernel {
-    fn evaluate(&self, t: f32) -> f32 {
-        f32::max(0.0, 1.0 - t.abs())
+impl<T: Float> Kernel for BilinearKernel<T> {
+    type T = T;
+
+    fn evaluate(&self, t: T) -> T {
+        T::max(T::zero(), T::one() - t.abs())
     }
 
     fn support_radius(&self) -> usize {
@@ -38,38 +47,48 @@ impl Kernel for BilinearKernel {
     }
 }
 
-impl Default for BilinearKernel {
+impl<T: Float> Default for BilinearKernel<T> {
     fn default() -> Self {
-        Self {}
+        Self {
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
 /// Cubic (Catmull-Rom type) kernel.
 /// Support radius: 2
-pub struct CubicKernel {
-    a: f32,
+pub struct CubicKernel<T: Float> {
+    a: T,
 }
 
-impl CubicKernel {
-    pub fn new(a: f32) -> Self {
+impl<T: Float> CubicKernel<T> {
+    pub fn new(a: T) -> Self {
         Self { a }
     }
 
     pub fn default() -> Self {
-        Self { a: -0.5 } // Common coefficient value
+        Self {
+            a: T::from(-0.5).unwrap(),
+        } // Common coefficient value
     }
 }
 
-impl Kernel for CubicKernel {
-    fn evaluate(&self, t: f32) -> f32 {
+impl<T: Float> Kernel for CubicKernel<T> {
+    type T = T;
+
+    fn evaluate(&self, t: T) -> T {
         let t_abs = t.abs();
-        if t_abs >= 0.0 && t_abs < 1.0 {
-            (self.a + 2.0) * t_abs.powi(3) - (self.a + 3.0) * t_abs.powi(2) + 1.0
-        } else if t_abs >= 1.0 && t_abs < 2.0 {
-            self.a * t_abs.powi(3) - 5.0 * self.a * t_abs.powi(2) + 8.0 * self.a * t_abs
-                - 4.0 * self.a
+        let one = T::one();
+        let two = T::from(2.0).unwrap();
+
+        if t_abs >= T::zero() && t_abs < one {
+            (self.a + two) * t_abs.powi(3) - (self.a + T::from(3.0).unwrap()) * t_abs.powi(2) + one
+        } else if t_abs >= one && t_abs < two {
+            self.a * t_abs.powi(3) - T::from(5.0).unwrap() * self.a * t_abs.powi(2)
+                + T::from(8.0).unwrap() * self.a * t_abs
+                - T::from(4.0).unwrap() * self.a
         } else {
-            0.0 // Outside support [-2, 2]
+            T::zero() // Outside support [-2, 2]
         }
     }
 
@@ -88,21 +107,25 @@ impl Kernel for CubicKernel {
 /// where chi = pi * n * delta
 ///
 /// and delta is the sampling interval, related to the oversampling factor beta by delta = 1 - 1/beta
-pub struct KnabSincKernel {
+pub struct KnabSincKernel<T: Float> {
     n: usize,
-    chi: f32,
+    chi: T,
 }
 
-impl KnabSincKernel {
+impl<T: Float> KnabSincKernel<T> {
     /// Creates a new Knab-windowed Sinc kernel.
     ///
     /// Args:
     ///     - n: The support radius of the kernel.
     ///     - delta: The sampling interval, a value between 0 and 1, related to the oversampling factor beta by delta = 1 - 1/beta.
-    pub fn new(n: usize, delta: f32) -> Self {
+    pub fn new(n: usize, delta: T) -> Self {
         use std::f32::consts::PI;
-        let delta = delta.clamp(0.0, 1.0);
-        let chi = PI * n as f32 * delta;
+        let zero = T::zero();
+        let one = T::one();
+        let delta = delta.clamp(zero, one);
+        let n_t: T = num_traits::cast(n).unwrap();
+        let pi_t = T::from(PI).unwrap();
+        let chi = pi_t * n_t * delta;
         if n > MAX_SUPPORT {
             panic!("Kernel support radius exceeds MAX_SUPPORT");
         }
@@ -110,7 +133,7 @@ impl KnabSincKernel {
     }
 }
 
-impl Default for KnabSincKernel {
+impl<T: Float> Default for KnabSincKernel<T> {
     /// Creates a default Knab-windowed Sinc kernel with N=6 and delta=0.5.
     ///
     /// This configuration provides high-quality interpolation suitable for SAR/InSAR applications:
@@ -122,38 +145,45 @@ impl Default for KnabSincKernel {
     /// - Good suppression of aliasing
     /// - Reasonable computational cost
     fn default() -> Self {
-        Self::new(6, 0.6)
+        Self::new(6, T::from(0.6).unwrap())
     }
 }
 
-impl Kernel for KnabSincKernel {
-    fn evaluate(&self, t: f32) -> f32 {
+impl<T: Float> Kernel for KnabSincKernel<T> {
+    type T = T;
+
+    fn evaluate(&self, t: T) -> T {
         use std::f32::consts::PI;
-        let chi = self.chi;
-        let n_f32 = self.n as f32;
+        let pi_t = T::from(PI).unwrap() * t;
+        let chi = T::from(self.chi).unwrap();
+        let n_t = T::from(self.n as f32).unwrap();
         let t_abs = t.abs();
 
         // Kernel is zero outside the support [-N, N]
-        if t_abs > n_f32 {
-            return 0.0;
+        if t_abs > n_t {
+            return T::zero();
         }
 
         // Handle the t = 0 case separately
-        if t_abs < 1e-6 {
-            return 1.0;
+        if t_abs < T::from(1e-6).unwrap() {
+            return T::one();
         }
 
         // Calculate sinc part: sin(pi*t) / (pi*t)
-        let sinc_val = (PI * t).sin() / (PI * t);
+        let sinc_val = pi_t.sin() / pi_t;
 
         // Calculate Knab window part
         let cosh_chi = chi.cosh();
-        if cosh_chi.abs() < 1e-6 {
-            return if chi == 0.0 { sinc_val } else { 0.0 };
+        if cosh_chi.abs() < T::from(1e-6).unwrap() {
+            return if chi == T::zero() {
+                sinc_val
+            } else {
+                T::zero()
+            };
         }
 
-        let t_over_n_squared = (t / n_f32) * (t / n_f32);
-        let sqrt_term = (1.0 - t_over_n_squared).max(0.0);
+        let t_over_n_squared = (t / n_t) * (t / n_t);
+        let sqrt_term = (T::one() - t_over_n_squared).max(T::zero());
         let cosh_arg = chi * sqrt_term.sqrt();
         let knab_window_val = cosh_arg.cosh() / cosh_chi;
 
@@ -196,14 +226,10 @@ fn clamp_index(idx: isize, size: usize) -> usize {
 ///
 /// Boundary Handling:
 ///     Uses clamped indices (replicates edge pixel values).
-pub fn interpolate_2d<K>(
-    image: ArrayView2<Complex<f32>>,
-    i: f32,
-    j: f32,
-    kernel: &K,
-) -> Complex<f32>
+pub fn interpolate_2d<K, T>(image: ArrayView2<Complex<T>>, i: T, j: T, kernel: &K) -> Complex<T>
 where
-    K: Kernel,
+    K: Kernel<T = T>,
+    T: Float,
 {
     let (num_rows, num_cols) = image.dim();
     let radius = kernel.support_radius() as isize;
@@ -214,13 +240,13 @@ where
 
     // Determine the range of discrete row indices (m) needed for the vertical pass
     // Indices m range from floor(i) - radius to floor(i) + radius
-    let i_floor = i.floor() as isize;
+    let i_floor = i.floor().to_isize().unwrap();
     let m_start = i_floor - radius;
     let m_end = i_floor + radius;
 
     // Determine the range of discrete column indices (n) needed for the horizontal pass
     // Indices n range from floor(j) - radius to floor(j) + radius
-    let j_floor = j.floor() as isize;
+    let j_floor = j.floor().to_isize().unwrap();
     let n_start = j_floor - radius;
     let n_end = j_floor + radius;
 
@@ -233,24 +259,26 @@ where
         "Number of intermediate values exceeds array size"
     );
 
-    let mut intermediate_values = [(0isize, Complex::<f32>::new(0.0, 0.0)); 2 * MAX_SUPPORT + 1];
+    let mut intermediate_values =
+        [(0isize, Complex::<T>::new(T::zero(), T::zero())); 2 * MAX_SUPPORT + 1];
     let mut intermediate_count = 0;
 
     for n in n_start..=n_end {
         // Clamp column index n to be within image bounds for accessing I(m, n)
         let n_clamped = clamp_index(n, num_cols);
 
-        let mut vertical_sum = Complex::<f32>::new(0.0, 0.0);
+        let mut vertical_sum = Complex::<T>::new(T::zero(), T::zero());
         for m in m_start..=m_end {
             // Clamp row index m to be within image bounds for accessing I(m, n)
             let m_clamped = clamp_index(m, num_rows);
 
             // Calculate kernel weight K(i - m) using the original (unclamped) m index
-            let weight = kernel.evaluate(i - (m as f32));
+            let m_t: T = num_traits::cast(m).unwrap();
+            let weight = kernel.evaluate(i - m_t);
 
             // Add contribution I(m, n) * K(i - m)
-            if weight != 0.0 {
-                vertical_sum += image[[m_clamped, n_clamped]] * weight;
+            if weight != T::zero() {
+                vertical_sum = vertical_sum + image[[m_clamped, n_clamped]] * weight;
             }
         }
         // Store the intermediate result g(n, i) for column n
@@ -261,14 +289,16 @@ where
     // --- Pass 2: Horizontal Interpolation ---
     // Interpolate the intermediate values g(n, i) along the horizontal direction
     // result = sum_n g(n, i) * K(j - n)
-    let mut final_value = Complex::<f32>::new(0.0, 0.0);
-    for (n, g_n_i) in intermediate_values.iter().take(intermediate_count) {
+    let mut final_value = Complex::<T>::new(T::zero(), T::zero());
+    for (n_idx_ref, complex_val_ref) in intermediate_values.iter().take(intermediate_count) {
         // Calculate kernel weight K(j - n) using the original (unclamped) n index
-        let weight = kernel.evaluate(j - (*n as f32));
+        let n_idx_t: T = num_traits::cast(*n_idx_ref).unwrap();
+        let weight: T = kernel.evaluate(j - n_idx_t);
 
         // Add contribution g(n, i) * K(j - n)
-        if weight != 0.0 {
-            final_value += g_n_i * weight;
+        if weight != T::zero() {
+            let val_to_add: Complex<T> = *complex_val_ref * weight;
+            final_value = final_value + val_to_add;
         }
     }
 
@@ -282,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_bilinear_kernel() {
-        let kernel = BilinearKernel;
+        let kernel = BilinearKernel::default();
         assert_relative_eq!(kernel.evaluate(0.0), 1.0, epsilon = 1e-6);
         assert_relative_eq!(kernel.evaluate(0.5), 0.5, epsilon = 1e-6);
         assert_relative_eq!(kernel.evaluate(1.0), 0.0, epsilon = 1e-6);
@@ -293,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_cubic_kernel() {
-        let kernel = CubicKernel::default();
+        let kernel: CubicKernel<f64> = CubicKernel::default();
         assert_relative_eq!(kernel.evaluate(0.0), 1.0, epsilon = 1e-6);
         assert_relative_eq!(kernel.evaluate(1.0), 0.0, epsilon = 1e-6);
         assert_relative_eq!(kernel.evaluate(2.0), 0.0, epsilon = 1e-6);

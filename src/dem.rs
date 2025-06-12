@@ -9,7 +9,53 @@ pub struct DEM {
     pub data: gdal::Dataset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopernicusDemType {
+    Cop30,
+    Cop90,
+}
+
+impl std::fmt::Display for CopernicusDemType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CopernicusDemType::Cop30 => write!(f, "COP30"),
+            CopernicusDemType::Cop90 => write!(f, "COP90"),
+        }
+    }
+}
+
 impl DEM {
+    /// Download a DEM from the OpenTopography API.
+    ///
+    /// # Arguments
+    ///
+    /// - `bounds` [min_lat, max_lat, min_lon, max_lon] - The bounding box of the DEM.
+    /// - `dem_type` - The type of DEM to download.
+    ///
+    /// # Returns
+    ///
+    /// - A new [`DEM`].
+    ///
+    pub fn download_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> Self {
+        let [min_lat, max_lat, min_lon, max_lon] = bounds;
+        let api_key =
+            std::env::var("OPENTOPOGRAPHY_API_KEY").expect("OPENTOPOGRAPHY_API_KEY not set");
+        let url = format!(
+            "https://portal.opentopography.org/API/globaldem?demtype={}&south={}&north={}&west={}&east={}&outputFormat=GTiff&API_Key={}",
+            dem_type, min_lat, max_lat, min_lon, max_lon, api_key
+        );
+        let response = ureq::get(url).call().expect("Failed to download DEM");
+        if response.status() == 200 {
+            let body = response.into_body();
+            let mut reader = body.into_reader();
+            let file_path = std::env::temp_dir().join(format!("dem_{}.tif", dem_type));
+            let mut dem_file = std::fs::File::create(file_path.clone()).unwrap();
+            std::io::copy(&mut reader, &mut dem_file).unwrap();
+            Self::open_file(file_path)
+        } else {
+            panic!("Failed to download DEM");
+        }
+    }
     /// Opens the DEM file and returns the DEM struct
     pub fn open_file<P: AsRef<Path>>(dem_file_path: P) -> Self {
         let data = gdal::Dataset::open(dem_file_path).expect("Failed to open DEM GeoTIFF file");
@@ -71,6 +117,67 @@ impl DEM {
         let height = self.get_height_at_lat_lon(lat, lon);
         let geoid_height = egm_2008::geoid_height(lat, lon).unwrap();
         geodetic_to_ecef(lat, lon, height + geoid_height)
+    }
+
+    /// Gets the normal vector at a specific latitude/longitude position using the DEM data.
+    /// The normal is estimated by calculating the cross product of two tangent vectors
+    /// determined from neighboring points.
+    ///
+    /// If normal estimation fails (e.g., point or its neighbors are out of bounds),
+    /// falls back to the ellipsoid's local_normal.
+    ///
+    /// # Returns
+    ///
+    /// A unit normal vector in ECEF coordinates [nx, ny, nz]
+    pub fn get_normal_at_lat_lon(&self, lat: f64, lon: f64) -> [f64; 3] {
+        // Get index in the DEM grid
+        let [row, col] = self.get_index_at_lat_lon(lat, lon);
+        let (rows, cols) = self.array_dim();
+
+        // Check if neighbors would be within bounds
+        if row == 0 || col == 0 || row >= rows - 1 || col >= cols - 1 {
+            // Fall back to ellipsoid normal if too close to edge
+            return crate::geodesy::local_normal(lat, lon);
+        }
+
+        // Get ECEF coordinates of the center point and neighbors
+        let p0 = self.get_ecef_at_pixel(row, col);
+
+        // Get east and north neighbors
+        let p_east = self.get_ecef_at_pixel(row, col + 1);
+        let p_north = self.get_ecef_at_pixel(row - 1, col); // Row decreases as latitude increases
+
+        // Calculate tangent vectors
+        let tangent_east = [p_east[0] - p0[0], p_east[1] - p0[1], p_east[2] - p0[2]];
+
+        let tangent_north = [p_north[0] - p0[0], p_north[1] - p0[1], p_north[2] - p0[2]];
+
+        // Cross product to get normal vector
+        let normal = [
+            tangent_east[1] * tangent_north[2] - tangent_east[2] * tangent_north[1],
+            tangent_east[2] * tangent_north[0] - tangent_east[0] * tangent_north[2],
+            tangent_east[0] * tangent_north[1] - tangent_east[1] * tangent_north[0],
+        ];
+
+        // Calculate magnitude
+        let magnitude =
+            (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+
+        if magnitude > 1e-10 {
+            // Normalize
+            let local_normal = [
+                normal[0] / magnitude,
+                normal[1] / magnitude,
+                normal[2] / magnitude,
+            ];
+            // The reference frame vector in the ECEF frame
+            let global_normal = crate::geodesy::local_normal(lat, lon);
+            // Perform basis change
+            todo!()
+        } else {
+            // Fall back to ellipsoid normal if calculation failed
+            crate::geodesy::local_normal(lat, lon)
+        }
     }
 
     /// Copies the DEM raster data into a new, owned, 2D ndarray and returns it.
