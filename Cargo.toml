@@ -7,8 +7,10 @@ edition = "2024"
 approx = "0.5.1"
 base64 = "0.22.1"
 chrono = { version = "0.4.41", features = ["serde"] }
+env_logger = "0.11.8"
 gdal = { version = "0.18.0", features = ["array", "ndarray"] }
 gdal-sys = "0.11.0"
+log = "0.4.27"
 nalgebra = "0.33.2"
 ndarray = { version = "0.16.1", features = ["rayon"] }
 ndarray-npy = "0.9.1"

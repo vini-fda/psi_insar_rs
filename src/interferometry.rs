@@ -43,7 +43,7 @@ pub fn coregister_and_remove_flat_phase(
         let secondary_img = deramp.apply_forward(&secondary);
 
         warp_function
-            .map_many(indices.clone().map(|[az, rg]| [az as f64, rg as f64]))
+            .map(indices.clone().map(|[az, rg]| [az as f64, rg as f64]))
             .enumerate()
             .filter_map(|(i, coords)| coords.map(|c| (i, c)))
             .for_each(|(i, [sec_az, sec_rg])| {

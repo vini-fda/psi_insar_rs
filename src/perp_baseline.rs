@@ -81,12 +81,12 @@
 // #   # )
 // #   # bperp_value = baseline_info['B_perpendicular_signed']
 
-use std::iter::Map;
-
 use nalgebra::{Complex, Vector3};
-use ndarray::Array2;
+use ndarray::{Array2, Axis};
+use rayon::prelude::*;
 use rustfft::num_traits::Zero;
 use spade::{DelaunayTriangulation, HasPosition, Triangulation};
+use std::iter::Map;
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
@@ -638,7 +638,7 @@ impl EnhancedDelaunayWarpFunction {
     /// * `Some([azimuth, range])` - The coordinates in the secondary image that correspond to the
     ///   input reference coordinates
     /// * `None` - If the corresponding input coordinates are outside the convex hull of the triangulation
-    pub fn map_many<'a, I>(
+    pub fn map<'a, I>(
         &'a self,
         ref_coords: I,
     ) -> Map<I::IntoIter, impl FnMut(I::Item) -> Option<[f64; 2]> + 'a>
@@ -657,6 +657,36 @@ impl EnhancedDelaunayWarpFunction {
             Some([mapped_azimuth, mapped_range])
         })
     }
+
+    // uses rayon IntoParallelIterator trait
+    pub fn map_parallel<'a, I>(
+        &'a self,
+        ref_coords: I,
+    ) -> rayon::iter::MapInit<
+        I::Iter,
+        impl Fn() -> spade::NaturalNeighbor<'a, DelaunayTriangulation<WarpFunctionExactMapping>>,
+        impl Fn(
+            &mut spade::NaturalNeighbor<'a, DelaunayTriangulation<WarpFunctionExactMapping>>,
+            [f64; 2],
+        ) -> Option<[f64; 2]>,
+    >
+    where
+        I: IntoParallelIterator<Item = [f64; 2]>,
+        I::Iter: 'a,
+    {
+        ref_coords.into_par_iter().map_init(
+            || self.triangulation.natural_neighbor(),
+            move |nn, point| {
+                let compute_mapped_coord = |dimension: usize| {
+                    nn.interpolate(|v| v.data().secondary_coords[dimension], point.into())
+                };
+                let mapped_azimuth = compute_mapped_coord(0)?;
+                let mapped_range = compute_mapped_coord(1)?;
+
+                Some([mapped_azimuth, mapped_range])
+            },
+        )
+    }
 }
 
 pub fn coregister_and_remove_flat_phase(
@@ -664,7 +694,11 @@ pub fn coregister_and_remove_flat_phase(
     secondary: &Sentinel1SlcBurst,
     dem: &DEM,
 ) -> Array2<f32> {
+    log::info!("Computing warp function");
+    let start_time = std::time::Instant::now();
     let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
 
     let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
@@ -677,21 +711,44 @@ pub fn coregister_and_remove_flat_phase(
     let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
 
+    log::info!("Deramping reference and secondary images");
+    let start_time = std::time::Instant::now();
     let reference_img = deramp.apply_forward(&reference);
     let secondary_img = deramp.apply_forward(&secondary);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
 
-    warp_function
-        .map_many(indices.clone().map(|[az, rg]| [az as f64, rg as f64]))
+    log::info!("Resampling secondary image to reference image via warp function");
+    let start_time = std::time::Instant::now();
+    coregistered_secondary_img
+        .axis_iter_mut(Axis(0))
+        .into_par_iter()
         .enumerate()
-        .filter_map(|(i, coords)| coords.map(|c| (i, c)))
-        .for_each(|(i, [sec_az, sec_rg])| {
-            let [ref_az, ref_rg] = indices_usize[i];
+        .for_each_init(
+            || warp_function.triangulation.natural_neighbor(),
+            |nn, (ref_az, mut row)| {
+                for (ref_rg, value) in row.iter_mut().enumerate() {
+                    let ref_coords = [ref_az as f64, ref_rg as f64];
+                    let compute_mapped_coord = |dimension: usize| {
+                        nn.interpolate(|v| v.data().secondary_coords[dimension], ref_coords.into())
+                    };
+                    if let (Some(sec_az), Some(sec_rg)) =
+                        (compute_mapped_coord(0), compute_mapped_coord(1))
+                    {
+                        let v = interpolate_2d(
+                            secondary_img.view(),
+                            sec_az as f32,
+                            sec_rg as f32,
+                            &kernel,
+                        );
+                        *value = v;
+                    }
+                }
+            },
+        );
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
 
-            let value = interpolate_2d(secondary_img.view(), sec_az as f32, sec_rg as f32, &kernel);
-            if let Some(resampled_value) = coregistered_secondary_img.get_mut([ref_az, ref_rg]) {
-                *resampled_value = value;
-            }
-        });
     let osh_1 = reference.orbital_state_history();
     let annotation_1 = &reference.metadata;
     let s = annotation_1
@@ -708,6 +765,9 @@ pub fn coregister_and_remove_flat_phase(
                 reference_img[[i, j]].arg() - coregistered_secondary_img[[i, j]].arg();
         }
     }
+
+    log::info!("Removing topographic phase");
+    let start_time = std::time::Instant::now();
     for ref_az in 0..ref_azimuth_dim {
         let mut accumulated_dphi = 0.0;
         let mut current_height = None;
@@ -771,6 +831,8 @@ pub fn coregister_and_remove_flat_phase(
             accumulated_dphi += dphi;
         }
     }
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
 
     phase_diff
 }
@@ -789,6 +851,12 @@ mod tests {
     };
 
     use super::*;
+
+    fn init_logger() {
+        //Records logged during cargo test will not be captured by the test harness by default.
+        // The Builder::is_test method can be used in unit tests to ensure logs will be captured
+        let _ = env_logger::init();
+    }
 
     #[test]
     fn test_perp_baseline_from_pixel_index() {
@@ -924,6 +992,7 @@ mod tests {
 
     #[test]
     fn test_interpolated_flat_earth_removal() {
+        init_logger();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
