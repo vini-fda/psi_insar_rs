@@ -86,7 +86,8 @@ use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 use rustfft::num_traits::Zero;
 use spade::{DelaunayTriangulation, HasPosition, Triangulation};
-use std::iter::Map;
+use std::{cell::RefCell, iter::Map};
+use thread_local::ThreadLocal;
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
@@ -689,6 +690,8 @@ impl EnhancedDelaunayWarpFunction {
     }
 }
 
+fn assert_send<T: Send>() {}
+
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
@@ -720,28 +723,39 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Resampling secondary image to reference image via warp function");
     let start_time = std::time::Instant::now();
+    // let tl = ThreadLocal::new();
+    const CHUNK_SIZE: usize = 256;
     coregistered_secondary_img
-        .axis_iter_mut(Axis(0))
+        .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
         .into_par_iter()
         .enumerate()
         .for_each_init(
             || warp_function.triangulation.natural_neighbor(),
-            |nn, (ref_az, mut row)| {
-                for (ref_rg, value) in row.iter_mut().enumerate() {
-                    let ref_coords = [ref_az as f64, ref_rg as f64];
-                    let compute_mapped_coord = |dimension: usize| {
-                        nn.interpolate(|v| v.data().secondary_coords[dimension], ref_coords.into())
-                    };
-                    if let (Some(sec_az), Some(sec_rg)) =
-                        (compute_mapped_coord(0), compute_mapped_coord(1))
-                    {
-                        let v = interpolate_2d(
-                            secondary_img.view(),
-                            sec_az as f32,
-                            sec_rg as f32,
-                            &kernel,
-                        );
-                        *value = v;
+            |nn, (chunk_idx, mut chunk)| {
+                let az_offset = chunk_idx * CHUNK_SIZE;
+
+                for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                    let ref_az = az_offset + i;
+
+                    for (ref_rg, value) in row.iter_mut().enumerate() {
+                        let ref_coords = [ref_az as f64, ref_rg as f64];
+                        let compute_mapped_coord = |dimension: usize| {
+                            nn.interpolate(
+                                |v| v.data().secondary_coords[dimension],
+                                ref_coords.into(),
+                            )
+                        };
+                        if let (Some(sec_az), Some(sec_rg)) =
+                            (compute_mapped_coord(0), compute_mapped_coord(1))
+                        {
+                            let v = interpolate_2d(
+                                secondary_img.view(),
+                                sec_az as f32,
+                                sec_rg as f32,
+                                &kernel,
+                            );
+                            *value = v;
+                        }
                     }
                 }
             },
