@@ -610,24 +610,35 @@ impl EnhancedDelaunayWarpFunction {
             (),
             HierarchyHintGenerator<f64>,
         >::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
-            let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
-            let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
+        let reference_metadata = &reference.metadata;
+        let secondary_metadata = &secondary.metadata;
+        let mappings: Vec<_> = dem
+            .lat_lon_iter()
+            .par_bridge()
+            .filter_map(|(lat, lon)| {
+                let pos = dem.get_ecef_at_lat_lon(lat, lon);
+                let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
+                let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
 
-            if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f64)
-                && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f64)
-            {
-                let mapping = WarpFunctionExactMapping {
-                    reference_coords: rc_ref,
-                    secondary_coords: rc_sec,
-                    lat,
-                    lon,
-                };
-                triangulation
-                    .insert(mapping)
-                    .expect("Failed to insert mapping");
-            }
+                if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f64)
+                    && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f64)
+                {
+                    let mapping = WarpFunctionExactMapping {
+                        reference_coords: rc_ref,
+                        secondary_coords: rc_sec,
+                        lat,
+                        lon,
+                    };
+                    Some(mapping)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for mapping in mappings {
+            triangulation
+                .insert(mapping)
+                .expect("Failed to insert mapping");
         }
 
         Self { triangulation }

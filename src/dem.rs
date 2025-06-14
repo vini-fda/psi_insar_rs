@@ -194,6 +194,17 @@ impl DEM {
             .expect("Could not convert Buffer<f32> to ndarray")
     }
 
+    pub fn lat_lon_iter(&self) -> LatLonIter {
+        let (rows, cols) = self.array_dim();
+        LatLonIter {
+            dem: self,
+            i: 0,
+            j: 0,
+            rows,
+            cols,
+        }
+    }
+
     pub fn indexed_lat_lon_height(&self) -> IndexedLatLonHeight {
         let (rows, cols) = self.array_dim();
         IndexedLatLonHeight {
@@ -325,6 +336,35 @@ impl Iterator for IndexedLatLonHeight<'_> {
         let [lat, lon] = self.dem.get_lat_lon_at_index(self.i, self.j);
         let height = self.dem.get_height_at_lat_lon(lat, lon);
         let result = Some((self.i, self.j, lat, lon, height));
+
+        self.j += 1;
+        if self.j >= self.cols {
+            self.j = 0;
+            self.i += 1;
+        }
+
+        result
+    }
+}
+
+pub struct LatLonIter<'a> {
+    dem: &'a DEM,
+    i: usize,
+    j: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl Iterator for LatLonIter<'_> {
+    type Item = (f64, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i >= self.rows {
+            return None;
+        }
+
+        let [lat, lon] = self.dem.get_lat_lon_at_index(self.i, self.j);
+        let result = Some((lat, lon));
 
         self.j += 1;
         if self.j >= self.cols {
