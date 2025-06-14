@@ -8,7 +8,8 @@ use crate::{egm_2008, geodesy::geodetic_to_ecef};
 pub struct DEM {
     pub data: gdal::Dataset,
 }
-
+unsafe impl Send for DEM {}
+unsafe impl Sync for DEM {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopernicusDemType {
     Cop30,

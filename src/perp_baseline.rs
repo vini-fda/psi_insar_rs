@@ -796,7 +796,6 @@ pub fn coregister_and_remove_flat_phase(
         .range_pixel_spacing;
     let osh_2 = secondary.orbital_state_history();
     let annotation_2 = &secondary.metadata;
-    let nn = warp_function.triangulation.natural_neighbor();
     let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
     for i in 0..ref_azimuth_dim {
         for j in 0..ref_slant_range_dim {
@@ -807,69 +806,95 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Removing topographic phase");
     let start_time = std::time::Instant::now();
-    for ref_az in 0..ref_azimuth_dim {
-        let mut accumulated_dphi = 0.0;
-        let mut current_height = None;
-        for ref_rg in 0..ref_slant_range_dim {
-            let ref_coords = [ref_az as f64, ref_rg as f64];
-            // Helper function to compute mapped coordinate for a given dimension
-            let compute_mapped_coord = |dimension: usize| {
-                nn.interpolate(|v| v.data().secondary_coords[dimension], ref_coords.into())
-            };
-            let sec_az = compute_mapped_coord(0);
-            let sec_rg = compute_mapped_coord(1);
+    phase_diff
+        .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+        .into_par_iter()
+        .enumerate()
+        .for_each_init(
+            || warp_function.triangulation.natural_neighbor(),
+            |nn, (chunk_idx, mut chunk)| {
+                let az_offset = chunk_idx * CHUNK_SIZE;
 
-            // Now compute the ground target position
-            let ground_target_lat = nn.interpolate(|v| v.data().lat, ref_coords.into());
-            let ground_target_lon = nn.interpolate(|v| v.data().lon, ref_coords.into());
+                for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                    let ref_az = az_offset + i;
+                    let mut accumulated_dphi = 0.0;
+                    let mut current_height = None;
 
-            // if any are None, skip
-            if sec_az.is_none()
-                || sec_rg.is_none()
-                || ground_target_lat.is_none()
-                || ground_target_lon.is_none()
-            {
-                continue;
-            }
-            let sec_az = sec_az.unwrap();
-            let sec_rg = sec_rg.unwrap();
-            let ground_target_lat = ground_target_lat.unwrap();
-            let ground_target_lon = ground_target_lon.unwrap();
+                    for (ref_rg, phase) in row.iter_mut().enumerate() {
+                        let ref_coords = [ref_az as f64, ref_rg as f64];
+                        // Helper function to compute mapped coordinate for a given dimension
+                        let compute_mapped_coord = |dimension: usize| {
+                            nn.interpolate(
+                                |v| v.data().secondary_coords[dimension],
+                                ref_coords.into(),
+                            )
+                        };
+                        let sec_az = compute_mapped_coord(0);
+                        let sec_rg = compute_mapped_coord(1);
 
-            let ground_target_pos =
-                Vector3::from(dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon));
+                        // Now compute the ground target position
+                        let ground_target_lat = nn.interpolate(|v| v.data().lat, ref_coords.into());
+                        let ground_target_lon = nn.interpolate(|v| v.data().lon, ref_coords.into());
 
-            let radar_coords_1 =
-                pixel_coords_to_radar_coords(ref_az as f64, ref_rg as f64, annotation_1);
-            let radar_coords_2 =
-                pixel_coords_to_radar_coords(sec_az as f64, sec_rg as f64, annotation_2);
-            let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
-            let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
+                        // if any are None, skip
+                        if sec_az.is_none()
+                            || sec_rg.is_none()
+                            || ground_target_lat.is_none()
+                            || ground_target_lon.is_none()
+                        {
+                            continue;
+                        }
+                        let sec_az = sec_az.unwrap();
+                        let sec_rg = sec_rg.unwrap();
+                        let ground_target_lat = ground_target_lat.unwrap();
+                        let ground_target_lon = ground_target_lon.unwrap();
 
-            let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
-            let l = (s_1 - ground_target_pos).normalize();
-            let r = (s_1 - ground_target_pos).norm();
-            let normal = Vector3::from(local_normal(ground_target_lat, ground_target_lon));
-            let theta = l.dot(&normal).acos();
+                        let ground_target_pos = Vector3::from(
+                            dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
+                        );
 
-            phase_diff[[ref_az, ref_rg]] -= accumulated_dphi as f32;
+                        let radar_coords_1 = pixel_coords_to_radar_coords(
+                            ref_az as f64,
+                            ref_rg as f64,
+                            annotation_1,
+                        );
+                        let radar_coords_2 = pixel_coords_to_radar_coords(
+                            sec_az as f64,
+                            sec_rg as f64,
+                            annotation_2,
+                        );
+                        let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
+                        let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
 
-            let height = dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon);
+                        let bperp = perp_baseline(&s_1, &s_2, &ground_target_pos);
+                        let l = (s_1 - ground_target_pos).normalize();
+                        let r = (s_1 - ground_target_pos).norm();
+                        let normal =
+                            Vector3::from(local_normal(ground_target_lat, ground_target_lon));
+                        let theta = l.dot(&normal).acos();
 
-            if let Some(current_height) = current_height {
-                let height_diff = height - current_height;
-                let height_diff_dphi = (4.0 * std::f64::consts::PI * bperp * height_diff)
-                    / (r * SENTINEL_1_WAVELENGTH * theta.sin());
-                accumulated_dphi -= height_diff_dphi;
-            }
+                        *phase -= accumulated_dphi as f32;
 
-            current_height = Some(height);
+                        let height =
+                            dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon);
 
-            let dphi = (4.0 * std::f64::consts::PI * bperp * s)
-                / (r * SENTINEL_1_WAVELENGTH * theta.tan());
-            accumulated_dphi += dphi;
-        }
-    }
+                        if let Some(current_height) = current_height {
+                            let height_diff = height - current_height;
+                            let height_diff_dphi =
+                                (4.0 * std::f64::consts::PI * bperp * height_diff)
+                                    / (r * SENTINEL_1_WAVELENGTH * theta.sin());
+                            accumulated_dphi -= height_diff_dphi;
+                        }
+
+                        current_height = Some(height);
+
+                        let dphi = (4.0 * std::f64::consts::PI * bperp * s)
+                            / (r * SENTINEL_1_WAVELENGTH * theta.tan());
+                        accumulated_dphi += dphi;
+                    }
+                }
+            },
+        );
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
