@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 ///
 /// Represents the root of the XML document,
 /// and refers to the root element `Product`.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SlcProductAnnotation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -37,7 +37,7 @@ pub struct SlcProductAnnotation {
     pub swath_merging: SwathMerging,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct QualityInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -47,7 +47,7 @@ pub struct QualityInformation {
     pub quality_data_list: QualityDataList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct QualityDataList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -57,7 +57,7 @@ pub struct QualityDataList {
     pub quality_data: QualityData,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct QualityData {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -73,7 +73,7 @@ pub struct QualityData {
     pub image_quality: ImageQuality,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DownlinkQuality {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -135,7 +135,7 @@ pub struct DownlinkQuality {
     pub invalid_downlink_params_flag: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RawDataAnalysisQuality {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -157,7 +157,7 @@ pub struct RawDataAnalysisQuality {
     pub iq_quadrature_departure_significance_flag: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DopplerCentroidQuality {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -167,7 +167,7 @@ pub struct DopplerCentroidQuality {
     pub doppler_centroid_uncertain_flag: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageQuality {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -179,7 +179,7 @@ pub struct ImageQuality {
     pub output_data_st_dev_outside_nominal_range_flag: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageQualityImageStatistics {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -189,7 +189,7 @@ pub struct ImageQualityImageStatistics {
     pub output_data_std_dev: ImageQualityImageStatisticsOutputDataStdDev,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageQualityImageStatisticsOutputDataMean {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -197,7 +197,7 @@ pub struct ImageQualityImageStatisticsOutputDataMean {
     pub im: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageQualityImageStatisticsOutputDataStdDev {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -205,7 +205,7 @@ pub struct ImageQualityImageStatisticsOutputDataStdDev {
     pub im: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeneralAnnotation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -229,7 +229,7 @@ pub struct GeneralAnnotation {
     pub azimuth_fm_rate_list: AzimuthFmRateList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ProductInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -247,7 +247,7 @@ pub struct ProductInformation {
     pub azimuth_steering_rate: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DownlinkInformationList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -257,7 +257,7 @@ pub struct DownlinkInformationList {
     pub downlink_information: DownlinkInformation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DownlinkInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -275,7 +275,7 @@ pub struct DownlinkInformation {
     pub downlink_values: DownlinkValues,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BitErrorCount {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -347,7 +347,7 @@ pub struct BitErrorCount {
     pub num_isp_header_errors: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DownlinkValues {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -383,7 +383,7 @@ pub struct DownlinkValues {
     pub pointing_status_list: PointingStatusList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DataFormat {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -399,7 +399,7 @@ pub struct DataFormat {
     pub mean_bit_rate: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RangeDecimation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -411,7 +411,7 @@ pub struct RangeDecimation {
     pub filter_length: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwlList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -420,7 +420,7 @@ pub struct SwlList {
     pub swl: Vec<Swl>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Swl {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -429,7 +429,7 @@ pub struct Swl {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwstList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -438,7 +438,7 @@ pub struct SwstList {
     pub swst: Vec<Swst>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Swst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -447,7 +447,7 @@ pub struct Swst {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PointingStatusList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -457,7 +457,7 @@ pub struct PointingStatusList {
     pub pointing_status: PointingStatus,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PointingStatus {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -473,7 +473,7 @@ pub struct PointingStatus {
     pub yaw_error_flag: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct OrbitList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -569,7 +569,7 @@ impl<'de> Deserialize<'de> for ReferenceFrame {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Orbit {
     #[serde(with = "datetime_format")]
     pub time: DateTime<Utc>,
@@ -578,14 +578,14 @@ pub struct Orbit {
     pub velocity: Velocity,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Copy, Debug, Serialize, Deserialize, Clone)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Copy, Debug, Serialize, Deserialize, Clone)]
 pub struct Velocity {
     pub x: f64,
     pub y: f64,
@@ -628,14 +628,14 @@ impl From<Velocity> for Vector3<f64> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AttitudeList {
     #[serde(rename = "@count")]
     pub count: u32,
     pub attitude: Vec<Attitude>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Attitude {
     #[serde(rename = "time", with = "datetime_format")]
     pub time: DateTime<Utc>,
@@ -666,7 +666,7 @@ pub struct Attitude {
     pub yaw: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RawDataAnalysisList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -676,7 +676,7 @@ pub struct RawDataAnalysisList {
     pub raw_data_analysis: RawDataAnalysis,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RawDataAnalysis {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -693,7 +693,7 @@ pub struct RawDataAnalysis {
     pub support: Support,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Support {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -723,7 +723,7 @@ pub struct Support {
     pub iq_quadrature_departure_used_for_correction: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ReplicaInformationList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -733,7 +733,7 @@ pub struct ReplicaInformationList {
     pub replica_information: ReplicaInformation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ReplicaInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -744,7 +744,7 @@ pub struct ReplicaInformation {
     pub replica_list: ReplicaList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ReferenceReplica {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -763,7 +763,7 @@ pub struct ReferenceReplica {
     pub gain: Gain,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AmplitudeCoefficients {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -771,7 +771,7 @@ pub struct AmplitudeCoefficients {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PhaseCoefficients {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -779,7 +779,7 @@ pub struct PhaseCoefficients {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Gain {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -787,7 +787,7 @@ pub struct Gain {
     pub im: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ReplicaList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -796,7 +796,7 @@ pub struct ReplicaList {
     pub replica: Vec<Replica>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Replica {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -828,13 +828,13 @@ pub struct Replica {
     pub internal_time_delay: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NoiseList {
     #[serde(rename = "@count")]
     pub count: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TerrainHeightList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -844,7 +844,7 @@ pub struct TerrainHeightList {
     pub terrain_height: Vec<TerrainHeightListTerrainHeight>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TerrainHeightListTerrainHeight {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -853,7 +853,7 @@ pub struct TerrainHeightListTerrainHeight {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AzimuthFmRateList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -863,7 +863,7 @@ pub struct AzimuthFmRateList {
     pub azimuth_fm_rate: Vec<AzimuthFmRate>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AzimuthFmRate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -875,7 +875,7 @@ pub struct AzimuthFmRate {
     pub azimuth_fm_rate_polynomial: AzimuthFmRatePolynomial,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AzimuthFmRatePolynomial {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -883,7 +883,7 @@ pub struct AzimuthFmRatePolynomial {
     pub coefficients: Polynomial,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageAnnotation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -893,7 +893,7 @@ pub struct ImageAnnotation {
     pub processing_information: ProcessingInformation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -937,7 +937,7 @@ pub struct ImageInformation {
     pub image_statistics: ImageInformationImageStatistics,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SliceList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -945,7 +945,7 @@ pub struct SliceList {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageInformationImageStatistics {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -955,7 +955,7 @@ pub struct ImageInformationImageStatistics {
     pub output_data_std_dev: ImageInformationImageStatisticsOutputDataStdDev,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageInformationImageStatisticsOutputDataMean {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -963,7 +963,7 @@ pub struct ImageInformationImageStatisticsOutputDataMean {
     pub im: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ImageInformationImageStatisticsOutputDataStdDev {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -971,7 +971,7 @@ pub struct ImageInformationImageStatisticsOutputDataStdDev {
     pub im: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ProcessingInformation {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1031,7 +1031,7 @@ pub struct ProcessingInformation {
     pub attitude_source: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwathProcParamsList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1041,7 +1041,7 @@ pub struct SwathProcParamsList {
     pub swath_proc_params: SwathProcParams,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwathProcParams {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1054,7 +1054,7 @@ pub struct SwathProcParams {
     pub processor_scaling_factor: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RangeProcessing {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1074,7 +1074,7 @@ pub struct RangeProcessing {
     pub look_overlap: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AzimuthProcessing {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1094,7 +1094,7 @@ pub struct AzimuthProcessing {
     pub look_overlap: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct InputDimensionsList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1104,7 +1104,7 @@ pub struct InputDimensionsList {
     pub input_dimensions: InputDimensions,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct InputDimensions {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1117,7 +1117,7 @@ pub struct InputDimensions {
     pub number_of_input_lines: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DopplerCentroid {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1125,7 +1125,7 @@ pub struct DopplerCentroid {
     pub dc_estimate_list: DcEstimateList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DcEstimateList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1135,7 +1135,7 @@ pub struct DcEstimateList {
     pub dc_estimate: Vec<DcEstimate>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DcEstimate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1158,7 +1158,7 @@ pub struct DcEstimate {
     pub fine_dce_list: FineDceList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeometryDcPolynomial {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1187,7 +1187,7 @@ pub struct GeometryDcPolynomial {
 ///
 /// - Empty coefficients: Returns 0.0 for any input
 /// - Constant polynomial (single coefficient): Returns that constant regardless of input
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Polynomial {
     /// Coefficients in ascending order of degree (a₀, a₁, a₂, ..., aₙ)
     pub coefficients: Vec<f64>,
@@ -1265,7 +1265,7 @@ pub struct DataDcPolynomial {
     pub polynomial: Polynomial,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FineDceList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1275,7 +1275,7 @@ pub struct FineDceList {
     pub fine_dce: Vec<FineDce>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FineDce {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1284,7 +1284,7 @@ pub struct FineDce {
     pub frequency: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ProductAntennaPattern {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1292,7 +1292,7 @@ pub struct ProductAntennaPattern {
     pub antenna_pattern_list: AntennaPatternList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AntennaPatternList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1302,7 +1302,7 @@ pub struct AntennaPatternList {
     pub antenna_pattern: Vec<AntennaPatternListAntennaPattern>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AntennaPatternListAntennaPattern {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1322,7 +1322,7 @@ pub struct AntennaPatternListAntennaPattern {
     pub roll: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AntennaPatternSlantRangeTime {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1330,7 +1330,7 @@ pub struct AntennaPatternSlantRangeTime {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AntennaPatternElevationAngle {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1338,7 +1338,7 @@ pub struct AntennaPatternElevationAngle {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ElevationPattern {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1346,7 +1346,7 @@ pub struct ElevationPattern {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AntennaPatternIncidenceAngle {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1354,7 +1354,7 @@ pub struct AntennaPatternIncidenceAngle {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwathTiming {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1366,7 +1366,7 @@ pub struct SwathTiming {
     pub burst_list: BurstList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BurstList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1375,7 +1375,7 @@ pub struct BurstList {
     pub burst: Burst,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Burst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1394,7 +1394,7 @@ pub struct Burst {
     pub last_valid_sample: LastValidSample,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FirstValidSample {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1402,7 +1402,7 @@ pub struct FirstValidSample {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct LastValidSample {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -1471,7 +1471,7 @@ pub struct GeolocationGridPoint {
     pub elevation_angle: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CoordinateConversion {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1479,13 +1479,13 @@ pub struct CoordinateConversion {
     pub coordinate_conversion_list: CoordinateConversionList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CoordinateConversionList {
     #[serde(rename = "@count")]
     pub count: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwathMerging {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -1493,7 +1493,7 @@ pub struct SwathMerging {
     pub swath_merge_list: SwathMergeList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SwathMergeList {
     #[serde(rename = "@count")]
     pub count: u32,

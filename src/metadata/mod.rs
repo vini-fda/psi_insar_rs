@@ -11,7 +11,7 @@ pub mod calibration_xml;
 pub mod noise_xml;
 pub mod orbit_xml;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AdsHeader {
     #[serde(rename = "missionId")]
     pub mission_id: Mission,
