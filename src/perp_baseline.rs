@@ -85,16 +85,18 @@ use nalgebra::{Complex, Vector3};
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 use rustfft::num_traits::Zero;
-use spade::{DelaunayTriangulation, HasPosition, Triangulation};
-use std::{cell::RefCell, iter::Map};
-use thread_local::ThreadLocal;
+use spade::{DelaunayTriangulation, HasPosition, HierarchyHintGenerator, Triangulation};
+use std::{
+    iter::Map,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
     coregistration::{
         deramping::DerampSlcBurst,
         interpolation2d::{KnabSincKernel, interpolate_2d},
-        warp_function::WarpFunction,
+        warp_function::{self, WarpFunction},
     },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
@@ -224,13 +226,14 @@ impl HasPosition for ExactMapping {
 }
 
 pub struct GeolocationGridInterpolator {
-    triangulation: DelaunayTriangulation<ExactMapping>,
+    triangulation: DelaunayTriangulation<ExactMapping, (), (), (), HierarchyHintGenerator<f64>>,
 }
 
 impl GeolocationGridInterpolator {
     pub fn new(grid: &GeolocationGrid) -> Self {
         let points = &grid.geolocation_grid_point_list.geolocation_grid_point;
-        let mut triangulation = DelaunayTriangulation::<ExactMapping>::new();
+        let mut triangulation =
+            DelaunayTriangulation::<ExactMapping, (), (), (), HierarchyHintGenerator<f64>>::new();
         for p in points {
             let mapping = ExactMapping {
                 azimuth_index: p.line as f64,
@@ -565,7 +568,8 @@ pub fn flat_earth_dphi(
 // -- Enchanced Delaunay Warp Function --
 
 pub struct EnhancedDelaunayWarpFunction {
-    pub triangulation: DelaunayTriangulation<WarpFunctionExactMapping>,
+    pub triangulation:
+        DelaunayTriangulation<WarpFunctionExactMapping, (), (), (), HierarchyHintGenerator<f64>>,
 }
 
 /// A point which contains a single exact mapping of the reference coordinates to the secondary coordinates.
@@ -599,7 +603,13 @@ impl EnhancedDelaunayWarpFunction {
 
             radar_coords_to_pixel_coords(zero_doppler, annotation)
         };
-        let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
+        let mut triangulation = DelaunayTriangulation::<
+            WarpFunctionExactMapping,
+            (),
+            (),
+            (),
+            HierarchyHintGenerator<f64>,
+        >::new();
         for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
@@ -665,9 +675,27 @@ impl EnhancedDelaunayWarpFunction {
         ref_coords: I,
     ) -> rayon::iter::MapInit<
         I::Iter,
-        impl Fn() -> spade::NaturalNeighbor<'a, DelaunayTriangulation<WarpFunctionExactMapping>>,
+        impl Fn() -> spade::NaturalNeighbor<
+            'a,
+            DelaunayTriangulation<
+                WarpFunctionExactMapping,
+                (),
+                (),
+                (),
+                HierarchyHintGenerator<f64>,
+            >,
+        >,
         impl Fn(
-            &mut spade::NaturalNeighbor<'a, DelaunayTriangulation<WarpFunctionExactMapping>>,
+            &mut spade::NaturalNeighbor<
+                'a,
+                DelaunayTriangulation<
+                    WarpFunctionExactMapping,
+                    (),
+                    (),
+                    (),
+                    HierarchyHintGenerator<f64>,
+                >,
+            >,
             [f64; 2],
         ) -> Option<[f64; 2]>,
     >
@@ -689,8 +717,6 @@ impl EnhancedDelaunayWarpFunction {
         )
     }
 }
-
-fn assert_send<T: Send>() {}
 
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcBurst,
@@ -723,7 +749,6 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Resampling secondary image to reference image via warp function");
     let start_time = std::time::Instant::now();
-    // let tl = ThreadLocal::new();
     const CHUNK_SIZE: usize = 256;
     coregistered_secondary_img
         .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
