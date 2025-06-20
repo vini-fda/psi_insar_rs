@@ -165,6 +165,17 @@ impl DEM {
         }
     }
 
+    /// Returns an iterator over the DEM's (lat, lon, height) elements, in memory order (i.e. row-major ascending order).
+    pub fn lat_lon_height_iter(&self) -> LatLonHeightIter {
+        LatLonHeightIter {
+            dem: self,
+            i: 0,
+            j: 0,
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+
     /// Gets the [lat, lon] of each of these 4 corners of the DEM extent:
     ///
     /// Upper left, Lower left, Lower right, Upper right
@@ -281,6 +292,37 @@ impl Iterator for LatLonIter<'_> {
 
         let [lat, lon] = self.dem.get_lat_lon_at_pixel(self.i, self.j);
         let result = Some((lat, lon));
+
+        self.j += 1;
+        if self.j >= self.cols {
+            self.j = 0;
+            self.i += 1;
+        }
+
+        result
+    }
+}
+
+/// An iterator over the DEM's (lat, lon, height) elements, in memory order (i.e. row-major ascending order).
+pub struct LatLonHeightIter<'a> {
+    dem: &'a DEM,
+    i: usize,
+    j: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl Iterator for LatLonHeightIter<'_> {
+    type Item = (f64, f64, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i >= self.rows {
+            return None;
+        }
+
+        let [lat, lon] = self.dem.get_lat_lon_at_pixel(self.i, self.j);
+        let height = self.dem.get_height_at_lat_lon(lat, lon);
+        let result = Some((lat, lon, height as f64));
 
         self.j += 1;
         if self.j >= self.cols {

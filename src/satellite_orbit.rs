@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::{
     constants::C_LIGHT,
-    dem_gdal::DEMGdal,
+    dem::DEM,
     geodesy::geodetic_to_ecef,
     interpolation::{
         unit_derivative_interval_cubic_hermite_spline_interpolation,
@@ -186,12 +186,12 @@ impl OrbitalStateHistory {
     /// the look vector, indicating orthogonality.
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
-    pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEMGdal) -> Vector3<f64> {
+    pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEM) -> Vector3<f64> {
         let mut current_min = std::f64::MAX;
         let mut optimal_ground_pos = Vector3::<f64>::zero();
         let (sat_pos, sat_vel) = self.interp_pos_vel(radar_coords.time);
         let sat_vel_hat = sat_vel.normalize();
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
             let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
             if val < current_min {

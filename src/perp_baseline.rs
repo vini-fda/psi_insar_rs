@@ -98,7 +98,7 @@ use crate::{
         interpolation2d::{KnabSincKernel, interpolate_2d},
         warp_function::{self, WarpFunction},
     },
-    dem_gdal::DEMGdal,
+    dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
     satellite_orbit::{
@@ -159,7 +159,7 @@ pub fn perp_baseline_from_pixel_index(
     secondary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> f64 {
     let osh_primary = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -179,7 +179,7 @@ pub fn theta_from_pixel_index(
     primary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> f64 {
     let osh_primary = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -189,7 +189,7 @@ pub fn theta_from_pixel_index(
     let mut ground_target_pos = Vector3::<f64>::zero();
     let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords.time);
     let sat_vel_hat = sat_vel.normalize();
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+    for (lat, lon, height) in dem.lat_lon_height_iter() {
         ground_target_pos_geodetic = (lat, lon);
         let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
         let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
@@ -296,7 +296,7 @@ impl FlatEarthComponentsInterpolator {
     pub fn from_grid_params(
         primary_burst: &Sentinel1SlcBurst,
         secondary_burst: &Sentinel1SlcBurst,
-        dem: &DEMGdal,
+        dem: &DEM,
         azimuth_samples: usize,
         slant_range_samples: usize,
     ) -> Self {
@@ -457,7 +457,7 @@ impl FlatEarthComponentsInterpolator {
         secondary_burst: &Sentinel1SlcBurst,
         azimuth_index: f64,
         slant_range_index: f64,
-        dem: &DEMGdal,
+        dem: &DEM,
     ) -> [f64; 3] {
         let osh_1 = primary_burst.orbital_state_history();
         let annotation_1 = &primary_burst.metadata;
@@ -472,7 +472,7 @@ impl FlatEarthComponentsInterpolator {
         const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
         let sat_vel_hat = sat_vel.normalize();
         // 2D root finding to find the ground target position
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
             let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
             let r = (ground_pos - sat_pos).norm();
@@ -507,7 +507,7 @@ pub fn flat_earth_dphi(
     secondary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> f64 {
     let osh_1 = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -522,7 +522,7 @@ pub fn flat_earth_dphi(
     const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
     let sat_vel_hat = sat_vel.normalize();
     // 2D root finding to find the ground target position
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+    for (lat, lon, height) in dem.lat_lon_height_iter() {
         let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
         let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
         let r = (ground_pos - sat_pos).norm();
@@ -591,11 +591,7 @@ impl HasPosition for WarpFunctionExactMapping {
 
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(
-        reference: &Sentinel1SlcBurst,
-        secondary: &Sentinel1SlcBurst,
-        dem: &DEMGdal,
-    ) -> Self {
+    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
         let [azimuth_size, slant_range_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -736,7 +732,7 @@ impl EnhancedDelaunayWarpFunction {
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> Array2<f32> {
     log::info!("Computing warp function");
     let start_time = std::time::Instant::now();
@@ -746,11 +742,6 @@ pub fn coregister_and_remove_flat_phase(
 
     let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
-
-    // The indices in the domain of the reference image
-    let indices = (0..ref_slant_range_dim)
-        .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az, ref_rg]));
-    let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
 
     let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
@@ -814,8 +805,9 @@ pub fn coregister_and_remove_flat_phase(
     let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
     for i in 0..ref_azimuth_dim {
         for j in 0..ref_slant_range_dim {
-            phase_diff[[i, j]] =
-                reference_img[[i, j]].arg() - coregistered_secondary_img[[i, j]].arg();
+            let s1 = reference_img[[i, j]];
+            let s2 = coregistered_secondary_img[[i, j]];
+            phase_diff[[i, j]] = (s1 * s2.conj()).arg();
         }
     }
 
@@ -891,7 +883,7 @@ pub fn coregister_and_remove_flat_phase(
                         *phase -= accumulated_dphi as f32;
 
                         let height =
-                            dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon);
+                            dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon) as f64;
 
                         if let Some(current_height) = current_height {
                             let height_diff = height - current_height;
@@ -925,7 +917,7 @@ mod tests {
         coregistration::{
             deramping::DerampSlcBurst, warp_function::resample_secondary_to_reference,
         },
-        dem_gdal::CopernicusDemType,
+        dem::CopernicusDemType,
         visualization::cubehelix_colormap,
     };
 
@@ -947,7 +939,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let [range_size, az_size] = primary.data.raster_size();
         for i in 0..az_size {
             for j in 0..1 {
@@ -982,7 +974,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1028,7 +1020,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1093,7 +1085,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEMGdal::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1140,7 +1132,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEMGdal::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
         println!("dem: {:?}", dem.corners_lat_lon());
     }
 }
