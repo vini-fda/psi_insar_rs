@@ -19,7 +19,7 @@ use spade::{DelaunayTriangulation, HasPosition, NaturalNeighbor, Triangulation};
 use std::iter::Map;
 
 use crate::{
-    dem::DEM,
+    dem_gdal::DEMGdal,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
@@ -71,7 +71,11 @@ impl HasPosition for ExactMapping {
 
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
+    pub fn new(
+        reference: &Sentinel1SlcBurst,
+        secondary: &Sentinel1SlcBurst,
+        dem: &DEMGdal,
+    ) -> Self {
         let [azimuth_size, slant_range_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -176,7 +180,7 @@ impl WarpFunction for DelaunayWarpFunction {
 pub fn resample_secondary_to_reference(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> Array2<Complex<f32>> {
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);
 
@@ -226,7 +230,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
 
         let resampled_data = resample_secondary_to_reference(&reference, &secondary, &dem);
         // lets reduce the number of samples by 1/2 in the cols
@@ -308,7 +312,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
 
         // Secondary resampled to reference (also deramped)
         let resampled_sec_data = resample_secondary_to_reference(&reference, &secondary, &dem);

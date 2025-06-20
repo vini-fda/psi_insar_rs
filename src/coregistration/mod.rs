@@ -4,7 +4,7 @@ use nalgebra::{ComplexField, Vector3};
 use ndarray::Array2;
 
 use crate::{
-    dem::DEM,
+    dem_gdal::DEMGdal,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
@@ -22,7 +22,7 @@ pub mod warp_function;
 pub fn compute_warp_function(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> Array2<[u8; 4]> {
     let [azimuth_size, slant_range_size] = reference.data.raster_size();
     let ref_osh = reference.orbital_state_history();
@@ -102,14 +102,15 @@ mod tests {
     use ndarray::{Dimension, s};
 
     use crate::{
-        dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst,
+        dem_gdal::DEMGdal, satellite_orbit::radar_coords_to_pixel_coords,
+        sentinel::Sentinel1SlcBurst,
     };
 
     use super::compute_warp_function;
 
     #[test]
     fn testfn_dem() {
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -161,7 +162,7 @@ mod tests {
 
     #[test]
     fn testfn_dem_rgb() {
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -250,7 +251,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rho = compute_warp_function(&reference, &secondary, &dem);
         let (rows, cols) = rho.dim();
         let rho = rho.slice(s![0..rows, 0..cols / 2]).to_owned();
@@ -266,7 +267,7 @@ mod tests {
 
     #[test]
     fn testfn_dem_radar_coords() {
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )

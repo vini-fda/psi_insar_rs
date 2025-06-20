@@ -4,7 +4,7 @@ use crate::{
         deramping::DerampSlcBurst,
         interpolation2d::{KnabSincKernel, interpolate_2d},
     },
-    dem::DEM,
+    dem_gdal::DEMGdal,
     geodesy::local_normal,
     perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
     satellite_orbit::pixel_coords_to_radar_coords,
@@ -17,7 +17,7 @@ use ndarray_npy::WriteNpyExt;
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcBurst,
     secondary_imgs: &[Sentinel1SlcBurst],
-    dem: &DEM,
+    dem: &DEMGdal,
 ) {
     let deramp = DerampSlcBurst::new();
     let reference_img = deramp.apply_forward(&reference);
@@ -186,7 +186,7 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcBurst>
 
 #[cfg(test)]
 mod tests {
-    use crate::dem::CopernicusDemType;
+    use crate::dem_gdal::CopernicusDemType;
 
     use super::*;
 
@@ -210,7 +210,7 @@ mod tests {
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {:?}", bounding_box);
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = DEMGdal::download_dem(bounding_box, CopernicusDemType::Cop30);
         coregister_and_remove_flat_phase(&reference, &secondaries, &dem);
         // let rr = rerun::RecordingStreamBuilder::new("test_stack_interferograms")
         //     .connect_grpc()

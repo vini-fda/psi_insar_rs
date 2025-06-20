@@ -341,7 +341,7 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 mod manual_tests {
     use ndarray::{Array2, s};
 
-    use crate::dem::DEM;
+    use crate::dem_gdal::DEMGdal;
 
     use super::{CoarseCoregistration, CoregistrationResult, extract_data};
 
@@ -458,7 +458,7 @@ mod manual_tests {
             &rerun::GeoPoints::from_lat_lon(lat_lon.iter()),
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
 
         let mut dem_corners = dem.corners_lat_lon().to_vec();
         let first = dem_corners.first().unwrap();

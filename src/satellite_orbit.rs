@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::{
     constants::C_LIGHT,
-    dem::DEM,
+    dem_gdal::DEMGdal,
     geodesy::geodetic_to_ecef,
     interpolation::{
         unit_derivative_interval_cubic_hermite_spline_interpolation,
@@ -186,7 +186,7 @@ impl OrbitalStateHistory {
     /// the look vector, indicating orthogonality.
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
-    pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEM) -> Vector3<f64> {
+    pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEMGdal) -> Vector3<f64> {
         let mut current_min = std::f64::MAX;
         let mut optimal_ground_pos = Vector3::<f64>::zero();
         let (sat_pos, sat_vel) = self.interp_pos_vel(radar_coords.time);
@@ -404,7 +404,7 @@ mod manual_tests_satellite_orbit {
 
     use super::OrbitalStateHistory;
     use crate::{
-        dem::DEM,
+        dem_gdal::DEMGdal,
         geodesy::{geodetic_to_ecef, local_normal},
         metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
         satellite_orbit::radar_coords_to_pixel_coords,
@@ -442,7 +442,7 @@ mod manual_tests_satellite_orbit {
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;
         let osh = OrbitalStateHistory::from_poe_timeframe("orbit.EOF", start_time, end_time);
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let [lat, lon] = [19.49831428810679, -98.59301000370277];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
 
@@ -461,7 +461,7 @@ mod manual_tests_satellite_orbit {
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
         let osh = OrbitalStateHistory::from(&annotation.general_annotation.orbit_list);
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
 
         let mut points = vec![];
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
@@ -503,7 +503,7 @@ mod manual_tests_satellite_orbit {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/annotation/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.xml",
         );
         let osh = OrbitalStateHistory::from(&annotation.general_annotation.orbit_list);
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
 
         let mut points = vec![];
         for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
@@ -682,7 +682,7 @@ mod manual_tests_satellite_orbit {
         rec.log_static("universe/z", &arrow_z).unwrap();
 
         // DEM
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let (rows, cols) = dem.array_dim();
         let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
         let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];

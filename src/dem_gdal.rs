@@ -5,11 +5,11 @@ use ndarray::Array2;
 
 use crate::{egm_2008, geodesy::geodetic_to_ecef};
 
-pub struct DEM {
+pub struct DEMGdal {
     pub data: gdal::Dataset,
 }
-unsafe impl Send for DEM {}
-unsafe impl Sync for DEM {}
+unsafe impl Send for DEMGdal {}
+unsafe impl Sync for DEMGdal {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopernicusDemType {
     Cop30,
@@ -25,7 +25,7 @@ impl std::fmt::Display for CopernicusDemType {
     }
 }
 
-impl DEM {
+impl DEMGdal {
     /// Download a DEM from the OpenTopography API.
     ///
     /// # Arguments
@@ -318,7 +318,7 @@ impl DEM {
 }
 
 pub struct IndexedLatLonHeight<'a> {
-    dem: &'a DEM,
+    dem: &'a DEMGdal,
     i: usize,
     j: usize,
     rows: usize,
@@ -348,7 +348,7 @@ impl Iterator for IndexedLatLonHeight<'_> {
 }
 
 pub struct LatLonIter<'a> {
-    dem: &'a DEM,
+    dem: &'a DEMGdal,
     i: usize,
     j: usize,
     rows: usize,
@@ -378,7 +378,7 @@ impl Iterator for LatLonIter<'_> {
 
 #[cfg(test)]
 mod manual_tests {
-    use super::DEM;
+    use super::DEMGdal;
     use gdal::{Dataset, Metadata};
 
     #[test]
@@ -415,7 +415,7 @@ mod manual_tests {
     #[test]
     #[ignore]
     fn dem_extent() {
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         println!("DEM extent = {:?}", dem.corners_lat_lon());
         let [lat, lon] = [19.41882131107135, -99.1144313400927];
         let xyz = dem.get_ecef_at_lat_lon(lat, lon);
@@ -424,7 +424,7 @@ mod manual_tests {
     #[test]
     #[ignore]
     fn dem_mesh_test() {
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");

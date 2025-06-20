@@ -98,7 +98,7 @@ use crate::{
         interpolation2d::{KnabSincKernel, interpolate_2d},
         warp_function::{self, WarpFunction},
     },
-    dem::DEM,
+    dem_gdal::DEMGdal,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
     satellite_orbit::{
@@ -159,7 +159,7 @@ pub fn perp_baseline_from_pixel_index(
     secondary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> f64 {
     let osh_primary = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -179,7 +179,7 @@ pub fn theta_from_pixel_index(
     primary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> f64 {
     let osh_primary = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -296,7 +296,7 @@ impl FlatEarthComponentsInterpolator {
     pub fn from_grid_params(
         primary_burst: &Sentinel1SlcBurst,
         secondary_burst: &Sentinel1SlcBurst,
-        dem: &DEM,
+        dem: &DEMGdal,
         azimuth_samples: usize,
         slant_range_samples: usize,
     ) -> Self {
@@ -457,7 +457,7 @@ impl FlatEarthComponentsInterpolator {
         secondary_burst: &Sentinel1SlcBurst,
         azimuth_index: f64,
         slant_range_index: f64,
-        dem: &DEM,
+        dem: &DEMGdal,
     ) -> [f64; 3] {
         let osh_1 = primary_burst.orbital_state_history();
         let annotation_1 = &primary_burst.metadata;
@@ -507,7 +507,7 @@ pub fn flat_earth_dphi(
     secondary_burst: &Sentinel1SlcBurst,
     azimuth_index: f64,
     slant_range_index: f64,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> f64 {
     let osh_1 = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
@@ -591,7 +591,11 @@ impl HasPosition for WarpFunctionExactMapping {
 
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
+    pub fn new(
+        reference: &Sentinel1SlcBurst,
+        secondary: &Sentinel1SlcBurst,
+        dem: &DEMGdal,
+    ) -> Self {
         let [azimuth_size, slant_range_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -732,7 +736,7 @@ impl EnhancedDelaunayWarpFunction {
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEM,
+    dem: &DEMGdal,
 ) -> Array2<f32> {
     log::info!("Computing warp function");
     let start_time = std::time::Instant::now();
@@ -921,7 +925,7 @@ mod tests {
         coregistration::{
             deramping::DerampSlcBurst, warp_function::resample_secondary_to_reference,
         },
-        dem::CopernicusDemType,
+        dem_gdal::CopernicusDemType,
         visualization::cubehelix_colormap,
     };
 
@@ -943,7 +947,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let [range_size, az_size] = primary.data.raster_size();
         for i in 0..az_size {
             for j in 0..1 {
@@ -978,7 +982,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1024,7 +1028,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let dem = DEMGdal::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1089,7 +1093,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = DEMGdal::download_dem(bounds, CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -1136,7 +1140,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = DEMGdal::download_dem(bounds, CopernicusDemType::Cop30);
         println!("dem: {:?}", dem.corners_lat_lon());
     }
 }
