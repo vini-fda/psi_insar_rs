@@ -98,17 +98,30 @@ impl OrbitalStateHistory {
         let dt = (t - t_prev).num_nanoseconds().unwrap() as f64;
         let alpha = dt / total_dt;
 
+        let total_dt_sec = total_dt * 1e-9;
         // cubic hermite interpolation
-        let pos_interp =
-            unit_interval_cubic_hermite_spline_interpolation(p_prev, v_prev, p_next, v_next, alpha);
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
         // Derivative of Hermite spline w.r.t. time
-        // (the scale factor of 1e9 / total_dt comes from the chain rule
-        // and also the fact that we have to use the metric/SI system,
-        // thus we convert nanoseconds to seconds, that's why 1e9 appears in the numerator)
-        let vel_interp =
-            1e9 * unit_derivative_interval_cubic_hermite_spline_interpolation(
-                p_prev, v_prev, p_next, v_next, alpha,
-            ) / total_dt;
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+        // if (1.0 - alpha) < 0.01 {
+        //     println!("v[{}] = {} m/s", i, v_prev.norm());
+        //     println!("v[{}] = {} m/s", i + 1, v_next.norm());
+        //     println!("vel_interp = {} m/s", vel_interp.norm());
+        // }
         (pos_interp, vel_interp)
     }
 
@@ -393,6 +406,24 @@ pub fn pixel_coords_to_radar_coords(
         time: zero_doppler_time,
         distance_to_target,
     }
+}
+
+pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) -> DateTime<Utc> {
+    let t_start = annotation
+        .image_annotation
+        .image_information
+        .product_first_line_utc_time;
+
+    let azimuth_time_interval = annotation
+        .image_annotation
+        .image_information
+        .azimuth_time_interval;
+
+    // Reverse azimuth index calculation to get time
+    let delta_time_secs = azimuth_index * azimuth_time_interval;
+    let delta_time_nanos = (delta_time_secs * 1_000_000_000.0).round() as i64;
+    let zero_doppler_time = t_start + TimeDelta::nanoseconds(delta_time_nanos);
+    zero_doppler_time
 }
 
 #[cfg(test)]

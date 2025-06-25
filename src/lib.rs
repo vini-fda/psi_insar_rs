@@ -11,6 +11,7 @@ pub mod interferometry;
 pub mod interpolation;
 pub mod metadata;
 pub mod perp_baseline;
+mod rerun_tests;
 pub mod satellite_orbit;
 pub mod sentinel;
 pub mod slc_image;

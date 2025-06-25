@@ -24,7 +24,7 @@ pub fn compute_warp_function(
     secondary: &Sentinel1SlcBurst,
     dem: &DEMGdal,
 ) -> Array2<[u8; 4]> {
-    let [azimuth_size, slant_range_size] = reference.data.raster_size();
+    let [slant_range_size, azimuth_size] = reference.data.raster_size();
     let ref_osh = reference.orbital_state_history();
     let sec_osh = secondary.orbital_state_history();
     let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -34,14 +34,14 @@ pub fn compute_warp_function(
         let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
         radar_coords_to_pixel_coords(zero_doppler, annotation)
     };
-    let mut rho = Array2::<[f32; 2]>::default((slant_range_size, azimuth_size));
+    let mut rho = Array2::<[f32; 2]>::default((azimuth_size, slant_range_size));
     for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
         let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
         let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
 
-        if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f32)
-            && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f32)
+        if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f32)
+            && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f32)
         {
             let displacement = [rc_ref[0] - rc_sec[0], rc_ref[1] - rc_sec[1]];
             let i = rc_ref[0].floor() as usize;

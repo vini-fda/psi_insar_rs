@@ -76,7 +76,7 @@ impl DelaunayWarpFunction {
         secondary: &Sentinel1SlcBurst,
         dem: &DEMGdal,
     ) -> Self {
-        let [azimuth_size, slant_range_size] = reference.data.raster_size();
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
         let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -93,8 +93,8 @@ impl DelaunayWarpFunction {
             let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
             let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
 
-            if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f32)
-                && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f32)
+            if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f32)
+                && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f32)
             {
                 let mapping = ExactMapping {
                     reference_coords: rc_ref,

@@ -81,6 +81,7 @@
 // #   # )
 // #   # bperp_value = baseline_info['B_perpendicular_signed']
 
+use core::panic;
 use nalgebra::{Complex, Vector3};
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
@@ -592,7 +593,7 @@ impl HasPosition for WarpFunctionExactMapping {
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
     pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
-        let [azimuth_size, slant_range_size] = reference.data.raster_size();
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
         let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -620,8 +621,8 @@ impl EnhancedDelaunayWarpFunction {
                 let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
                 let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
 
-                if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f64)
-                    && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f64)
+                if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
+                    && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
                 {
                     let mapping = WarpFunctionExactMapping {
                         reference_coords: rc_ref,
@@ -1134,5 +1135,76 @@ mod tests {
         ];
         let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
         println!("dem: {:?}", dem.corners_lat_lon());
+    }
+
+    #[test]
+    fn plot_warp_fn() {
+        init_logger();
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        )
+        .unwrap();
+        let [min_lat, max_lat, min_lon, max_lon] = &primary
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.05;
+        let offset_lon = 0.05;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let warp_fn = EnhancedDelaunayWarpFunction::new(&primary, &secondary, &dem);
+        let [ref_slant_range_dim, ref_azimuth_dim] = primary.data.raster_size();
+        let mut offsets = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+        const CHUNK_SIZE: usize = 256;
+        offsets
+            .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+            .into_par_iter()
+            .enumerate()
+            .for_each_init(
+                || warp_fn.triangulation.natural_neighbor(),
+                |nn, (chunk_idx, mut chunk)| {
+                    let az_offset = chunk_idx * CHUNK_SIZE;
+
+                    for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                        let ref_az = az_offset + i;
+
+                        for (ref_rg, val) in row.iter_mut().enumerate() {
+                            let ref_coords = [ref_az as f64, ref_rg as f64];
+                            let u = match nn
+                                .interpolate(|v| v.data().secondary_coords[0], ref_coords.into())
+                            {
+                                Some(v) => v - ref_coords[0],
+                                None => 0.0,
+                            };
+                            // let v = nn
+                            //     .interpolate(|v| v.data().secondary_coords[1], ref_coords.into())
+                            //     .unwrap_or(0.0)
+                            //     - ref_coords[1];
+                            *val = u;
+                        }
+                    }
+                },
+            );
+        // let max = *img
+        //     .iter()
+        //     .max_by(|&a, &b| a.partial_cmp(b).unwrap())
+        //     .unwrap();
+        let rr = rerun::RecordingStreamBuilder::new("warp_fn_offsets")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let tensor = rerun::Tensor::try_from(offsets.clone()).expect("Unable to create tensor.");
+        rr.log("offsets", &tensor).expect("Unable to log tensor.");
+        let img = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, offsets).unwrap();
+        rr.log("offsets_img", &img).unwrap();
     }
 }
