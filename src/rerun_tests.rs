@@ -400,7 +400,7 @@ mod tests {
                     (s1 * s2.conj()).arg()
                 });
 
-            rr.log(format!("phase/{}", id), &rr_phase(&phase_diff))
+            rr.log("phase", &rr_phase(&phase_diff))
                 .expect("Could not log phase to Rerun");
 
             log::info!("Removing topographic phase");
@@ -464,7 +464,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log(format!("diff_phase/{}", id), &rr_phase(&phase_diff))
+            rr.log("diff_phase", &rr_phase(&phase_diff))
                 .expect("Could not log phase to Rerun");
         }
     }
