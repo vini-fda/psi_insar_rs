@@ -40,7 +40,8 @@ impl SlcImage {
     pub fn write_buffer(&mut self, buffer: &mut Buffer<ComplexI16>) {
         let mut band = self.data.rasterband(1).expect("Could not read band");
         let size = self.data.raster_size();
-        band.write((0, 0), size, buffer);
+        band.write((0, 0), size, buffer)
+            .expect("Could not write to buffer");
     }
 
     /// Returns the value of the pixel at the given azimuth and slant range indices.

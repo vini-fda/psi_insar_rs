@@ -140,18 +140,8 @@ pub fn coregister_and_remove_flat_phase(
 
                             let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
                             let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
-                            let (s_1, v_1) = osh_1.interp_pos_vel(zero_doppler_1);
-                            let (s_2, v_2) = osh_2.interp_pos_vel(zero_doppler_2);
-
-                            let l = (ground_target_pos - s_1).normalize();
-                            let v = v_1.normalize();
-                            let theta = v.dot(&l).acos().to_degrees();
-                            println!("theta1 = {theta}");
-
-                            let l = (ground_target_pos - s_2).normalize();
-                            let v = v_2.normalize();
-                            let theta = v.dot(&l).acos().to_degrees();
-                            println!("theta2 = {theta}");
+                            let (s_1, _) = osh_1.interp_pos_vel(zero_doppler_1);
+                            let (s_2, _) = osh_2.interp_pos_vel(zero_doppler_2);
 
                             let r1 = (s_1 - ground_target_pos).norm();
                             let r2 = (s_2 - ground_target_pos).norm();

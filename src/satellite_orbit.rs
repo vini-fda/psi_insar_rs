@@ -117,12 +117,51 @@ impl OrbitalStateHistory {
             total_dt_sec,
             alpha,
         );
-        // if (1.0 - alpha) < 0.01 {
-        //     println!("v[{}] = {} m/s", i, v_prev.norm());
-        //     println!("v[{}] = {} m/s", i + 1, v_next.norm());
-        //     println!("vel_interp = {} m/s", vel_interp.norm());
-        // }
+
         (pos_interp, vel_interp)
+    }
+
+    #[inline(always)]
+    pub fn interp_pos(&self, t: DateTime<Utc>) -> Vector3<f64> {
+        let time: &[DateTime<Utc>] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        assert!(time.len() >= 2);
+        // Try to find "t" in the slice "time"
+        // 1. If you can find it, return the corresponding position, velocity pair
+        match time.binary_search(&t) {
+            Ok(i) => return pos[i], // exact match
+            Err(_) => { /* continue to interpolation */ }
+        }
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        // 2. Otherwise, search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 3. With "t_prev" and "t_next", perform interpolation
+        let total_dt = (t_next - t_prev).num_nanoseconds().unwrap() as f64;
+        let dt = (t - t_prev).num_nanoseconds().unwrap() as f64;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt * 1e-9;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        pos_interp
     }
 
     /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.

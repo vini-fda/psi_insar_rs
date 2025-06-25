@@ -2,17 +2,26 @@
 mod tests {
     use chrono::Utc;
     use nalgebra::{Complex, Vector3};
-    use ndarray::{Array2, s};
+    use ndarray::{Array2, ArrayView2, Axis, s};
     use num_complex::ComplexFloat;
-    use rerun::{Image, RecordingStream};
+    use rayon::prelude::*;
+    use rerun::{ColorModel, Image, RecordingStream};
 
     use crate::{
-        dem::DEM,
+        constants::SENTINEL_1_WAVELENGTH,
+        coregistration::{
+            deramping::DerampSlcBurst,
+            interpolation2d::{KnabSincKernel, interpolate_2d},
+        },
+        dem::{CopernicusDemType, DEM},
         dem_gdal::DEMGdal,
         geodesy::geodetic_to_ecef,
+        interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
-        satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
+        perp_baseline::EnhancedDelaunayWarpFunction,
+        satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords, zero_doppler_time},
         sentinel::Sentinel1SlcBurst,
+        visualization::cubehelix_colormap,
     };
 
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
@@ -31,6 +40,28 @@ mod tests {
         rr.log_static(log_name, &img)
             .expect("Could not log SLC Image");
     }
+
+    fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
+        let (rows, cols) = phase.dim();
+        let rgb_vector: Vec<u8> = phase
+            .as_slice_memory_order()
+            .unwrap()
+            .iter()
+            .flat_map(|&phase| {
+                let remainder = phase.rem_euclid(std::f32::consts::TAU);
+                let normalized_phase = remainder / (std::f32::consts::TAU);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr_image
+    }
+
     #[test]
     fn plot_slc_images() {
         //Records logged during cargo test will not be captured by the test harness by default.
@@ -250,6 +281,201 @@ mod tests {
             //         println!("v[{}] = {}", idx, v.norm());
             //     }
             // }
+        }
+    }
+
+    #[test]
+    fn differential_phase_plot() {
+        env_logger::init();
+        log::info!("Starting differential_phase_plot test.");
+        let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondaries = [
+            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
+            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        ]
+        .iter()
+        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .collect::<Vec<_>>();
+        let all_bursts = std::iter::once(&reference).chain(&secondaries);
+        let bounding_box = bounding_box_from_stack(all_bursts.clone());
+        println!("Bounding box: {:?}", bounding_box);
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let start_time_ref = reference.metadata.ads_header.start_time;
+
+        // Log reference sat position
+        let orbit_list = &reference.metadata.general_annotation.orbit_list;
+        let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
+        let points = orbital_history
+            .position
+            .iter()
+            .map(|v| v.map(|x| x as f32).data.0[0]);
+
+        rr.log_static(
+            "ref_orbital_positions",
+            &rerun::Points3D::new(points).with_radii([200.0]),
+        )
+        .unwrap();
+        for (id, secondary) in secondaries.iter().enumerate() {
+            rr.set_time_sequence("secondary_id", id as i64);
+            let start_time_sec = secondary.metadata.ads_header.start_time;
+            let delta_time = start_time_sec - start_time_ref;
+            log::info!("Processing secondary {}", secondary.granule_id.raw_filename);
+            log::info!(
+                "Days between secondary acquisition and reference: {}",
+                delta_time.num_days()
+            );
+
+            log::info!("Computing warp function");
+            let start_time = std::time::Instant::now();
+            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let end_time = std::time::Instant::now();
+            log::info!(
+                "Time taken to compute warp function: {:?}",
+                end_time - start_time
+            );
+
+            let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+            let mut coregistered_secondary_img =
+                Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+
+            let kernel = KnabSincKernel::default();
+            let deramp = DerampSlcBurst::new();
+
+            log::info!("Deramping reference and secondary images");
+            let start_time = std::time::Instant::now();
+            let reference_img = deramp.apply_forward(&reference);
+            let secondary_img = deramp.apply_forward(&secondary);
+            let end_time = std::time::Instant::now();
+            log::info!("Time taken: {:?}", end_time - start_time);
+
+            const CHUNK_SIZE: usize = 256;
+            log::info!("Resampling secondary image to reference image via warp function");
+            let start_time = std::time::Instant::now();
+            coregistered_secondary_img
+                .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+                .into_par_iter()
+                .enumerate()
+                .for_each_init(
+                    || warp_function.triangulation.natural_neighbor(),
+                    |nn, (chunk_idx, mut chunk)| {
+                        let az_offset = chunk_idx * CHUNK_SIZE;
+
+                        for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                            let ref_az = az_offset + i;
+
+                            for (ref_rg, value) in row.iter_mut().enumerate() {
+                                let ref_coords = [ref_az as f64, ref_rg as f64];
+                                let compute_mapped_coord = |dimension: usize| {
+                                    nn.interpolate(
+                                        |v| v.data().secondary_coords[dimension],
+                                        ref_coords.into(),
+                                    )
+                                };
+                                if let (Some(sec_az), Some(sec_rg)) =
+                                    (compute_mapped_coord(0), compute_mapped_coord(1))
+                                {
+                                    let v = interpolate_2d(
+                                        secondary_img.view(),
+                                        sec_az as f32,
+                                        sec_rg as f32,
+                                        &kernel,
+                                    );
+                                    *value = v;
+                                }
+                            }
+                        }
+                    },
+                );
+            let end_time = std::time::Instant::now();
+            log::info!("Time taken: {:?}", end_time - start_time);
+
+            let osh_1 = reference.orbital_state_history();
+            let annotation_1 = &reference.metadata;
+            let osh_2 = secondary.orbital_state_history();
+            let annotation_2 = &secondary.metadata;
+            let mut phase_diff =
+                Array2::from_shape_fn((ref_azimuth_dim, ref_slant_range_dim / 2), |(i, j)| {
+                    let s1 = reference_img[[i, j]];
+                    let s2 = coregistered_secondary_img[[i, j]];
+                    (s1 * s2.conj()).arg()
+                });
+
+            rr.log(format!("phase/{}", id), &rr_phase(&phase_diff))
+                .expect("Could not log phase to Rerun");
+
+            log::info!("Removing topographic phase");
+            let start_time = std::time::Instant::now();
+            phase_diff
+                .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+                .into_par_iter()
+                .enumerate()
+                .for_each_init(
+                    || warp_function.triangulation.natural_neighbor(),
+                    |nn, (chunk_idx, mut chunk)| {
+                        let az_offset = chunk_idx * CHUNK_SIZE;
+
+                        for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                            let ref_az = az_offset + i;
+
+                            for (ref_rg, phase) in row.iter_mut().enumerate() {
+                                let ref_coords = [ref_az as f64, ref_rg as f64];
+                                let sec_az = nn.interpolate(
+                                    |v| v.data().secondary_coords[0],
+                                    ref_coords.into(),
+                                );
+
+                                // Now compute the ground target position
+                                let ground_target_lat =
+                                    nn.interpolate(|v| v.data().lat, ref_coords.into());
+                                let ground_target_lon =
+                                    nn.interpolate(|v| v.data().lon, ref_coords.into());
+
+                                // if any are None, skip
+                                if sec_az.is_none()
+                                    || ground_target_lat.is_none()
+                                    || ground_target_lon.is_none()
+                                {
+                                    continue;
+                                }
+                                let sec_az = sec_az.unwrap();
+                                let ground_target_lat = ground_target_lat.unwrap();
+                                let ground_target_lon = ground_target_lon.unwrap();
+
+                                let ground_target_pos = Vector3::from(
+                                    dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
+                                );
+
+                                let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
+                                let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
+                                let s_1 = osh_1.interp_pos(zero_doppler_1);
+                                let s_2 = osh_2.interp_pos(zero_doppler_2);
+
+                                let r1 = (s_1 - ground_target_pos).norm();
+                                let r2 = (s_2 - ground_target_pos).norm();
+
+                                let delta_phi =
+                                    4.0 * std::f64::consts::PI * (r1 - r2) / SENTINEL_1_WAVELENGTH;
+
+                                *phase -= delta_phi as f32;
+                            }
+                        }
+                    },
+                );
+            let end_time = std::time::Instant::now();
+            log::info!("Time taken: {:?}", end_time - start_time);
+
+            rr.log(format!("diff_phase/{}", id), &rr_phase(&phase_diff))
+                .expect("Could not log phase to Rerun");
         }
     }
 }

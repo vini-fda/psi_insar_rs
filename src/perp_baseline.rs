@@ -1180,17 +1180,19 @@ mod tests {
 
                         for (ref_rg, val) in row.iter_mut().enumerate() {
                             let ref_coords = [ref_az as f64, ref_rg as f64];
-                            let u = match nn
-                                .interpolate(|v| v.data().secondary_coords[0], ref_coords.into())
+                            // let u = match nn
+                            //     .interpolate(|v| v.data().secondary_coords[0], ref_coords.into())
+                            // {
+                            //     Some(v) => v - ref_coords[0],
+                            //     None => 0.0,
+                            // };
+                            let v = match nn
+                                .interpolate(|v| v.data().secondary_coords[1], ref_coords.into())
                             {
-                                Some(v) => v - ref_coords[0],
+                                Some(v) => v - ref_coords[1],
                                 None => 0.0,
                             };
-                            // let v = nn
-                            //     .interpolate(|v| v.data().secondary_coords[1], ref_coords.into())
-                            //     .unwrap_or(0.0)
-                            //     - ref_coords[1];
-                            *val = u;
+                            *val = v;
                         }
                     }
                 },
