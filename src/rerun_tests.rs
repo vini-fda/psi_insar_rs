@@ -23,8 +23,8 @@ mod tests {
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
         satellite_orbit::{
-            OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
-            zero_doppler_time,
+            ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
+            radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
         visualization::{
@@ -150,49 +150,7 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let burst = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        )
-        .unwrap();
-        let annotation = &burst.metadata;
-        let osh = burst.orbital_state_history();
         let dem = DEM::open_file("dem.tif");
-
-        let mut points = vec![];
-        for (lat, lon) in dem.lat_lon_iter() {
-            let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let ground_target_pos = Vector3::<f64>::from(pos);
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
-            let [azimuth_idx, slant_range_idx] =
-                radar_coords_to_pixel_coords(zero_doppler, &annotation);
-
-            points.push([slant_range_idx, azimuth_idx]);
-        }
-        let points = rerun::Points2D::new(points)
-            .with_colors(dem.vertex_colors())
-            .with_radii([10.0]);
-        rr.log_static("backgeocoded_points", &points).unwrap();
-
-        // Log ground control points
-        let gcps = &annotation
-            .geolocation_grid
-            .geolocation_grid_point_list
-            .geolocation_grid_point;
-
-        let mut points = vec![];
-        for gcp in gcps {
-            let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
-            let zero_doppler = osh.find_zero_doppler_state(pos.into());
-            let [azimuth_idx, slant_range_idx] =
-                radar_coords_to_pixel_coords(zero_doppler, &annotation);
-
-            points.push([slant_range_idx, azimuth_idx]);
-        }
-        let points = rerun::Points2D::new(points)
-            .with_colors([rerun::Color::from_rgb(255, 122, 100)])
-            .with_radii([30.0]);
-        rr.log_static("backgeocoded_gcps", &points).unwrap();
-
         // DEM extent
         let dem_corners = dem.closed_corners_lat_lon();
         rr.log(
@@ -202,16 +160,71 @@ mod tests {
                 .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
         )
         .unwrap();
-        // GCPs on the map
-        let gcps_lat_lon = gcps
-            .iter()
-            .map(|gcp| [gcp.latitude, gcp.longitude])
-            .collect::<Vec<_>>();
-        rr.log_static(
-            "GCPs Lat Lon",
-            &rerun::GeoPoints::from_lat_lon(&gcps_lat_lon),
-        )
-        .unwrap();
+
+        // Backgeocoding
+        let bursts = [
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
+            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
+            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
+            // "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        ]
+        .iter()
+        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .collect::<Vec<_>>();
+        for burst in bursts {
+            let annotation = &burst.metadata;
+            let burst_name = &burst.granule_id.raw_filename;
+            let osh = burst.orbital_state_history();
+
+            let mut points = vec![];
+            for (lat, lon) in dem.lat_lon_iter() {
+                let pos = dem.get_ecef_at_lat_lon(lat, lon);
+                let ground_target_pos = Vector3::<f64>::from(pos);
+                let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+                let [azimuth_idx, slant_range_idx] =
+                    radar_coords_to_pixel_coords(zero_doppler, &annotation);
+
+                points.push([slant_range_idx, azimuth_idx]);
+            }
+            let points = rerun::Points2D::new(points)
+                .with_colors(dem.vertex_colors())
+                .with_radii([10.0]);
+            rr.log_static(format!("backgeocoded_points/{}", burst_name), &points)
+                .unwrap();
+
+            // Log ground control points
+            let gcps = &annotation
+                .geolocation_grid
+                .geolocation_grid_point_list
+                .geolocation_grid_point;
+
+            let mut points = vec![];
+            for gcp in gcps {
+                let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
+                let zero_doppler = osh.find_zero_doppler_state(pos.into());
+                let [azimuth_idx, slant_range_idx] =
+                    radar_coords_to_pixel_coords(zero_doppler, &annotation);
+
+                points.push([slant_range_idx, azimuth_idx]);
+            }
+            let points = rerun::Points2D::new(points).with_radii([30.0]);
+            rr.log_static(format!("backgeocoded_gcps/{}", burst_name), &points)
+                .unwrap();
+
+            // GCPs on the map
+            let gcps_lat_lon = gcps
+                .iter()
+                .map(|gcp| [gcp.latitude, gcp.longitude])
+                .collect::<Vec<_>>();
+            rr.log_static(
+                "GCPs Lat Lon",
+                &rerun::GeoPoints::from_lat_lon(&gcps_lat_lon),
+            )
+            .unwrap();
+        }
     }
 
     #[test]
@@ -790,25 +803,16 @@ mod tests {
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary].into_iter());
         log::info!("Downloading DEM");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = DEM::open_file("dem90.tif");
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram
         log::info!("Building (dx, dy) offset values for histogram");
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.orbital_state_history();
-        let sec_osh = secondary.orbital_state_history();
-        let radar_coords = |ground_target_pos: Vector3<f64>,
-                            osh: &OrbitalStateHistory,
-                            annotation: &SlcProductAnnotation|
-         -> [f64; 2] {
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
 
-            radar_coords_to_pixel_coords(zero_doppler, annotation)
-        };
+        let ref_osh = &reference.continuous_orbital_state_history();
+        let sec_osh = &secondary.continuous_orbital_state_history();
 
-        let reference_metadata = &reference.metadata;
-        let secondary_metadata = &secondary.metadata;
         log::info!(
             "DEM original length: {}, original dimensions = {}, {}",
             dem.len(),
@@ -834,8 +838,8 @@ mod tests {
             for j in 0..cols {
                 let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
                 let pos = dem.get_ecef_at_lat_lon(lat, lon);
-                let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
-                let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
                 if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                     && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)

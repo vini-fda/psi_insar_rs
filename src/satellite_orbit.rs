@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{f64::NAN, path::Path};
 
 use crate::{
     constants::C_LIGHT,
@@ -12,6 +12,7 @@ use crate::{
         annotation_xml::{OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
+    sentinel::Sentinel1SlcMetadata,
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
@@ -176,8 +177,8 @@ impl OrbitalStateHistory {
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
     pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> RadarCoords {
-        const NUM_BISECTION_ITER: usize = 32;
-        const TOLERANCE: f64 = 1e-9;
+        const NUM_BISECTION_ITER: usize = 64;
+        const TOLERANCE: f64 = 1e-12;
         let time = self.time.as_slice();
         assert!(time.len() >= 2);
 
@@ -219,7 +220,8 @@ impl OrbitalStateHistory {
                         left = mid;
                     }
                 }
-                let mid = left + (right - left) / 2;
+                let half = (right - left) / 2;
+                let mid = left + half;
                 return state(mid);
             }
         }
@@ -335,6 +337,220 @@ impl From<&ListOfOsvs> for OrbitalStateHistory {
             position,
             velocity,
         }
+    }
+}
+
+/// A collection of orbital state vectors (position and velocity) over time.
+///
+/// In this struct, unlike `OrbitalStateHistory`, the time points are represented as seconds since the start time (from metadata).
+///
+/// This structure stores a time series of orbital states and provides methods
+/// for interpolating state values at arbitrary times and computing related
+/// orbital parameters.
+pub struct ContinuousOrbitalStateHistory {
+    pub time: Vec<f64>,
+    pub position: Vec<Vector3<f64>>,
+    pub velocity: Vec<Vector3<f64>>,
+    near_edge_slant_range: f64,
+    range_spacing: f64,
+    azimuth_time_interval: f64,
+}
+
+impl ContinuousOrbitalStateHistory {
+    /// From a Orbital State History
+    pub fn from_osh(
+        osh: &OrbitalStateHistory,
+        start_time: DateTime<Utc>,
+        annotation: &SlcProductAnnotation,
+    ) -> Self {
+        let time = osh
+            .time
+            .iter()
+            .map(|&t_datetime| {
+                t_datetime
+                    .signed_duration_since(start_time)
+                    .as_seconds_f64()
+            })
+            .collect();
+        let slant_range_time = annotation
+            .image_annotation
+            .image_information
+            .slant_range_time;
+
+        Self {
+            time,
+            near_edge_slant_range: 0.5 * C_LIGHT * slant_range_time,
+            range_spacing: annotation
+                .image_annotation
+                .image_information
+                .range_pixel_spacing,
+            azimuth_time_interval: annotation
+                .image_annotation
+                .image_information
+                .azimuth_time_interval,
+            position: osh.position.clone(),
+            velocity: osh.velocity.clone(),
+        }
+    }
+
+    /// Interpolate p(t) and v(t) at
+    #[inline(always)]
+    pub fn interp_pos_vel(&self, t: f64) -> (Vector3<f64>, Vector3<f64>) {
+        let time: &[f64] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        assert!(time.len() >= 2);
+        // 1. Search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 2. With "t_prev" and "t_next", perform interpolation
+        let total_dt = t_next - t_prev;
+        let dt = t - t_prev;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+        // Derivative of Hermite spline w.r.t. time
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        (pos_interp, vel_interp)
+    }
+
+    #[inline(always)]
+    pub fn interp_pos(&self, t: f64) -> Vector3<f64> {
+        let time: &[f64] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        assert!(time.len() >= 2);
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        // 1. Search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 2. With "t_prev" and "t_next", perform interpolation
+        let total_dt = t_next - t_prev;
+        let dt = t - t_prev;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        pos_interp
+    }
+
+    /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
+    ///
+    /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
+    /// is perpendicular to the vector pointing from the satellite to the ground target:
+    ///
+    ///     v(t) · (ground_target_pos - s(t)) = 0
+    ///
+    /// This condition implies a dot product of zero between the velocity vector and
+    /// the look vector, indicating orthogonality.
+    ///
+    /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
+    pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> [f64; 2] {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        let mut distance_to_target = NAN;
+        let mut delta_time_secs = NAN;
+        'outer: for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over time
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2.0;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        let sat_pos = self.interp_pos(mid);
+                        distance_to_target = (ground_target_pos - sat_pos).norm();
+                        delta_time_secs = mid;
+                        break 'outer;
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let half = (right - left) / 2.0;
+                let mid = left + half;
+                let sat_pos = self.interp_pos(mid);
+                distance_to_target = (ground_target_pos - sat_pos).norm();
+                delta_time_secs = mid;
+                break 'outer;
+            }
+        }
+
+        if distance_to_target.is_nan() || delta_time_secs.is_nan() {
+            panic!("NaN found in bisection");
+        }
+
+        // Calculation using azimuth_time_interval (similar to linear interp)
+        // This is what the official SNAP microwave toolbox performs:
+        // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-io/src/main/java/eu/esa/sar/io/sentinel1/Sentinel1Level1Directory.java
+        // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-op-insar/src/main/java/eu/esa/sar/insar/gpf/support/SARPosition.java
+        let azimuth_index = delta_time_secs / self.azimuth_time_interval;
+
+        // Column calculation:
+        let slant_range_index =
+            (distance_to_target - self.near_edge_slant_range) / self.range_spacing;
+        [azimuth_index, slant_range_index]
     }
 }
 
