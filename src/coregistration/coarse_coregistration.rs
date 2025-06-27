@@ -361,7 +361,7 @@ mod manual_tests {
         )
         .unwrap();
         let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
         let reference_image = primary.data.array_data();

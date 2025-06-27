@@ -62,6 +62,18 @@ impl DEM {
         }
     }
 
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows * self.cols
+    }
+
     pub fn open_file<P: AsRef<Path>>(path: P) -> Self {
         let file = std::fs::File::open(path).expect("Could not open GeoTIFF file.");
         let data = geotiff::GeoTiff::read(file).expect("Could not read GeoTIFF.");

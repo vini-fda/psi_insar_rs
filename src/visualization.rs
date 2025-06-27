@@ -30,6 +30,67 @@ pub fn turbo_colormap(x: f32) -> [f32; 3] {
     [red, green, blue]
 }
 
+#[inline(always)]
+fn to_byte(x: f32) -> u8 {
+    (255.0 * x) as u8
+}
+
+pub fn normalize_values(values: &[f32]) -> Vec<f32> {
+    let max = values
+        .iter()
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap();
+    let min = values
+        .iter()
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap();
+    let range = max - min;
+    if range > 0.0 {
+        values.iter().map(|x| (x - min) / range).collect()
+    } else {
+        let n = values.len();
+        vec![0.0; n]
+    }
+}
+
+pub fn turbo_colorized_values(values: &[f32]) -> Vec<u32> {
+    let max = values
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite()) // filters out NaNs and infinities
+        .max_by(|a, b| a.partial_cmp(b).unwrap());
+    let min = values
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite()) // filters out NaNs and infinities
+        .min_by(|a, b| a.partial_cmp(b).unwrap());
+    if max.is_none() || min.is_none() {
+        return vec![0xFFFFFFFF];
+    }
+    let max = max.unwrap();
+    let min = min.unwrap();
+    let range = max - min;
+    if range > 0.0 {
+        values
+            .iter()
+            .map(|x| turbo_colormap_bytes((x - min) / range))
+            .collect()
+    } else {
+        vec![0xFFFFFFFF]
+    }
+}
+
+pub fn turbo_colormap_bytes(x: f32) -> u32 {
+    if x.is_nan() {
+        return 0x00000000;
+    }
+    let [red, green, blue] = turbo_colormap(x).map(to_byte);
+    let alpha = 255u8;
+    // Pack into u32 as 0xAARRGGBB or 0xRRGGBBAA depending on your convention.
+    // Here we use 0xRRGGBBAA (common in WebGL, etc.)
+    ((red as u32) << 24) | ((green as u32) << 16) | ((blue as u32) << 8) | (alpha as u32)
+}
+
 /// Cubehelix cycle colormap
 /// Based on the BEAM Color Palette Definition
 pub fn cubehelix_colormap(x: f32) -> [f32; 3] {

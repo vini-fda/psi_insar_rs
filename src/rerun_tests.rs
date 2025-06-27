@@ -1,8 +1,11 @@
 #[cfg(test)]
 mod tests {
+    use std::f32::NAN;
+
     use chrono::Utc;
     use nalgebra::{Complex, Vector3};
-    use ndarray::{Array2, ArrayView2, Axis, s};
+    use ndarray::{Array1, Array2, ArrayView2, Axis, s};
+    use ndarray_npy::WriteNpyExt;
     use num_complex::ComplexFloat;
     use rayon::prelude::*;
     use rerun::{ColorModel, Image, RecordingStream};
@@ -24,7 +27,9 @@ mod tests {
             zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
-        visualization::cubehelix_colormap,
+        visualization::{
+            cubehelix_colormap, normalize_values, turbo_colorized_values, turbo_colormap_bytes,
+        },
     };
 
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
@@ -216,7 +221,7 @@ mod tests {
         )
         .unwrap();
         let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_orbit_speed")
@@ -699,5 +704,184 @@ mod tests {
             rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact))
                 .expect("Could not log phase to Rerun");
         }
+    }
+
+    #[test]
+    fn warp_fn_offsets_histogram() {
+        env_logger::init();
+        log::info!("Starting warp_fn_offsets_histogram test.");
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+        )
+        .unwrap();
+        let bounding_box = bounding_box_from_stack([&reference, &secondary].into_iter());
+        log::info!("Downloading DEM");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        log::info!("DEM succesfully downloaded!");
+
+        // Build (dx, dy) offset values for histogram
+        log::info!("Building (dx, dy) offset values for histogram");
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
+        let ref_osh = reference.orbital_state_history();
+        let sec_osh = secondary.orbital_state_history();
+        let radar_coords = |ground_target_pos: Vector3<f64>,
+                            osh: &OrbitalStateHistory,
+                            annotation: &SlcProductAnnotation|
+         -> [f64; 2] {
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+
+            radar_coords_to_pixel_coords(zero_doppler, annotation)
+        };
+
+        let reference_metadata = &reference.metadata;
+        let secondary_metadata = &secondary.metadata;
+        let n = dem.len();
+        let mut delta_azimuth_coords = Vec::with_capacity(n);
+        let mut delta_slant_range_coords = Vec::with_capacity(n);
+        let mut latitudes = Vec::with_capacity(n);
+        let mut longitudes = Vec::with_capacity(n);
+        for (lat, lon) in dem.lat_lon_iter() {
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
+            let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+
+            if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
+                && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
+            {
+                delta_azimuth_coords.push(rc_sec[0] - rc_ref[0]);
+                delta_slant_range_coords.push(rc_sec[1] - rc_ref[1]);
+                latitudes.push(lat);
+                longitudes.push(lon);
+            }
+        }
+        log::info!("Built offset values!");
+        // Build ndarrays
+        log::info!("Loading into arrays and writing to files...");
+        let delta_azimuth_coords = Array1::from_vec(delta_azimuth_coords);
+        let delta_slant_range_coords = Array1::from_vec(delta_slant_range_coords);
+        let latitudes = Array1::from_vec(latitudes);
+        let longitudes = Array1::from_vec(longitudes);
+        let file_az = std::fs::File::create("delta_azimuth_coords.npy").unwrap();
+        let file_rg = std::fs::File::create("delta_slant_range_coords.npy").unwrap();
+        let file_lat = std::fs::File::create("latitudes.npy").unwrap();
+        let file_lon = std::fs::File::create("longitudes.npy").unwrap();
+        delta_azimuth_coords.write_npy(file_az).unwrap();
+        delta_slant_range_coords.write_npy(file_rg).unwrap();
+        latitudes.write_npy(file_lat).unwrap();
+        longitudes.write_npy(file_lon).unwrap();
+        log::info!("Done!");
+    }
+
+    #[test]
+    fn warp_fn_offsets_mesh() {
+        env_logger::init();
+        log::info!("Starting warp_fn_offsets_mesh test.");
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+        )
+        .unwrap();
+        let bounding_box = bounding_box_from_stack([&reference, &secondary].into_iter());
+        log::info!("Downloading DEM");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        log::info!("DEM succesfully downloaded!");
+
+        // Build (dx, dy) offset values for histogram
+        log::info!("Building (dx, dy) offset values for histogram");
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
+        let ref_osh = reference.orbital_state_history();
+        let sec_osh = secondary.orbital_state_history();
+        let radar_coords = |ground_target_pos: Vector3<f64>,
+                            osh: &OrbitalStateHistory,
+                            annotation: &SlcProductAnnotation|
+         -> [f64; 2] {
+            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+
+            radar_coords_to_pixel_coords(zero_doppler, annotation)
+        };
+
+        let reference_metadata = &reference.metadata;
+        let secondary_metadata = &secondary.metadata;
+        log::info!(
+            "DEM original length: {}, original dimensions = {}, {}",
+            dem.len(),
+            dem.rows(),
+            dem.cols()
+        );
+        const FACTOR_ROWS: usize = 2;
+        const FACTOR_COLS: usize = 2;
+        let rows = dem.rows() / FACTOR_ROWS;
+        let cols = dem.cols() / FACTOR_COLS;
+        let n = rows * cols;
+        log::info!(
+            "DEM sampled length: {}, sampled dimensions = {}, {}",
+            n,
+            rows,
+            cols
+        );
+        let mut delta_azimuth_coords = Vec::with_capacity(n);
+        let mut delta_slant_range_coords = Vec::with_capacity(n);
+        let mut vertices = Vec::with_capacity(n);
+
+        for i in 0..rows {
+            for j in 0..cols {
+                let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
+                let pos = dem.get_ecef_at_lat_lon(lat, lon);
+                let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
+                let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+
+                if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
+                    && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
+                {
+                    delta_azimuth_coords.push((rc_sec[0] - rc_ref[0]) as f32);
+                    delta_slant_range_coords.push((rc_sec[1] - rc_ref[1]) as f32);
+                } else {
+                    delta_azimuth_coords.push(NAN);
+                    delta_slant_range_coords.push(NAN);
+                }
+                vertices.push([lon as f32, lat as f32, 0.0]);
+            }
+        }
+        let mut triangle_indices = Vec::with_capacity((rows - 1) * (cols - 1) * 2);
+        let mut max_index = 0;
+        for i in 0..(rows - 1) {
+            for j in 0..(cols - 1) {
+                let a = (i * cols + j) as u32;
+                let b = (i * cols + j + 1) as u32;
+                let c = ((i + 1) * cols + j) as u32;
+                let d = ((i + 1) * cols + j + 1) as u32; // rows * cols - 1
+                if d > max_index {
+                    max_index = d;
+                }
+                triangle_indices.push([a, b, d]);
+                triangle_indices.push([a, d, c]);
+            }
+        }
+        log::info!("max_index = {}", max_index);
+        let colors_delta_azimuth_coords = turbo_colorized_values(&delta_azimuth_coords);
+        let colors_delta_slant_range_coords = turbo_colorized_values(&delta_slant_range_coords);
+
+        log::info!("Built offset values!");
+        // Log as a 3D Mesh
+        let mesh_az_offsets = rerun::Mesh3D::new(vertices.iter())
+            .with_vertex_colors(colors_delta_azimuth_coords)
+            .with_triangle_indices(triangle_indices.iter());
+        let mesh_rg_offsets = rerun::Mesh3D::new(vertices)
+            .with_vertex_colors(colors_delta_slant_range_coords)
+            .with_triangle_indices(triangle_indices);
+        let rr = rerun::RecordingStreamBuilder::new("warp_fn_offsets_mesh")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        rr.log_static("mesh_az_offsets", &mesh_az_offsets).unwrap();
+        rr.log_static("mesh_rg_offsets", &mesh_rg_offsets).unwrap();
+
+        log::info!("Done!");
     }
 }
