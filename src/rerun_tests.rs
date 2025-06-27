@@ -456,7 +456,7 @@ mod tests {
                                 let delta_phi =
                                     4.0 * std::f64::consts::PI * (r1 - r2) / SENTINEL_1_WAVELENGTH;
 
-                                *phase -= delta_phi as f32;
+                                *phase += delta_phi as f32;
                             }
                         }
                     },
@@ -525,15 +525,16 @@ mod tests {
             let osh_2 = secondary.orbital_state_history();
             let annotation_2 = &secondary.metadata;
 
-            log::info!("Calculating topographic phase (exact)");
+            // Topographic phase: gradient approximation
+            log::info!("Calculating topographic phase (approximation)");
             let s = secondary
                 .metadata
                 .image_annotation
                 .image_information
                 .range_pixel_spacing;
-            let mut topo_phase_exact = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+            let mut topo_phase_approx = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
             let start_time = std::time::Instant::now();
-            topo_phase_exact
+            topo_phase_approx
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
                 .enumerate()
@@ -630,14 +631,13 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact))
+            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx))
                 .expect("Could not log phase to Rerun");
 
-            // Topographic phase: gradient approximation
-            log::info!("Calculating topographic phase (approximation)");
-            let mut topo_phase_approx = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+            log::info!("Calculating topographic phase (exact)");
+            let mut topo_phase_exact = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
             let start_time = std::time::Instant::now();
-            topo_phase_approx
+            topo_phase_exact
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
                 .enumerate()
@@ -696,7 +696,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx))
+            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact))
                 .expect("Could not log phase to Rerun");
         }
     }
