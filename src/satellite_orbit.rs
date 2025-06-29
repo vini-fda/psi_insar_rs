@@ -1,4 +1,4 @@
-use std::{f64::NAN, path::Path};
+use std::path::Path;
 
 use crate::{
     constants::C_LIGHT,
@@ -543,8 +543,8 @@ impl ContinuousOrbitalStateHistory {
         };
 
         // Step 1: Search for a sign change across time intervals
-        let mut distance_to_target = NAN;
-        let mut delta_time_secs = NAN;
+        let mut distance_to_target = f64::NAN;
+        let mut delta_time_secs = f64::NAN;
         'outer: for i in 0..time.len() - 1 {
             let t0 = time[i];
             let t1 = time[i + 1];
@@ -625,7 +625,7 @@ impl ContinuousOrbitalStateHistory {
         };
 
         // Step 1: Find a good initial guess by searching for a sign change
-        let mut t_guess = NAN;
+        let mut t_guess = f64::NAN;
         for i in 0..time.len() - 1 {
             let t0 = time[i];
             let t1 = time[i + 1];
