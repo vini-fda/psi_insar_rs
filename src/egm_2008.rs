@@ -893,10 +893,7 @@ mod tests {
                 "could not calculate geoid height at ({lat}, {lon})"
             );
             if let Ok(actual) = result {
-                assert_eq!(
-                    actual, expected,
-                    "got unexpected height at ({lat}, {lon})"
-                );
+                assert_eq!(actual, expected, "got unexpected height at ({lat}, {lon})");
             }
         }
     }

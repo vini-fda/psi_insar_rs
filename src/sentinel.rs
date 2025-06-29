@@ -171,8 +171,7 @@ impl Sentinel1SlcBurst {
 
         let mut granule_str = None;
         for entry_result in entries {
-            let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+            let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
             let file_name = entry.file_name();
             if let Some(file_name) = file_name.to_str() {
                 if file_name.ends_with(".tiff") || file_name.ends_with(".tif") {
@@ -256,8 +255,7 @@ impl Sentinel1SlcBurst {
             .map_err(|e| format!("Failed to read calibration directory: {e}"))?;
 
         for entry_result in entries {
-            let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+            let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -304,8 +302,7 @@ impl Sentinel1SlcBurst {
             .map_err(|e| format!("Failed to read calibration directory: {e}"))?;
 
         for entry_result in entries {
-            let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+            let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -352,8 +349,7 @@ impl Sentinel1SlcBurst {
             .map_err(|e| format!("Failed to read annotation directory: {e}"))?;
 
         for entry_result in entries {
-            let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+            let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -401,8 +397,7 @@ impl Sentinel1SlcBurst {
             .map_err(|e| format!("Failed to read measurement directory: {e}"))?;
 
         for entry_result in entries {
-            let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+            let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 // Check for both possible TIFF extensions
