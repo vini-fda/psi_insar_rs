@@ -81,29 +81,25 @@
 // #   # )
 // #   # bperp_value = baseline_info['B_perpendicular_signed']
 
-use core::panic;
-use nalgebra::{Complex, Vector3};
+use nalgebra::Vector3;
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 use rustfft::num_traits::Zero;
 use spade::{DelaunayTriangulation, HasPosition, HierarchyHintGenerator, Triangulation};
-use std::{
-    iter::Map,
-    sync::{Arc, Mutex},
-};
+use std::iter::Map;
 
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
     coregistration::{
         deramping::DerampSlcBurst,
         interpolation2d::{KnabSincKernel, interpolate_2d},
-        warp_function::{self, WarpFunction},
+        warp_function::{WarpFunction},
     },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
     satellite_orbit::{
-        OrbitalStateHistory, RadarCoords, pixel_coords_to_radar_coords,
+        OrbitalStateHistory, pixel_coords_to_radar_coords,
         radar_coords_to_pixel_coords,
     },
     sentinel::Sentinel1SlcBurst,
@@ -205,8 +201,8 @@ pub fn theta_from_pixel_index(
         ground_target_pos_geodetic.0,
         ground_target_pos_geodetic.1,
     ));
-    let theta = l.dot(&normal).acos();
-    theta
+    
+    l.dot(&normal).acos()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -749,8 +745,8 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    let reference_img = deramp.apply_forward(&reference);
-    let secondary_img = deramp.apply_forward(&secondary);
+    let reference_img = deramp.apply_forward(reference);
+    let secondary_img = deramp.apply_forward(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -867,8 +863,8 @@ pub fn coregister_and_remove_flat_phase(
                             annotation_1,
                         );
                         let radar_coords_2 = pixel_coords_to_radar_coords(
-                            sec_az as f64,
-                            sec_rg as f64,
+                            sec_az,
+                            sec_rg,
                             annotation_2,
                         );
                         let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
@@ -912,12 +908,9 @@ pub fn coregister_and_remove_flat_phase(
 #[cfg(test)]
 mod tests {
     use ndarray::{Array2, s};
-    use rerun::{Image, RecordingStream};
+    
 
     use crate::{
-        coregistration::{
-            deramping::DerampSlcBurst, warp_function::resample_secondary_to_reference,
-        },
         dem::CopernicusDemType,
         visualization::cubehelix_colormap,
     };
@@ -927,7 +920,7 @@ mod tests {
     fn init_logger() {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
-        let _ = env_logger::init();
+        env_logger::init();
     }
 
     #[test]
@@ -1094,7 +1087,7 @@ mod tests {
             phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
         };
         let phase = coregister_and_remove_flat_phase(&primary, &secondary, &dem)
-            .map(|phase| wrap_phase(*phase) as f32);
+            .map(|phase| wrap_phase(*phase));
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();

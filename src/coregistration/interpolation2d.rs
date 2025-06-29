@@ -2,7 +2,6 @@ use ndarray::ArrayView2;
 use num_complex::Complex;
 use num_traits::{Float, NumCast};
 use std::cmp::{max, min};
-use std::ops::AddAssign;
 
 /// Maximum support radius allowed for any kernel.
 /// This determines the size of the fixed array used for intermediate values.

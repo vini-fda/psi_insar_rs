@@ -102,8 +102,8 @@ mod tests {
     use crate::sentinel::Sentinel1SlcBurst;
     use crate::stft::{Stft, WindowFunction};
     use crate::visualization::cubehelix_colormap;
-    use ndarray::{Array2, s};
-    use num_complex::Complex;
+    use ndarray::s;
+    
 
     use super::*;
 

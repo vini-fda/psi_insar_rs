@@ -13,7 +13,6 @@ use crate::{
         annotation_xml::{OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
-    sentinel::Sentinel1SlcMetadata,
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
@@ -154,16 +153,16 @@ impl OrbitalStateHistory {
 
         let total_dt_sec = total_dt * 1e-9;
         // cubic hermite interpolation
-        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+        
+
+        unit_interval_cubic_hermite_spline_interpolation(
             p_prev,
             v_prev,
             p_next,
             v_next,
             total_dt_sec,
             alpha,
-        );
-
-        pos_interp
+        )
     }
 
     /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
@@ -466,16 +465,16 @@ impl ContinuousOrbitalStateHistory {
 
         let total_dt_sec = total_dt;
         // cubic hermite interpolation
-        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+        
+
+        unit_interval_cubic_hermite_spline_interpolation(
             p_prev,
             v_prev,
             p_next,
             v_next,
             total_dt_sec,
             alpha,
-        );
-
-        pos_interp
+        )
     }
 
     /// Interpolate p(t), v(t), and a(t) at time t
@@ -737,20 +736,10 @@ pub fn radar_coords_to_pixel_coords<T: Float>(
     let slant_range_index =
         (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
     [
-        T::from(azimuth_index).expect(
-            format!(
-                "could not convert azimuth_index to {}",
-                std::any::type_name::<T>()
-            )
-            .as_str(),
-        ),
-        T::from(slant_range_index).expect(
-            format!(
-                "could not convert slant_range_index to {}",
-                std::any::type_name::<T>()
-            )
-            .as_str(),
-        ),
+        T::from(azimuth_index).unwrap_or_else(|| panic!("could not convert azimuth_index to {}",
+                std::any::type_name::<T>())),
+        T::from(slant_range_index).unwrap_or_else(|| panic!("could not convert slant_range_index to {}",
+                std::any::type_name::<T>())),
     ]
 }
 
@@ -815,8 +804,8 @@ pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) 
     // Reverse azimuth index calculation to get time
     let delta_time_secs = azimuth_index * azimuth_time_interval;
     let delta_time_nanos = (delta_time_secs * 1_000_000_000.0).round() as i64;
-    let zero_doppler_time = t_start + TimeDelta::nanoseconds(delta_time_nanos);
-    zero_doppler_time
+    
+    t_start + TimeDelta::nanoseconds(delta_time_nanos)
 }
 
 #[cfg(test)]

@@ -2,13 +2,13 @@
 mod tests {
     use std::f32::NAN;
 
-    use chrono::Utc;
-    use nalgebra::{Complex, Vector3};
-    use ndarray::{Array1, Array2, ArrayView2, Axis, s};
+    
+    use nalgebra::Vector3;
+    use ndarray::{Array1, Array2, Axis, s};
     use ndarray_npy::WriteNpyExt;
     use num_complex::ComplexFloat;
     use rayon::prelude::*;
-    use rerun::{ColorModel, Image, RecordingStream};
+    use rerun::{Image, RecordingStream};
 
     use crate::{
         constants::SENTINEL_1_WAVELENGTH,
@@ -22,12 +22,12 @@ mod tests {
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
         satellite_orbit::{
-            ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
+            OrbitalStateHistory, pixel_coords_to_radar_coords,
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
         visualization::{
-            cubehelix_colormap, normalize_values, turbo_colorized_values, turbo_colormap_bytes,
+            cubehelix_colormap, turbo_colorized_values,
         },
     };
 
@@ -63,20 +63,20 @@ mod tests {
                 cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
             })
             .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
+        
+        rerun::Image::from_color_model_and_bytes(
             rgb_vector,
             [cols as u32, rows as u32],
             rerun::ColorModel::RGB,
             rerun::ChannelDatatype::U8,
-        );
-        rr_image
+        )
     }
 
     #[test]
     fn plot_slc_images() {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
-        let _ = env_logger::init();
+        env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn compare_zero_doppler() {
-        let _ = env_logger::init();
+        env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
@@ -187,7 +187,7 @@ mod tests {
                 let ground_target_pos = Vector3::<f64>::from(pos);
                 let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
                 let [azimuth_idx, slant_range_idx] =
-                    radar_coords_to_pixel_coords(zero_doppler, &annotation);
+                    radar_coords_to_pixel_coords(zero_doppler, annotation);
 
                 points.push([slant_range_idx, azimuth_idx]);
             }
@@ -208,7 +208,7 @@ mod tests {
                 let pos = geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height);
                 let zero_doppler = osh.find_zero_doppler_state(pos.into());
                 let [azimuth_idx, slant_range_idx] =
-                    radar_coords_to_pixel_coords(zero_doppler, &annotation);
+                    radar_coords_to_pixel_coords(zero_doppler, annotation);
 
                 points.push([slant_range_idx, azimuth_idx]);
             }
@@ -277,7 +277,7 @@ mod tests {
                     &rerun::Scalars::new([vel.norm()]),
                 )
                 .expect("Unable to log scalar");
-                t = t + chrono::TimeDelta::nanoseconds(dt_nanos);
+                t += chrono::TimeDelta::nanoseconds(dt_nanos);
             }
 
             let sat_trajectory = rerun::LineStrip3D::from_iter(sat_pos);
@@ -347,7 +347,7 @@ mod tests {
 
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -364,7 +364,7 @@ mod tests {
             log::info!("Deramping reference and secondary images");
             let start_time = std::time::Instant::now();
             let reference_img = deramp.apply_forward(&reference);
-            let secondary_img = deramp.apply_forward(&secondary);
+            let secondary_img = deramp.apply_forward(secondary);
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -466,7 +466,7 @@ mod tests {
                                 );
 
                                 let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                                let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
+                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 
@@ -529,7 +529,7 @@ mod tests {
 
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -609,8 +609,8 @@ mod tests {
                                     annotation_1,
                                 );
                                 let radar_coords_2 = pixel_coords_to_radar_coords(
-                                    sec_az as f64,
-                                    sec_rg as f64,
+                                    sec_az,
+                                    sec_rg,
                                     annotation_2,
                                 );
                                 let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
@@ -698,7 +698,7 @@ mod tests {
                                 );
 
                                 let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                                let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
+                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 
@@ -733,7 +733,7 @@ mod tests {
             "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
-        let bounding_box = bounding_box_from_stack([&reference, &secondary].into_iter());
+        let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         log::info!("DEM succesfully downloaded!");
@@ -803,7 +803,7 @@ mod tests {
             "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
-        let bounding_box = bounding_box_from_stack([&reference, &secondary].into_iter());
+        let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = DEM::open_file("dem90.tif");
         log::info!("DEM succesfully downloaded!");

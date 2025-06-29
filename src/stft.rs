@@ -50,23 +50,14 @@ where
         window_function: Option<WindowFunction<T>>,
         window_periodic: Option<bool>,
     ) {
-        match n_fft {
-            Some(n_fft) => {
-                self.n_fft = n_fft;
-                self.forward = self.planner.plan_fft_forward(self.n_fft);
-                self.inverse = self.planner.plan_fft_inverse(self.n_fft);
-            }
-            None => {}
+        if let Some(n_fft) = n_fft {
+            self.n_fft = n_fft;
+            self.forward = self.planner.plan_fft_forward(self.n_fft);
+            self.inverse = self.planner.plan_fft_inverse(self.n_fft);
         }
-        match hop_length {
-            Some(hop_length) => self.hop_length = hop_length,
-            None => {}
-        }
-        match window_function {
-            Some(window_function) => {
-                self.window = window_function.new(self.n_fft, window_periodic.unwrap_or(false))
-            }
-            None => {}
+        if let Some(hop_length) = hop_length { self.hop_length = hop_length }
+        if let Some(window_function) = window_function {
+            self.window = window_function.new(self.n_fft, window_periodic.unwrap_or(false))
         }
     }
 
@@ -396,7 +387,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{arr1, arr2};
+    use ndarray::arr1;
 
     #[test]
     fn test_reverse_padding_multi_channel() {

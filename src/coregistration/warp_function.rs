@@ -15,7 +15,7 @@
 use nalgebra::Vector3;
 use ndarray::Array2;
 use num_complex::Complex;
-use spade::{DelaunayTriangulation, HasPosition, NaturalNeighbor, Triangulation};
+use spade::{DelaunayTriangulation, HasPosition, Triangulation};
 use std::iter::Map;
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     deramping::DerampSlcBurst,
-    interpolation2d::{BilinearKernel, KnabSincKernel, interpolate_2d},
+    interpolation2d::{KnabSincKernel, interpolate_2d},
 };
 
 /// A trait for a warp function.
@@ -191,7 +191,7 @@ pub fn resample_secondary_to_reference(
     let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
 
-    let secondary_img = deramp.apply_forward(&secondary);
+    let secondary_img = deramp.apply_forward(secondary);
 
     warp_function
         .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))

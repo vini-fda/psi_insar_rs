@@ -214,7 +214,7 @@ mod tests {
                 output_path.display()
             );
 
-            let result = downloader.download_file(url, &output_path);
+            let result = downloader.download_file(url, output_path);
 
             if result.is_ok() {
                 println!("Test download successful.");

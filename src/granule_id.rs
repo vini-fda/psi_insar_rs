@@ -674,7 +674,7 @@ pub struct Subswath(u8);
 
 impl Subswath {
     pub fn new(value: u8) -> Result<Self, GranuleIdError> {
-        if value < 1 || value > 5 {
+        if !(1..=5).contains(&value) {
             return Err(GranuleIdError::InvalidSubswath(format!(
                 "Invalid subswath: {}",
                 value

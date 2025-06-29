@@ -1,6 +1,6 @@
 use gdal::{
     Dataset,
-    raster::{GdalDataType, GdalType},
+    raster::GdalType,
 };
 use ndarray::{Array2, s};
 use num_complex::{Complex, Complex32};
@@ -333,7 +333,7 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
         })
         .collect();
 
-    Array2::from_shape_vec((height as usize, width as usize), complex_data)
+    Array2::from_shape_vec((height, width), complex_data)
         .expect("Could not create array from complex data")
 }
 
@@ -343,7 +343,7 @@ mod manual_tests {
 
     use crate::{dem::DEM, sentinel::Sentinel1SlcBurst};
 
-    use super::{CoarseCoregistration, CoregistrationResult, extract_data};
+    use super::{CoarseCoregistration, CoregistrationResult};
 
     fn normalize(data: &mut Array2<f32>) {
         let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));

@@ -172,7 +172,7 @@ mod tests {
         let mut lons = Vec::new();
         let mut lats = Vec::new();
         for (lat, lon) in dem.lat_lon_iter() {
-            vertices.push([lon as f32, lat as f32, 0.0 as f32]);
+            vertices.push([lon as f32, lat as f32, 0.0_f32]);
             lons.push(lon);
             lats.push(lat);
         }

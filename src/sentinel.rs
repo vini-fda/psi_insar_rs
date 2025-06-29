@@ -1,5 +1,4 @@
 use crate::granule_id::{
-    DataTakeId, IWSwath, Mission, Mode, OrbitNumber, PolarizationMode, ProductType,
     Sentinel1GranuleId, Sentinel1TIFFFileName,
 };
 use crate::metadata::annotation_xml::SlcProductAnnotation;
@@ -8,11 +7,8 @@ use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::{ContinuousOrbitalStateHistory, OrbitalStateHistory};
 use crate::slc_image::SlcImage;
 use chrono::{DateTime, Utc};
-use gdal::{
-    Dataset,
-    raster::{GdalDataType, GdalType},
-};
-use num_complex::{Complex, Complex32};
+use gdal::raster::GdalType;
+use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::AsRef;

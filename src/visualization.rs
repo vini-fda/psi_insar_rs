@@ -4,12 +4,12 @@
 /// Authors: Anton Mikhailov (mikhailov@google.com), Ruofei Du (ruofei@google.com)
 pub fn turbo_colormap(x: f32) -> [f32; 3] {
     // Coefficients for the polynomial approximation
-    let k_red_vec4: [f32; 4] = [0.13572138, 4.61539260, -42.66032258, 132.13108234];
-    let k_green_vec4: [f32; 4] = [0.09140261, 2.19418839, 4.84296658, -14.18503333];
-    let k_blue_vec4: [f32; 4] = [0.10667330, 12.64194608, -60.58204836, 110.36276771];
-    let k_red_vec2: [f32; 2] = [-152.94239396, 59.28637943];
-    let k_green_vec2: [f32; 2] = [4.27729857, 2.82956604];
-    let k_blue_vec2: [f32; 2] = [-89.90310912, 27.34824973];
+    let k_red_vec4: [f32; 4] = [0.13572138, 4.615_392_7, -42.660_324, 132.131_09];
+    let k_green_vec4: [f32; 4] = [0.09140261, 2.194_188_4, 4.842_966_6, -14.185_034];
+    let k_blue_vec4: [f32; 4] = [0.106_673_3, 12.641_946, -60.582_047, 110.362_77];
+    let k_red_vec2: [f32; 2] = [-152.942_4, 59.286_38];
+    let k_green_vec2: [f32; 2] = [4.277_298_5, 2.829_566];
+    let k_blue_vec2: [f32; 2] = [-89.903_11, 27.348_25];
 
     // Clamp input to [0, 1]
     let y = x.clamp(0.0, 1.0);

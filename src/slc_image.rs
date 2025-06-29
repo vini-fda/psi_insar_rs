@@ -2,10 +2,7 @@
 
 use std::path::Path;
 
-use gdal::{
-    Dataset,
-    raster::{Buffer, GdalType},
-};
+use gdal::raster::GdalType;
 use geotiff::{GeoTiff, raster_data::RasterData};
 use ndarray::Array2;
 use num_complex::Complex;
@@ -22,9 +19,9 @@ impl SlcImage {
             (geotiff_data.raster_height, geotiff_data.raster_width);
         let array = match geotiff_data.raster_data {
             RasterData::CInt16(ref items) => {
-                let array = Array2::from_shape_vec((azimuth_rows, slant_range_cols), items.clone())
-                    .expect("Unable to build array from values.");
-                array
+                
+                Array2::from_shape_vec((azimuth_rows, slant_range_cols), items.clone())
+                    .expect("Unable to build array from values.")
             }
             _ => panic!("Unable to read image"),
         };

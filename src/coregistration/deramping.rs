@@ -202,6 +202,12 @@ impl RelevantParameters {
     }
 }
 
+impl Default for DerampSlcBurst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DerampSlcBurst {
     pub fn new() -> Self {
         Self {
@@ -345,7 +351,7 @@ impl DerampSlcBurst {
         for (i, &eta_val) in eta.iter().enumerate() {
             for (j, &tau_val) in tau.iter().enumerate() {
                 // Read the complex value
-                let x = Complex::<i16>::from(buffer[(i, j)]);
+                let x = buffer[(i, j)];
                 let x = Complex::new(x.re as f64, x.im as f64);
 
                 // Calculate and apply phase

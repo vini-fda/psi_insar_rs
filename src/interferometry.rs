@@ -1,13 +1,8 @@
 use crate::{
     constants::SENTINEL_1_WAVELENGTH,
-    coregistration::{
-        deramping::DerampSlcBurst,
-        interpolation2d::{KnabSincKernel, interpolate_2d},
-    },
     dem::DEM,
-    geodesy::local_normal,
-    perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
-    satellite_orbit::{pixel_coords_to_radar_coords, zero_doppler_time},
+    perp_baseline::EnhancedDelaunayWarpFunction,
+    satellite_orbit::zero_doppler_time,
     sentinel::Sentinel1SlcBurst,
 };
 use nalgebra::Vector3;
@@ -139,7 +134,7 @@ pub fn coregister_and_remove_flat_phase(
                             );
 
                             let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                            let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
+                            let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
                             let (s_1, _) = osh_1.interp_pos_vel(zero_doppler_1);
                             let (s_2, _) = osh_2.interp_pos_vel(zero_doppler_2);
 
@@ -205,7 +200,7 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcBurst>
 
 #[cfg(test)]
 mod tests {
-    use ndarray::s;
+    
     use rerun::{ColorModel, Image};
 
     use crate::{dem::CopernicusDemType, satellite_orbit::OrbitalStateHistory};
@@ -381,7 +376,7 @@ mod tests {
                                 );
 
                                 let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                                let zero_doppler_2 = zero_doppler_time(sec_az as f64, annotation_2);
+                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
                                 let (s_1, v_1) = osh_1.interp_pos_vel(zero_doppler_1);
                                 let (s_2, v_2) = osh_2.interp_pos_vel(zero_doppler_2);
                                 let n = (s_1 - ground_target_pos).normalize();
