@@ -109,11 +109,11 @@ impl RelevantParameters {
             .min_by(|a, b| {
                 // Convert DcEstimate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
                 let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_a_anx_equivalent = ref_burst_anx_time + 
+                let item_a_anx_equivalent = ref_burst_anx_time +
                     duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
                 
                 let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_b_anx_equivalent = ref_burst_anx_time + 
+                let item_b_anx_equivalent = ref_burst_anx_time +
                     duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
 
                 let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
@@ -142,11 +142,11 @@ impl RelevantParameters {
             .min_by(|a, b| {
                 // Convert AzimuthFmRate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
                 let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_a_anx_equivalent = ref_burst_anx_time + 
+                let item_a_anx_equivalent = ref_burst_anx_time +
                     duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
                 
                 let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_b_anx_equivalent = ref_burst_anx_time + 
+                let item_b_anx_equivalent = ref_burst_anx_time +
                     duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
 
                 let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
