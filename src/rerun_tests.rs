@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use nalgebra::{Matrix3, Unit, Vector3};
-    use ndarray::{Array1, Array2, Axis, s};
+    use ndarray::{Array1, Array2, ArrayView2, Axis, s};
     use ndarray_npy::WriteNpyExt;
-    use num_complex::ComplexFloat;
+    use num_complex::{Complex, ComplexFloat};
     use rayon::prelude::*;
     use rerun::{Color, Image, RecordingStream};
 
@@ -49,6 +49,18 @@ mod tests {
             .expect("Could not load SLC data array into image");
         rr.log_static(log_name, &img)
             .expect("Could not log SLC Image");
+    }
+
+    fn rr_gamma_corrected_amplitude(slc_data: &ArrayView2<Complex<f32>>) -> rerun::Image {
+        const GAMMA: f32 = 0.3;
+        let abs = slc_data.map(|x| x.abs());
+        let max = *abs
+            .iter()
+            .max_by(|&a, &b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let corrected = abs.mapv_into(|x| (x / max).powf(GAMMA));
+        rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, corrected)
+            .expect("Unable to create Rerun image")
     }
 
     fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
@@ -592,6 +604,113 @@ mod tests {
         rec.log("ref_img", &data_img)
             .expect("Could not finish recording");
         rec.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn coarse_coregistration_stack() {
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondaries = [
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
+            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        ]
+        .iter()
+        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .collect::<Vec<_>>();
+        let rec = rerun::RecordingStreamBuilder::new("coarse_coregistration_stack")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let reference_image = primary.data.array_f32();
+        for (k, secondary) in secondaries.iter().enumerate() {
+            rec.set_time_sequence("secondary_index", k as i64);
+            let secondary_image = secondary.data.array_f32();
+
+            let coregistration = CoarseCoregistration::new(255, 128).unwrap();
+            let CoregistrationResult {
+                offsets,
+                correlation,
+                ref_image_range,
+                sec_image_range,
+            } = coregistration.estimate_offset(&reference_image, &secondary_image);
+            // Log correlation tensor
+            let data = correlation.mapv_into_any(|c| c.norm());
+            let tensor = rerun::Tensor::try_from(data)
+                .unwrap()
+                .with_dim_names(["azimuth", "slant_range"]);
+            rec.log("correlation", &tensor)
+                .expect("Could not finish recording");
+            let sec_img = rr_gamma_corrected_amplitude(
+                &secondary_image.slice(s![.., ..secondary_image.dim().1 / 2]),
+            );
+            rec.log("sec_img", &sec_img)
+                .expect("Could not finish recording");
+            // Log 2 images for comparison
+            let mut ref_patch = reference_image
+                .slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()])
+                .map(|c| c.norm().powf(0.3))
+                .to_owned();
+            normalize(&mut ref_patch);
+            let img_ref =
+                rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_patch).unwrap();
+            rec.log("ref", &img_ref)
+                .expect("Could not finish recording");
+            let mut kernel = secondary_image
+                .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
+                .map(|c| c.norm().powf(0.3))
+                .to_owned();
+            normalize(&mut kernel);
+            let img_sec =
+                rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();
+            rec.log("sec", &img_sec)
+                .expect("Could not finish recording");
+            rec.log(
+                "logs",
+                &rerun::TextLog::new(format!("offsets = {offsets:?}"))
+                    .with_level(rerun::TextLogLevel::INFO),
+            )
+            .unwrap();
+
+            let lat_lon = secondary
+                .metadata
+                .geolocation_grid
+                .geolocation_grid_point_list
+                .get_lat_lon();
+            rec.log(
+                "geo_points",
+                &rerun::GeoPoints::from_lat_lon(lat_lon.iter()),
+            )
+            .unwrap();
+            let ref_img = rr_gamma_corrected_amplitude(
+                &reference_image.slice(s![.., ..reference_image.dim().1 / 2]),
+            );
+            rec.log("ref_img", &ref_img)
+                .expect("Could not finish recording");
+        }
+        let dem = DEM::open_file("dem.tif");
+
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        let dem_array = dem.array();
+        let tensor = rerun::Tensor::try_from(dem_array)
+            .unwrap()
+            .with_dim_names(["rows", "cols"]);
+        rec.log_static("DEM", &tensor)
+            .expect("Could not finish recording");
+        rec.log_static(
             "DEM Extent",
             &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
                 .with_radii([rerun::Radius::new_ui_points(2.0)])

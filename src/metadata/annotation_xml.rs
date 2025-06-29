@@ -1428,6 +1428,13 @@ pub struct GeolocationGridPointList {
 }
 
 impl GeolocationGridPointList {
+    /// Get the (latitude, longitude) of all geolocation grid points, in order.
+    pub fn get_lat_lon(&self) -> Vec<[f64; 2]> {
+        self.geolocation_grid_point
+            .iter()
+            .map(|point| [point.latitude, point.longitude])
+            .collect()
+    }
     /// Get the bounding box of the geolocation grid points.
     ///
     /// # Returns
