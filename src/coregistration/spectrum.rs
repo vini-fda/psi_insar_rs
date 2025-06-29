@@ -103,7 +103,6 @@ mod tests {
     use crate::stft::{Stft, WindowFunction};
     use crate::visualization::cubehelix_colormap;
     use ndarray::s;
-    
 
     use super::*;
 

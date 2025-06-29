@@ -93,14 +93,13 @@ use crate::{
     coregistration::{
         deramping::DerampSlcBurst,
         interpolation2d::{KnabSincKernel, interpolate_2d},
-        warp_function::{WarpFunction},
+        warp_function::WarpFunction,
     },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
     satellite_orbit::{
-        OrbitalStateHistory, pixel_coords_to_radar_coords,
-        radar_coords_to_pixel_coords,
+        OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
     },
     sentinel::Sentinel1SlcBurst,
 };
@@ -201,7 +200,7 @@ pub fn theta_from_pixel_index(
         ground_target_pos_geodetic.0,
         ground_target_pos_geodetic.1,
     ));
-    
+
     l.dot(&normal).acos()
 }
 
@@ -862,11 +861,8 @@ pub fn coregister_and_remove_flat_phase(
                             ref_rg as f64,
                             annotation_1,
                         );
-                        let radar_coords_2 = pixel_coords_to_radar_coords(
-                            sec_az,
-                            sec_rg,
-                            annotation_2,
-                        );
+                        let radar_coords_2 =
+                            pixel_coords_to_radar_coords(sec_az, sec_rg, annotation_2);
                         let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
                         let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
 
@@ -908,12 +904,8 @@ pub fn coregister_and_remove_flat_phase(
 #[cfg(test)]
 mod tests {
     use ndarray::{Array2, s};
-    
 
-    use crate::{
-        dem::CopernicusDemType,
-        visualization::cubehelix_colormap,
-    };
+    use crate::{dem::CopernicusDemType, visualization::cubehelix_colormap};
 
     use super::*;
 

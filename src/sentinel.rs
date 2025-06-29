@@ -1,6 +1,4 @@
-use crate::granule_id::{
-    Sentinel1GranuleId, Sentinel1TIFFFileName,
-};
+use crate::granule_id::{Sentinel1GranuleId, Sentinel1TIFFFileName};
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;

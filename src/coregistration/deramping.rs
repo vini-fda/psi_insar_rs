@@ -74,7 +74,8 @@ impl RelevantParameters {
             .metadata
             .general_annotation
             .product_information
-            .azimuth_steering_rate.to_radians();
+            .azimuth_steering_rate
+            .to_radians();
 
         // Nl_burst: Number of lines per burst
         let nl_burst_usize = slc.metadata.swath_timing.lines_per_burst;
@@ -126,7 +127,11 @@ impl RelevantParameters {
 
         // k_a: Azimuth FM rate polynomial
         // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
-        let azimuth_fm_rate_list = &slc.metadata.general_annotation.azimuth_fm_rate_list.azimuth_fm_rate;
+        let azimuth_fm_rate_list = &slc
+            .metadata
+            .general_annotation
+            .azimuth_fm_rate_list
+            .azimuth_fm_rate;
 
         if azimuth_fm_rate_list.is_empty() {
             panic!("Azimuth FM rate list is empty. Cannot select k_a polynomial.");
@@ -150,7 +155,10 @@ impl RelevantParameters {
             })
             .expect("azimuth_fm_rate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
 
-        let k_a_poly = selected_azimuth_fm_rate_item.azimuth_fm_rate_polynomial.coefficients.clone();
+        let k_a_poly = selected_azimuth_fm_rate_item
+            .azimuth_fm_rate_polynomial
+            .coefficients
+            .clone();
         let k_a_t0_val = selected_azimuth_fm_rate_item.t0;
 
         // f_c: Radar frequency
@@ -268,7 +276,8 @@ impl DerampSlcBurst {
         let calculate_eta_c = |tau_val_for_eta_c: f64| -> f64 {
             let f_eta_c_val = f_eta_c_at_tau(tau_val_for_eta_c);
             let k_a_val = k_a_at_tau(tau_val_for_eta_c);
-            if k_a_val.abs() < 1e-9 { // Avoid division by zero or near-zero
+            if k_a_val.abs() < 1e-9 {
+                // Avoid division by zero or near-zero
                 // This case needs careful consideration based on SAR physics.
                 // Returning 0.0 implies eta_c = 0 if k_a is effectively zero.
                 // The markdown states k_a is always negative, so it shouldn't be zero.
@@ -293,17 +302,19 @@ impl DerampSlcBurst {
             // Add protection for k_a_val - k_s being zero if necessary,
             // though the document doesn't specify handling for k_a = k_s.
             if (k_a_val - k_s).abs() < 1e-9 {
-                 // Handle singularity: e.g., return a very large number or a representative value.
-                 // Or, if k_s is also very small, k_t might be considered 0.
-                 // This case implies alpha (Equ.3) is near zero.
-                 // k_t = k_s / alpha. If alpha is 0, k_t is infinite.
-                 // For now, let's return a large representative value or a flag.
-                 // This often indicates an issue or an extreme edge case in parameters.
-                 // Returning k_a_val as a fallback, though not physically robust without more context.
-                 // A proper handling might involve looking at limits or specific ESA guidance for this case.
-                 // For TOPSAR, k_a should generally be different from k_s.
-                 if k_s.abs() < 1e-9 { return 0.0; } // if k_s is zero, k_t is zero unless k_a is also zero.
-                 return 1e12; // Placeholder for a very large k_t
+                // Handle singularity: e.g., return a very large number or a representative value.
+                // Or, if k_s is also very small, k_t might be considered 0.
+                // This case implies alpha (Equ.3) is near zero.
+                // k_t = k_s / alpha. If alpha is 0, k_t is infinite.
+                // For now, let's return a large representative value or a flag.
+                // This often indicates an issue or an extreme edge case in parameters.
+                // Returning k_a_val as a fallback, though not physically robust without more context.
+                // A proper handling might involve looking at limits or specific ESA guidance for this case.
+                // For TOPSAR, k_a should generally be different from k_s.
+                if k_s.abs() < 1e-9 {
+                    return 0.0;
+                } // if k_s is zero, k_t is zero unless k_a is also zero.
+                return 1e12; // Placeholder for a very large k_t
             }
             (k_a_val * k_s) / (k_a_val - k_s)
         };
@@ -314,10 +325,10 @@ impl DerampSlcBurst {
         // For deramping + demodulation: phi = -π * k_t(τ) * (η - η_ref(τ))² - 2π * f_eta_c(τ) * (η - η_ref(τ))
         let phi = |eta: f64, tau: f64| -> f64 {
             let k_t_val = k_t_at_tau(tau);
-            
+
             let current_eta_c = calculate_eta_c(tau);
             let eta_ref_val = current_eta_c - eta_c_at_mid_swath;
-            
+
             let eta_diff = eta - eta_ref_val;
             let phase_deramp_only = -PI * k_t_val * eta_diff * eta_diff;
 

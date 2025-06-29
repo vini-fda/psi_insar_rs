@@ -153,7 +153,6 @@ impl OrbitalStateHistory {
 
         let total_dt_sec = total_dt * 1e-9;
         // cubic hermite interpolation
-        
 
         unit_interval_cubic_hermite_spline_interpolation(
             p_prev,
@@ -465,7 +464,6 @@ impl ContinuousOrbitalStateHistory {
 
         let total_dt_sec = total_dt;
         // cubic hermite interpolation
-        
 
         unit_interval_cubic_hermite_spline_interpolation(
             p_prev,
@@ -736,10 +734,18 @@ pub fn radar_coords_to_pixel_coords<T: Float>(
     let slant_range_index =
         (zero_doppler.distance_to_target - near_edge_slant_range) / range_spacing;
     [
-        T::from(azimuth_index).unwrap_or_else(|| panic!("could not convert azimuth_index to {}",
-                std::any::type_name::<T>())),
-        T::from(slant_range_index).unwrap_or_else(|| panic!("could not convert slant_range_index to {}",
-                std::any::type_name::<T>())),
+        T::from(azimuth_index).unwrap_or_else(|| {
+            panic!(
+                "could not convert azimuth_index to {}",
+                std::any::type_name::<T>()
+            )
+        }),
+        T::from(slant_range_index).unwrap_or_else(|| {
+            panic!(
+                "could not convert slant_range_index to {}",
+                std::any::type_name::<T>()
+            )
+        }),
     ]
 }
 
@@ -804,7 +810,7 @@ pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) 
     // Reverse azimuth index calculation to get time
     let delta_time_secs = azimuth_index * azimuth_time_interval;
     let delta_time_nanos = (delta_time_secs * 1_000_000_000.0).round() as i64;
-    
+
     t_start + TimeDelta::nanoseconds(delta_time_nanos)
 }
 

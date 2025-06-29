@@ -55,7 +55,9 @@ where
             self.forward = self.planner.plan_fft_forward(self.n_fft);
             self.inverse = self.planner.plan_fft_inverse(self.n_fft);
         }
-        if let Some(hop_length) = hop_length { self.hop_length = hop_length }
+        if let Some(hop_length) = hop_length {
+            self.hop_length = hop_length
+        }
         if let Some(window_function) = window_function {
             self.window = window_function.new(self.n_fft, window_periodic.unwrap_or(false))
         }

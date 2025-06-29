@@ -2,7 +2,6 @@
 mod tests {
     use std::f32::NAN;
 
-    
     use nalgebra::Vector3;
     use ndarray::{Array1, Array2, Axis, s};
     use ndarray_npy::WriteNpyExt;
@@ -22,13 +21,11 @@ mod tests {
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
         satellite_orbit::{
-            OrbitalStateHistory, pixel_coords_to_radar_coords,
-            radar_coords_to_pixel_coords, zero_doppler_time,
+            OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
+            zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
-        visualization::{
-            cubehelix_colormap, turbo_colorized_values,
-        },
+        visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
@@ -63,7 +60,7 @@ mod tests {
                 cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
             })
             .collect();
-        
+
         rerun::Image::from_color_model_and_bytes(
             rgb_vector,
             [cols as u32, rows as u32],
@@ -608,11 +605,8 @@ mod tests {
                                     ref_rg as f64,
                                     annotation_1,
                                 );
-                                let radar_coords_2 = pixel_coords_to_radar_coords(
-                                    sec_az,
-                                    sec_rg,
-                                    annotation_2,
-                                );
+                                let radar_coords_2 =
+                                    pixel_coords_to_radar_coords(sec_az, sec_rg, annotation_2);
                                 let (s_1, _) = osh_1.interp_pos_vel(radar_coords_1.time);
                                 let (s_2, _) = osh_2.interp_pos_vel(radar_coords_2.time);
 

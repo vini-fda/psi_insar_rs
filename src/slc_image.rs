@@ -19,7 +19,6 @@ impl SlcImage {
             (geotiff_data.raster_height, geotiff_data.raster_width);
         let array = match geotiff_data.raster_data {
             RasterData::CInt16(ref items) => {
-                
                 Array2::from_shape_vec((azimuth_rows, slant_range_cols), items.clone())
                     .expect("Unable to build array from values.")
             }

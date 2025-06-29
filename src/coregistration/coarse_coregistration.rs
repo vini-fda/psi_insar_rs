@@ -1,7 +1,4 @@
-use gdal::{
-    Dataset,
-    raster::GdalType,
-};
+use gdal::{Dataset, raster::GdalType};
 use ndarray::{Array2, s};
 use num_complex::{Complex, Complex32};
 use std::ops::Range;

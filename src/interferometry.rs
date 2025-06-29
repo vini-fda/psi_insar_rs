@@ -1,9 +1,6 @@
 use crate::{
-    constants::SENTINEL_1_WAVELENGTH,
-    dem::DEM,
-    perp_baseline::EnhancedDelaunayWarpFunction,
-    satellite_orbit::zero_doppler_time,
-    sentinel::Sentinel1SlcBurst,
+    constants::SENTINEL_1_WAVELENGTH, dem::DEM, perp_baseline::EnhancedDelaunayWarpFunction,
+    satellite_orbit::zero_doppler_time, sentinel::Sentinel1SlcBurst,
 };
 use nalgebra::Vector3;
 use ndarray::{Array2, Axis};
@@ -200,7 +197,7 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcBurst>
 
 #[cfg(test)]
 mod tests {
-    
+
     use rerun::{ColorModel, Image};
 
     use crate::{dem::CopernicusDemType, satellite_orbit::OrbitalStateHistory};
