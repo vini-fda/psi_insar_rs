@@ -114,7 +114,7 @@ mod tests {
         )
         .unwrap();
 
-        let image = reference.data.array_data();
+        let image = reference.data.array_f32();
 
         // Test FFT along both dimensions
         let spectrum_0 = compute_spectrum(&image, 0);
@@ -132,7 +132,7 @@ mod tests {
         )
         .unwrap();
 
-        let image = reference.data.array_data();
+        let image = reference.data.array_f32();
         let rec =
             rerun::RecordingStreamBuilder::new("fft_spectrum_visualization").connect_grpc()?;
 
@@ -198,7 +198,7 @@ mod tests {
         )
         .unwrap();
 
-        let image = reference.data.array_data();
+        let image = reference.data.array_f32();
         let rec = rerun::RecordingStreamBuilder::new("spectrogram_visualization").connect_grpc()?;
 
         // cut cols in half
@@ -264,7 +264,7 @@ mod tests {
         )
         .unwrap();
 
-        let array = reference.data.array_data();
+        let array = reference.data.array_f32();
         // cut cols in half
         let array = array.slice(s![.., ..array.dim().1 / 2]).to_owned();
         let (rows, cols) = array.dim();

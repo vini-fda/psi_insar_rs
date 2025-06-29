@@ -113,7 +113,7 @@
 
 use thiserror::Error;
 
-use crate::dem_gdal::DEMGdal;
+use crate::dem::DEM;
 use crate::sentinel::Sentinel1SlcBurst;
 
 /// Error types specific to Sentinel-1 DEM coregistration
@@ -203,11 +203,11 @@ pub struct CoregisteredSLCStack {}
 
 pub struct DEMAssistedCoregistration {
     config: S1DEMCoregistrationConfig,
-    external_dem: DEMGdal,
+    external_dem: DEM,
 }
 
 impl DEMAssistedCoregistration {
-    pub fn new(config: S1DEMCoregistrationConfig, external_dem: DEMGdal) -> Self {
+    pub fn new(config: S1DEMCoregistrationConfig, external_dem: DEM) -> Self {
         Self {
             config,
             external_dem,

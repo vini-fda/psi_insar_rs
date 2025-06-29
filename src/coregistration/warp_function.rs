@@ -19,7 +19,7 @@ use spade::{DelaunayTriangulation, HasPosition, NaturalNeighbor, Triangulation};
 use std::iter::Map;
 
 use crate::{
-    dem_gdal::DEMGdal,
+    dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
@@ -71,11 +71,7 @@ impl HasPosition for ExactMapping {
 
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(
-        reference: &Sentinel1SlcBurst,
-        secondary: &Sentinel1SlcBurst,
-        dem: &DEMGdal,
-    ) -> Self {
+    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -88,7 +84,7 @@ impl DelaunayWarpFunction {
             radar_coords_to_pixel_coords(zero_doppler, annotation)
         };
         let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
             let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
@@ -180,7 +176,7 @@ impl WarpFunction for DelaunayWarpFunction {
 pub fn resample_secondary_to_reference(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> Array2<Complex<f32>> {
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);
 
@@ -230,7 +226,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
 
         let resampled_data = resample_secondary_to_reference(&reference, &secondary, &dem);
         // lets reduce the number of samples by 1/2 in the cols
@@ -270,7 +266,7 @@ mod tests {
             .expect("Could not log resampled_phase to Rerun");
 
         // Log the reference image amplitude
-        let ref_array = reference.data.array_data();
+        let ref_array = reference.data.array_f32();
         let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
         let ref_array_norm = ref_array.map(|c| c.norm());
         let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));
@@ -312,7 +308,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
 
         // Secondary resampled to reference (also deramped)
         let resampled_sec_data = resample_secondary_to_reference(&reference, &secondary, &dem);

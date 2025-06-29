@@ -341,7 +341,7 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 mod manual_tests {
     use ndarray::{Array2, s};
 
-    use crate::{dem_gdal::DEMGdal, sentinel::Sentinel1SlcBurst};
+    use crate::{dem::DEM, sentinel::Sentinel1SlcBurst};
 
     use super::{CoarseCoregistration, CoregistrationResult, extract_data};
 
@@ -364,8 +364,8 @@ mod manual_tests {
             "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
-        let reference_image = primary.data.array_data();
-        let secondary_image = secondary.data.array_data();
+        let reference_image = primary.data.array_f32();
+        let secondary_image = secondary.data.array_f32();
         let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -463,12 +463,12 @@ mod manual_tests {
             &rerun::GeoPoints::from_lat_lon(lat_lon.iter()),
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
 
         let mut dem_corners = dem.corners_lat_lon().to_vec();
         let first = dem_corners.first().unwrap();
         dem_corners.push(*first);
-        let dem_array = dem.read_raster_data();
+        let dem_array = dem.array();
         let tensor = rerun::Tensor::try_from(dem_array)
             .unwrap()
             .with_dim_names(["rows", "cols"]);

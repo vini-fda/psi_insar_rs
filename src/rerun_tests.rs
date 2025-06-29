@@ -17,7 +17,6 @@ mod tests {
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         dem::{CopernicusDemType, DEM},
-        dem_gdal::DEMGdal,
         geodesy::{geodetic_to_ecef, local_normal},
         interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
@@ -35,9 +34,12 @@ mod tests {
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
         let name = &burst.granule_id.raw_filename;
         let log_name = format!("slc_amplitude_{}", name);
-        let array = burst.data.array_data();
+        let array = burst.data.array_f32();
         let (_, cols) = array.dim();
-        let mut amplitude = array.slice(s![.., 0..cols / 2]).map(|v| v.abs()).to_owned();
+        let mut amplitude = array
+            .slice(s![.., 0..cols / 2])
+            .map(|&v| v.abs())
+            .to_owned();
         let max_amplitude = *amplitude
             .iter()
             .max_by(|&a, &b| a.partial_cmp(b).unwrap())
@@ -838,8 +840,8 @@ mod tests {
             for j in 0..cols {
                 let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
                 let pos = dem.get_ecef_at_lat_lon(lat, lon);
-                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
-                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
+                let rc_ref = ref_osh.find_zero_doppler_state_newton_raphson(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state_newton_raphson(pos.into());
 
                 if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                     && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)

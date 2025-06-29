@@ -1,6 +1,4 @@
-use crate::{
-    dem_gdal::DEMGdal, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst,
-};
+use crate::{dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst};
 
 /// Checks for layover in the radar image by comparing vertex ordering in geographic and radar coordinates.
 /// Layover occurs when the relative ordering of points in geographic space is inverted in radar coordinates.
@@ -12,7 +10,7 @@ use crate::{
 ///
 /// # Returns
 /// * `bool` - True if layover is detected in either dimension, false otherwise
-pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEMGdal) -> bool {
+pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
     let osh = burst.orbital_state_history();
 
     // State machine states for each dimension
@@ -49,7 +47,7 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEMGdal) -> bool {
 
     // Iterate through DEM points in latitude order
     let mut points: Vec<(usize, usize, f64, f64)> = dem
-        .indexed_lat_lon_height()
+        .indexed_lat_lon_height_iter()
         .map(|(i, j, lat, lon, _)| (i, j, lat, lon))
         .collect();
     points.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
@@ -301,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_check_layover() {
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )

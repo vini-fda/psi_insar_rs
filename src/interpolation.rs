@@ -60,6 +60,29 @@ pub fn unit_derivative_interval_cubic_hermite_spline_interpolation(
     (h00_deriv * p_0 + h01_deriv * p_1) / t_interval + h10_deriv * m_0 + h11_deriv * m_1
 }
 
+/// Calculates the second derivative of the polynomial value at t \in [0, 1],
+/// p_0: value at starting point
+/// m_0: slope/derivative at starting point
+/// p_1: value at end point
+/// m_1: slope/derivative at end point
+#[inline(always)]
+pub fn unit_second_derivative_interval_cubic_hermite_spline_interpolation(
+    p_0: Vector3<f64>,
+    m_0: Vector3<f64>,
+    p_1: Vector3<f64>,
+    m_1: Vector3<f64>,
+    t_interval: f64,
+    t: f64,
+) -> Vector3<f64> {
+    let h00_second_deriv = 12.0 * t - 6.0;
+    let h10_second_deriv = 6.0 * t - 4.0;
+    let h01_second_deriv = -12.0 * t + 6.0;
+    let h11_second_deriv = 6.0 * t - 2.0;
+
+    (h00_second_deriv * p_0 + h01_second_deriv * p_1) / (t_interval * t_interval)
+        + (h10_second_deriv * m_0 + h11_second_deriv * m_1) / t_interval
+}
+
 fn print_vec(v: nalgebra::Vector3<f64>) {
     println!("[{}, {}, {}]", v.x, v.y, v.z);
 }

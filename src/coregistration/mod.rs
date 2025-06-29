@@ -4,7 +4,7 @@ use nalgebra::{ComplexField, Vector3};
 use ndarray::Array2;
 
 use crate::{
-    dem_gdal::DEMGdal,
+    dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
     sentinel::Sentinel1SlcBurst,
@@ -22,7 +22,7 @@ pub mod warp_function;
 pub fn compute_warp_function(
     reference: &Sentinel1SlcBurst,
     secondary: &Sentinel1SlcBurst,
-    dem: &DEMGdal,
+    dem: &DEM,
 ) -> Array2<[u8; 4]> {
     let [slant_range_size, azimuth_size] = reference.data.raster_size();
     let ref_osh = reference.orbital_state_history();
@@ -35,7 +35,7 @@ pub fn compute_warp_function(
         radar_coords_to_pixel_coords(zero_doppler, annotation)
     };
     let mut rho = Array2::<[f32; 2]>::default((azimuth_size, slant_range_size));
-    for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+    for (lat, lon) in dem.lat_lon_iter() {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
         let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
         let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
@@ -102,15 +102,14 @@ mod tests {
     use ndarray::{Dimension, s};
 
     use crate::{
-        dem_gdal::DEMGdal, satellite_orbit::radar_coords_to_pixel_coords,
-        sentinel::Sentinel1SlcBurst,
+        dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst,
     };
 
     use super::compute_warp_function;
 
     #[test]
     fn testfn_dem() {
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -118,13 +117,14 @@ mod tests {
         // Collect vertices and heights
         let mut vertices = Vec::new();
         let mut heights = Vec::new();
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             vertices.push([lon as f32, lat as f32, 0.0]);
             heights.push(height as f32);
         }
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn testfn_dem_rgb() {
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -171,7 +171,7 @@ mod tests {
         let mut vertices = Vec::new();
         let mut lons = Vec::new();
         let mut lats = Vec::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             vertices.push([lon as f32, lat as f32, 0.0 as f32]);
             lons.push(lon);
             lats.push(lat);
@@ -200,7 +200,8 @@ mod tests {
             .collect();
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {
@@ -251,7 +252,7 @@ mod tests {
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let rho = compute_warp_function(&reference, &secondary, &dem);
         let (rows, cols) = rho.dim();
         let rho = rho.slice(s![0..rows, 0..cols / 2]).to_owned();
@@ -267,7 +268,7 @@ mod tests {
 
     #[test]
     fn testfn_dem_radar_coords() {
-        let dem = DEMGdal::open_file("dem.tif");
+        let dem = DEM::open_file("dem.tif");
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
@@ -283,7 +284,7 @@ mod tests {
         let mut vertices = Vec::new();
         let mut lons = Vec::new();
         let mut lats = Vec::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = ref_osh.find_zero_doppler_state(pos.into());
             let [azimuth, slant_range] =
@@ -317,7 +318,8 @@ mod tests {
             .collect();
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {
