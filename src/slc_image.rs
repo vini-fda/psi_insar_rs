@@ -2,7 +2,6 @@
 
 use std::path::Path;
 
-use gdal::raster::GdalType;
 use geotiff::{GeoTiff, raster_data::RasterData};
 use ndarray::Array2;
 use num_complex::Complex;
@@ -43,26 +42,5 @@ impl SlcImage {
     pub fn array_f32(&self) -> Array2<Complex<f32>> {
         self.array
             .map(|v| Complex::<f32>::new(v.re as f32, v.im as f32))
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct ComplexI16(Complex<i16>);
-
-impl From<ComplexI16> for Complex<i16> {
-    fn from(value: ComplexI16) -> Self {
-        value.0
-    }
-}
-
-impl From<Complex<i16>> for ComplexI16 {
-    fn from(value: Complex<i16>) -> Self {
-        ComplexI16(value)
-    }
-}
-
-impl GdalType for ComplexI16 {
-    fn gdal_ordinal() -> gdal_sys::GDALDataType::Type {
-        gdal_sys::GDALDataType::GDT_CInt16
     }
 }
