@@ -1,6 +1,6 @@
 use ndarray::ArrayView2;
 use num_complex::Complex;
-use num_traits::{Float, NumCast};
+use num_traits::Float;
 use std::cmp::{max, min};
 
 /// Maximum support radius allowed for any kernel.

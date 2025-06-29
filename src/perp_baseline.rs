@@ -93,7 +93,6 @@ use crate::{
     coregistration::{
         deramping::DerampSlcBurst,
         interpolation2d::{KnabSincKernel, interpolate_2d},
-        warp_function::WarpFunction,
     },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},

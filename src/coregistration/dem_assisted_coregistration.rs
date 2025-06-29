@@ -113,9 +113,6 @@
 
 use thiserror::Error;
 
-use crate::dem::DEM;
-use crate::sentinel::Sentinel1SlcBurst;
-
 /// Error types specific to Sentinel-1 DEM coregistration
 #[derive(Error, Debug)]
 pub enum S1CoregistrationError {
@@ -195,36 +192,5 @@ impl Default for S1DEMCoregistrationConfig {
             disable_reramp: false,
             output_dem: false,
         }
-    }
-}
-
-/// Coregistered Stack of SLC bursts
-pub struct CoregisteredSLCStack {}
-
-pub struct DEMAssistedCoregistration {
-    config: S1DEMCoregistrationConfig,
-    external_dem: DEM,
-}
-
-impl DEMAssistedCoregistration {
-    pub fn new(config: S1DEMCoregistrationConfig, external_dem: DEM) -> Self {
-        Self {
-            config,
-            external_dem,
-        }
-    }
-
-    pub fn coregister_stack(
-        &self,
-        reference: &Sentinel1SlcBurst,
-        secondaries: &[Sentinel1SlcBurst],
-    ) -> Result<CoregisteredSLCStack> {
-        // 1. Create Stack of SLC bursts
-        // 2. Apply orbit correction (precise orbit ephemerides)
-        // 3. Coarse coregistration
-        // 4. Fine coregistration
-        // 5. Resample to common grid
-        // 6. Result: Coregistered SLC stack
-        unimplemented!()
     }
 }

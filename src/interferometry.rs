@@ -374,8 +374,8 @@ mod tests {
 
                                 let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
                                 let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
-                                let (s_1, v_1) = osh_1.interp_pos_vel(zero_doppler_1);
-                                let (s_2, v_2) = osh_2.interp_pos_vel(zero_doppler_2);
+                                let s_1 = osh_1.interp_pos(zero_doppler_1);
+                                let s_2 = osh_2.interp_pos(zero_doppler_2);
                                 let n = (s_1 - ground_target_pos).normalize();
                                 let b_parallel = (s_1 - s_2).dot(&n);
                                 let b_perp = s_1 - s_2 - b_parallel * n;

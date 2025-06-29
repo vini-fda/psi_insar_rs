@@ -1,5 +1,4 @@
 use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2, ArrayView3, s};
-use num_complex::ComplexFloat;
 use rustfft::num_traits::Zero;
 use rustfft::{Fft, FftNum, FftPlanner, num_complex::Complex, num_traits::Float};
 use std::f64::consts::PI;

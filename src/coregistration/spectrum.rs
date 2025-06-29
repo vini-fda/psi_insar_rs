@@ -151,7 +151,7 @@ mod tests {
             let freq_idx = if row <= rows / 2 { row } else { row - rows };
 
             rec.set_time_sequence("row", freq_idx as i64);
-            rec.log("fft_dim0", &rerun::Scalar::new(row_avg as f64))?;
+            rec.log("fft_dim0", &rerun::Scalars::new([row_avg as f64]))?;
         }
 
         // calculate the DC center of the spectrum
@@ -201,7 +201,7 @@ mod tests {
 
         // cut cols in half
         let image = image.slice(s![.., ..image.dim().1 / 2]).to_owned();
-        let (rows, cols) = image.dim();
+        let rows = image.dim().0;
 
         // Example usage of STFT
         // fn main() {
