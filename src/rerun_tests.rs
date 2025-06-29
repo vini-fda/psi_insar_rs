@@ -10,6 +10,7 @@ mod tests {
     use crate::{
         constants::SENTINEL_1_WAVELENGTH,
         coregistration::{
+            coarse_coregistration::{CoarseCoregistration, CoregistrationResult},
             deramping::DerampSlcBurst,
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
@@ -26,6 +27,7 @@ mod tests {
             zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
+        stft::{Stft, WindowFunction},
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
@@ -303,6 +305,603 @@ mod tests {
             //     }
             // }
         }
+    }
+
+    #[test]
+    fn baseline_plot() {
+        env_logger::init();
+        let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondaries = [
+            // "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
+            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
+            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        ]
+        .iter()
+        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .collect::<Vec<_>>();
+        let all_bursts = std::iter::once(&reference).chain(&secondaries);
+        let bounding_box = bounding_box_from_stack(all_bursts.clone());
+        println!("Bounding box: {bounding_box:?}");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let start_time_ref = reference.metadata.ads_header.start_time;
+
+        // Log reference sat position
+        let orbit_list = &reference.metadata.general_annotation.orbit_list;
+        let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
+        let points = orbital_history
+            .position
+            .iter()
+            .map(|v| v.map(|x| x as f32).data.0[0]);
+
+        rr.log_static(
+            "ref_orbital_positions",
+            &rerun::Points3D::new(points).with_radii([200.0]),
+        )
+        .unwrap();
+        for secondary in secondaries {
+            let start_time_sec = secondary.metadata.ads_header.start_time;
+            let delta_time = start_time_sec - start_time_ref;
+            log::info!("Processing secondary {}", secondary.granule_id.raw_filename);
+            log::info!(
+                "Days between secondary acquisition and reference: {}",
+                delta_time.num_days()
+            );
+            // Log sec sat positions
+            let orbit_list = &secondary.metadata.general_annotation.orbit_list;
+            let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
+            let points = orbital_history
+                .position
+                .iter()
+                .map(|v| v.map(|x| x as f32).data.0[0]);
+
+            rr.log_static(
+                "sec_orbital_positions",
+                &rerun::Points3D::new(points).with_radii([200.0]),
+            )
+            .unwrap();
+            let start_time = std::time::Instant::now();
+            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let end_time = std::time::Instant::now();
+            log::info!("Time taken: {:?}", end_time - start_time);
+
+            let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+
+            const CHUNK_SIZE: usize = 2000;
+
+            let osh_1 = reference.orbital_state_history();
+            let annotation_1 = &reference.metadata;
+            let osh_2 = secondary.orbital_state_history();
+            let annotation_2 = &secondary.metadata;
+            let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+
+            log::info!("Removing topographic phase");
+            let start_time = std::time::Instant::now();
+            phase_diff
+                .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+                .into_par_iter()
+                .enumerate()
+                .for_each_init(
+                    || warp_function.triangulation.natural_neighbor(),
+                    |nn, (chunk_idx, mut chunk)| {
+                        let az_offset = chunk_idx * CHUNK_SIZE;
+
+                        for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                            let ref_az = az_offset + i;
+
+                            for (ref_rg, phase) in row.iter_mut().enumerate() {
+                                let ref_coords = [ref_az as f64, ref_rg as f64];
+                                let sec_az = nn.interpolate(
+                                    |v| v.data().secondary_coords[0],
+                                    ref_coords.into(),
+                                );
+
+                                // Now compute the ground target position
+                                let ground_target_lat =
+                                    nn.interpolate(|v| v.data().lat, ref_coords.into());
+                                let ground_target_lon =
+                                    nn.interpolate(|v| v.data().lon, ref_coords.into());
+
+                                // if any are None, skip
+                                if sec_az.is_none()
+                                    || ground_target_lat.is_none()
+                                    || ground_target_lon.is_none()
+                                {
+                                    continue;
+                                }
+                                let sec_az = sec_az.unwrap();
+                                let ground_target_lat = ground_target_lat.unwrap();
+                                let ground_target_lon = ground_target_lon.unwrap();
+
+                                let ground_target_pos = Vector3::from(
+                                    dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
+                                );
+
+                                let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
+                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
+                                let s_1 = osh_1.interp_pos(zero_doppler_1);
+                                let s_2 = osh_2.interp_pos(zero_doppler_2);
+                                let n = (s_1 - ground_target_pos).normalize();
+                                let b_parallel = (s_1 - s_2).dot(&n);
+                                let b_perp = s_1 - s_2 - b_parallel * n;
+
+                                *phase = b_perp.norm() as f32;
+                            }
+                        }
+                    },
+                );
+            let end_time = std::time::Instant::now();
+            log::info!("Time taken: {:?}", end_time - start_time);
+
+            // let mut phase_diff = phase_diff
+            //     .slice(s![.., 0..ref_slant_range_dim / 2])
+            //     .to_owned();
+            // let max = *phase_diff
+            //     .iter()
+            //     .max_by(|a, b| a.partial_cmp(b).unwrap())
+            //     .unwrap();
+            // phase_diff.mapv_inplace(|v| v / max);
+            let tensor =
+                rerun::Tensor::try_from(phase_diff.clone()).expect("Unable to create tensor.");
+            rr.log("perp_baseline", &tensor)
+                .expect("Unable to log tensor.");
+            let img = Image::from_color_model_and_tensor(rerun::ColorModel::L, phase_diff)
+                .expect("Could not load img.");
+            rr.log("perp_baseline", &img).expect("Unable to log img");
+        }
+    }
+    fn normalize(data: &mut Array2<f32>) {
+        let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));
+        data.map_mut(|x| *x /= max_amplitude);
+    }
+    /// A visual test using the Rerun framework.
+    ///
+    /// This test is intended to be ignored by CI/CD, as it only works
+    /// if you have a local Rerun instance running.
+    #[test]
+    fn visual_test_rerun() {
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+        )
+        .unwrap();
+        let reference_image = primary.data.array_f32();
+        let secondary_image = secondary.data.array_f32();
+        let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let coregistration = CoarseCoregistration::new(255, 128).unwrap();
+        let CoregistrationResult {
+            offsets,
+            correlation,
+            ref_image_range,
+            sec_image_range,
+        } = coregistration.estimate_offset(&reference_image, &secondary_image);
+        // Log correlation tensor
+        let data = correlation.mapv_into_any(|c| c.norm());
+        let tensor = rerun::Tensor::try_from(data)
+            .unwrap()
+            .with_dim_names(["rows", "cols"]);
+        rec.log("correlation", &tensor)
+            .expect("Could not finish recording");
+        let mut sec_img: Array2<f32> = secondary_image.map(|c| c.norm());
+        normalize(&mut sec_img);
+        let img_sec =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, sec_img).unwrap();
+        rec.log("secondary_image", &img_sec)
+            .expect("Could not finish recording");
+        // Log 2 images for comparison
+        let mut ref_patch = reference_image
+            .slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()])
+            .map(|c| c.norm().powf(0.3))
+            .to_owned();
+        normalize(&mut ref_patch);
+        let img_ref =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_patch).unwrap();
+        rec.log("ref", &img_ref)
+            .expect("Could not finish recording");
+        let mut kernel = secondary_image
+            .slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()])
+            .map(|c| c.norm().powf(0.3))
+            .to_owned();
+        normalize(&mut kernel);
+        let img_sec =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, kernel).unwrap();
+        rec.log("sec", &img_sec)
+            .expect("Could not finish recording");
+        rec.log(
+            "logs",
+            &rerun::TextLog::new(format!("offsets = {offsets:?}"))
+                .with_level(rerun::TextLogLevel::INFO),
+        )
+        .unwrap();
+        let lat_lon = [
+            [19.49831428810679, -98.59301000370277],
+            [19.50516497145322, -98.63155270190656],
+            [19.51197728410019, -98.66992859316593],
+            [19.51875199752162, -98.7081413973442],
+            [19.52548985740382, -98.74619471009619],
+            [19.53219158481003, -98.78409200847771],
+            [19.53885787727854, -98.82183665623535],
+            [19.5454894098591, -98.85943190879907],
+            [19.55208683609183, -98.89688091799755],
+            [19.55865078893238, -98.9341867365148],
+            [19.56518188162694, -98.97135232210496],
+            [19.57168070854037, -99.00838054158147],
+            [19.57814784594043, -99.04527417459472],
+            [19.58458385274104, -99.08203591721202],
+            [19.59098927120689, -99.11866838531225],
+            [19.5973646276222, -99.15517411780644],
+            [19.60371043292545, -99.19155557969563],
+            [19.61002718331234, -99.22781516497541],
+            [19.61631536080904, -99.26395519939655],
+            [19.62257559081166, -99.29997885004042],
+            [19.62877652653297, -99.33570497416603],
+            [19.33245909128312, -98.62592837407114],
+            [19.33931662789667, -98.66442995280119],
+            [19.34613584071955, -98.70276488660213],
+            [19.35291750085852, -98.74093689141644],
+            [19.35966235364623, -98.77894955911454],
+            [19.36637111980492, -98.81680636309756],
+            [19.37304449654394, -98.85451066358128],
+            [19.3796831585957, -98.89206571258312],
+            [19.38628775919396, -98.92947465863222],
+            [19.39285893099849, -98.96674055122072],
+            [19.39939728696963, -99.0038663450142],
+            [19.40590342119594, -99.0408549038362],
+            [19.41237790967802, -99.07770900444162],
+            [19.41882131107135, -99.1144313400927],
+            [19.4252341673906, -99.15102452394993],
+            [19.43161700467787, -99.187491092289],
+            [19.43797033363727, -99.22383350755531],
+            [19.44429465023745, -99.2600541612652],
+            [19.45059043628451, -99.29615537676354],
+            [19.45685815996673, -99.33213941184621],
+            [19.46306674963845, -99.36782713184502],
+        ];
+        rec.log(
+            "geo_points",
+            &rerun::GeoPoints::from_lat_lon(lat_lon.iter()),
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        let dem_array = dem.array();
+        let tensor = rerun::Tensor::try_from(dem_array)
+            .unwrap()
+            .with_dim_names(["rows", "cols"]);
+        rec.log("DEM", &tensor).expect("Could not finish recording");
+        let data_img = rerun::Image::from_color_model_and_tensor(
+            rerun::ColorModel::L,
+            reference_image
+                .map(|c| c.norm().powf(0.3) / 22.0)
+                .to_owned(),
+        )
+        .unwrap();
+        rec.log("ref_img", &data_img)
+            .expect("Could not finish recording");
+        rec.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_resample_secondary_to_reference() {
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+
+        let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
+            &reference, &secondary, &dem,
+        );
+        // lets reduce the number of samples by 1/2 in the cols
+        let (rows, cols) = resampled_data.dim();
+        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
+
+        // Log amplitude for resampled data
+        let data_norm = resampled_data.map(|c| c.norm());
+        let max_val = data_norm.iter().fold(0.0f32, |a, &b| a.max(b));
+        let data_norm = data_norm.map(|c| (c / max_val).powf(0.3));
+        let img =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, data_norm).unwrap();
+        let rr = rerun::RecordingStreamBuilder::new("test_resample_secondary_to_reference")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        rr.log("resampled_amplitude", &img)
+            .expect("Could not log resampled_amplitude to Rerun");
+
+        // Log phase for resampled data
+        let vector = resampled_data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("resampled_phase", &rr_image)
+            .expect("Could not log resampled_phase to Rerun");
+
+        // Log the reference image amplitude
+        let ref_array = reference.data.array_f32();
+        let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
+        let ref_array_norm = ref_array.map(|c| c.norm());
+        let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));
+        let ref_array_norm = ref_array_norm.map(|c| (c / max_val).powf(0.3));
+        let ref_img =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_array_norm)
+                .unwrap();
+        rr.log("reference_amplitude", &ref_img)
+            .expect("Could not log reference_amplitude to Rerun");
+
+        // Log phase for reference data
+        let vector = ref_array.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("reference_phase", &rr_image)
+            .expect("Could not log reference_phase to Rerun");
+    }
+
+    #[test]
+    fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+
+        let image = reference.data.array_f32();
+        let rec =
+            rerun::RecordingStreamBuilder::new("fft_spectrum_visualization").connect_grpc()?;
+
+        // Compute FFT along both dimensions
+        let spectrum_0 = crate::coregistration::spectrum::compute_spectrum(&image, 0);
+        let spectrum_1 = crate::coregistration::spectrum::compute_spectrum(&image, 1);
+
+        // Compute average magnitude squared along each dimension
+        let (rows, cols) = image.dim();
+
+        // For dimension 0 (rows), average across columns
+        // this shows the FFT in the Azimuth direction
+        for row in 0..rows {
+            let row_avg = spectrum_0.row(row).map(|&x| x.norm_sqr()).sum() / cols as f32;
+
+            // Map row index to FFT frequency ordering
+            let freq_idx = if row <= rows / 2 { row } else { row - rows };
+
+            rec.set_time_sequence("row", freq_idx as i64);
+            rec.log("fft_dim0", &rerun::Scalars::new([row_avg as f64]))?;
+        }
+
+        // calculate the DC center of the spectrum
+        // find the center of mass of the spectrum distribution
+        let mut total_mass = 0.0;
+        let mut weighted_sum = 0.0;
+
+        for row in 0..rows {
+            let row_avg = spectrum_0.row(row).map(|&x| x.norm_sqr()).sum() / cols as f32;
+            total_mass += row_avg;
+            weighted_sum += row_avg * row as f32;
+        }
+
+        let dc_center_row = (weighted_sum / total_mass) as usize;
+        let dc_center = spectrum_0.row(dc_center_row).map(|&x| x.norm_sqr()).sum() / cols as f32;
+
+        rec.log(
+            "dc_center",
+            &rerun::TextLog::new(format!(
+                "DC center row: {dc_center_row}, value: {dc_center}"
+            )),
+        )?;
+
+        // For dimension 1 (columns), average across rows
+        for col in 0..cols {
+            let col_avg = spectrum_1.column(col).map(|&x| x.norm_sqr()).sum() / rows as f32;
+
+            // Map column index to FFT frequency ordering
+            let freq_idx = if col <= cols / 2 { col } else { col - cols };
+
+            rec.set_time_sequence("col", freq_idx as i64);
+            rec.log("fft_dim1", &rerun::Scalars::new([col_avg as f64]))?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_spectrogram() -> Result<(), Box<dyn std::error::Error>> {
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+
+        let image = reference.data.array_f32();
+        let rec = rerun::RecordingStreamBuilder::new("spectrogram_visualization").connect_grpc()?;
+
+        // cut cols in half
+        let image = image.slice(s![.., ..image.dim().1 / 2]).to_owned();
+        let rows = image.dim().0;
+
+        // Example usage of STFT
+        // fn main() {
+        //     // Initialize a new STFT object
+        //     let n_fft = 1024;
+        //     let hop_length = 256;
+        //     let stft = Stft::new(n_fft, hop_length, WindowFunction::Hann::<f64>, true);
+        //     // Create a 2D array of f64
+        //     let data = vec![0.0; 2048];
+        //     let input = ArrayView2::from_shape((2, 1024), &data).unwrap();
+        //     let expected_output = input.clone();
+        //     // Perform the forward STFT
+        //     let stft_res = stft.forward(input).unwrap();
+        //     // perform the inverse STFT
+        //     let istft_res = stft.inverse(stft_res.view()).unwrap();
+        //     assert_eq!(expected_output, istft_res);
+        // }
+        let hop_length = 32;
+        let stft = Stft::new(rows, hop_length, WindowFunction::Hann::<f32>, true);
+        // Let's apply to a single column
+        let column = image.column(1000);
+        let stft_res = stft.forward(column).unwrap();
+        let (cols, rows) = stft_res.dim();
+        // let istft_res = stft.inverse(stft_res.view()).unwrap();
+        // assert_eq!(column, istft_res);
+
+        let array = stft_res.map(|x| x.norm());
+
+        // log as image
+        let rr_image = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, array)?;
+        rec.log("spectrogram_visualization", &rr_image)?;
+        // log also phase
+
+        let vector = stft_res.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rec.log("phase_visualization", &rr_image)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+
+        let array = reference.data.array_f32();
+        // cut cols in half
+        let array = array.slice(s![.., ..array.dim().1 / 2]).to_owned();
+        let (rows, cols) = array.dim();
+        let vector = array.as_slice_memory_order().unwrap().to_vec();
+        // map the vactor to phase, then map that to RGB color
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization").connect_grpc()?;
+
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rec.log("image_phase_visualization", &rr_image)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_resampled_phase_difference() {
+        let reference = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+
+        // Secondary resampled to reference (also deramped)
+        let resampled_sec_data =
+            crate::coregistration::warp_function::resample_secondary_to_reference(
+                &reference, &secondary, &dem,
+            );
+        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference);
+
+        // cut cols by half in both images
+        let (rows, cols) = resampled_sec_data.dim();
+        let resampled_sec_data = resampled_sec_data.slice(s![.., 0..cols / 2]).to_owned();
+        let ref_deramp = ref_deramp.slice(s![.., 0..cols / 2]).to_owned();
+
+        let phase_sec = resampled_sec_data.map(|c| c.arg());
+        let phase_ref = ref_deramp.map(|c| c.arg());
+        // Compute the phase difference between the resampled secondary and the reference deramped data
+        let phase_diff = phase_sec - phase_ref;
+
+        // Log the phase difference
+        let rr = rerun::RecordingStreamBuilder::new("test_resampled_phase_difference")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let vector = phase_diff.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let phase_diff_img = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("phase_difference", &phase_diff_img)
+            .expect("Could not log phase_difference to Rerun");
     }
 
     #[test]
@@ -1102,6 +1701,29 @@ mod tests {
         rr.log("offsets", &tensor).expect("Unable to log tensor.");
         let img = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, offsets).unwrap();
         rr.log("offsets_img", &img).unwrap();
+    }
+
+    #[test]
+    fn dem_mesh_test() {
+        let dem = DEM::open_file("dem.tif");
+        let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let rows = dem.rows();
+        let cols = dem.cols();
+
+        let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
+        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];
+        let vertex_colors: Vec<u32> = dem.vertex_colors();
+        let triangle_indices = dem.triangle_indices();
+        rec.log(
+            "dem_mesh3d",
+            &rerun::Mesh3D::new(vertex_positions)
+                .with_vertex_normals(vertex_normals)
+                .with_vertex_colors(vertex_colors)
+                .with_triangle_indices(triangle_indices),
+        )
+        .unwrap();
     }
 
     /// Constructs a rotation matrix that orients an object at `p_sat` to point toward `p_target`.

@@ -410,28 +410,4 @@ mod tests {
         println!("transform = {:?}", dem.geo_transform);
         println!("inv transform = {:?}", dem.inv_geo_transform);
     }
-
-    #[test]
-    #[ignore]
-    fn dem_mesh_test() {
-        let dem = DEM::open_file("dem.tif");
-        let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
-            .connect_grpc()
-            .expect("Could not connect to local Rerun instance.");
-        let rows = dem.rows;
-        let cols = dem.cols;
-
-        let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
-        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];
-        let vertex_colors: Vec<u32> = dem.vertex_colors();
-        let triangle_indices = dem.triangle_indices();
-        rec.log(
-            "dem_mesh3d",
-            &rerun::Mesh3D::new(vertex_positions)
-                .with_vertex_normals(vertex_normals)
-                .with_vertex_colors(vertex_colors)
-                .with_triangle_indices(triangle_indices),
-        )
-        .unwrap();
-    }
 }
