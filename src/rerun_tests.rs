@@ -462,12 +462,9 @@ mod tests {
         let max_amplitude = data.iter().fold(0.0, |acc: f32, &x| acc.max(x));
         data.map_mut(|x| *x /= max_amplitude);
     }
-    /// A visual test using the Rerun framework.
-    ///
-    /// This test is intended to be ignored by CI/CD, as it only works
-    /// if you have a local Rerun instance running.
+
     #[test]
-    fn visual_test_rerun() {
+    fn coarse_coregistration() {
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
