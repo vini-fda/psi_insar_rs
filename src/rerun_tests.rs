@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use nalgebra::Vector3;
+    use nalgebra::{Matrix3, Unit, Vector3};
     use ndarray::{Array1, Array2, Axis, s};
     use ndarray_npy::WriteNpyExt;
     use num_complex::ComplexFloat;
     use rayon::prelude::*;
-    use rerun::{Image, RecordingStream};
+    use rerun::{Color, Image, RecordingStream};
 
     use crate::{
         constants::SENTINEL_1_WAVELENGTH,
@@ -1102,5 +1102,192 @@ mod tests {
         rr.log("offsets", &tensor).expect("Unable to log tensor.");
         let img = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, offsets).unwrap();
         rr.log("offsets_img", &img).unwrap();
+    }
+
+    /// Constructs a rotation matrix that orients an object at `p_sat` to point toward `p_target`.
+    pub fn look_at_ground_target(p_sat: Vector3<f32>, p_target: Vector3<f32>) -> Matrix3<f32> {
+        let forward_vec = p_target - p_sat;
+        let forward = Unit::new_normalize(forward_vec);
+
+        let up_raw = Unit::new_normalize(p_sat).into_inner(); // Radial from Earth center
+        let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
+        let right = Unit::new_normalize(up.cross(&forward));
+
+        Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
+    }
+
+    #[test]
+    fn simple_test_satellite_orbit() {
+        let rec = rerun::RecordingStreamBuilder::new("simple_test_satellite_orbit")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let annotation =
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+        let orbit_list = &annotation.general_annotation.orbit_list;
+        let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
+        let points = orbital_history
+            .position
+            .iter()
+            .map(|v| v.map(|x| x as f32).data.0[0]);
+
+        rec.log_static(
+            "orbital_positions",
+            &rerun::Points3D::new(points).with_radii([1000.0]),
+        )
+        .unwrap();
+
+        // Record time-series of satellite position
+        let n = orbital_history.time.len();
+        for k in 0..n {
+            let sat_pos = orbital_history.position[k];
+            let vel = orbital_history.velocity[k];
+            let time = orbital_history.time[k];
+            let time_nanos = time.timestamp_nanos_opt().unwrap();
+            rec.set_time(
+                "satellite_time",
+                rerun::TimeCell::from_timestamp_nanos_since_epoch(time_nanos),
+            );
+
+            // log normals as arrows
+            let mut normals = vec![];
+            let mut sat_look_vectors = vec![];
+            let mut positions = vec![];
+            for gcp in &annotation
+                .geolocation_grid
+                .geolocation_grid_point_list
+                .geolocation_grid_point
+            {
+                let gcp_pos =
+                    geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height).map(|val| val as f32);
+                let gcp_pos_vec3 = Vector3::<f32>::from(gcp_pos);
+                let l = (sat_pos.map(|c| c as f32) - gcp_pos_vec3).normalize();
+                sat_look_vectors.push([l.x * 1000.0, l.y * 1000.0, l.z * 1000.0]);
+                let normal = local_normal(gcp.latitude, gcp.longitude).map(|val| val as f32);
+                let normal_vec3 = Vector3::<f32>::from(normal);
+                let theta = l.dot(&normal_vec3).acos();
+                let log_title = format!("theta for gcp {}, {}", gcp.latitude, gcp.longitude);
+                rec.log(
+                    log_title,
+                    &rerun::TextLog::new(format!("{}", theta.to_degrees())),
+                )
+                .unwrap();
+                normals.push(normal.map(|c| c * 1000.0));
+                positions.push(gcp_pos);
+            }
+            rec.log(
+                "geo_normals",
+                &rerun::Arrows3D::from_vectors(normals).with_origins(positions.clone()),
+            )
+            .unwrap();
+            rec.log(
+                "satellite_look_vectors",
+                &rerun::Arrows3D::from_vectors(sat_look_vectors).with_origins(positions),
+            )
+            .unwrap();
+            let sat_pos =
+                rerun::Position3D::new(sat_pos.x as f32, sat_pos.y as f32, sat_pos.z as f32);
+            rec.log(
+                "satellite_position",
+                &rerun::Points3D::new([sat_pos])
+                    .with_colors([Color::WHITE])
+                    .with_radii([1500.0]),
+            )
+            .unwrap();
+            let arrow_vel =
+                rerun::Arrows3D::from_vectors([(vel.x as f32, vel.y as f32, vel.z as f32)])
+                    .with_origins([sat_pos]);
+            rec.log("satellite_velocity", &arrow_vel).unwrap();
+
+            // Pinhole camera
+            let ground_target = geodetic_to_ecef(19.49831428810679, -98.59301000370277, 0.0);
+            let ground_target_vec3 = Vector3::<f32>::from(ground_target.map(|val| val as f32));
+            let pos_vec3 = Vector3::<f32>::new(sat_pos.x(), sat_pos.y(), sat_pos.z());
+            let rot3x3 = look_at_ground_target(pos_vec3, ground_target_vec3);
+            rec.log(
+                "universe/camera",
+                &rerun::Transform3D::from_translation_mat3x3(
+                    [sat_pos.x(), sat_pos.y(), sat_pos.z()],
+                    rerun::Mat3x3(rot3x3.data.0.as_flattened().try_into().unwrap()),
+                ),
+            )
+            .unwrap();
+            let focal_length = (pos_vec3 - ground_target_vec3).norm();
+            rec.log(
+                "universe/camera",
+                &rerun::Pinhole::from_focal_length_and_resolution(
+                    [focal_length, focal_length],
+                    [23739., 1507.],
+                ),
+            )
+            .unwrap();
+            // TODO: Pinhole camera
+
+            // rec.log(
+            //     "universe/camera",
+            //     &rerun::Pinhole::new(intrinsics)
+            //         // See https://github.com/google-research-datasets/Objectron/issues/39 for coordinate systems
+            //         .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
+            //         .with_resolution(resolution),
+            // )
+            // .unwrap();
+        }
+
+        const EARTH_RADIUS: f32 = 6_378_137.0;
+        rec.log_static("universe", &rerun::ViewCoordinates::RIGHT_HAND_Z_UP())
+            .unwrap();
+        let asset = rerun::Asset3D::from_file_path("earth.glb").unwrap();
+
+        rec.log_static(
+            "universe/earth",
+            &rerun::Transform3D::from_rotation_scale(
+                rerun::RotationAxisAngle::new(
+                    [1.0, -1.0, -1.0],
+                    rerun::Angle::from_radians(2.0 * std::f32::consts::PI / 3.0),
+                ),
+                rerun::Scale3D::from(EARTH_RADIUS / 500.0),
+            ),
+        )
+        .unwrap();
+        rec.log_static("universe/earth", &asset).unwrap();
+
+        // X Y Z arrows
+        const ARROW_LENGTH: f32 = 1.2 * EARTH_RADIUS;
+        let arrow_x = rerun::Arrows3D::from_vectors([(ARROW_LENGTH, 0.0, 0.0)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/x", &arrow_x).unwrap();
+        let arrow_y = rerun::Arrows3D::from_vectors([(0.0, ARROW_LENGTH, 0.0)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/y", &arrow_y).unwrap();
+        let arrow_z = rerun::Arrows3D::from_vectors([(0.0, 0.0, ARROW_LENGTH)])
+            .with_origins([(0.0, 0.0, 0.0)]);
+        rec.log_static("universe/z", &arrow_z).unwrap();
+
+        // DEM
+        let dem = DEM::open_file("dem.tif");
+        let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
+        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; dem.len()];
+        let vertex_colors: Vec<u32> = dem.vertex_colors();
+        let triangle_indices = dem.triangle_indices();
+        rec.log_static(
+            "dem_mesh3d",
+            &rerun::Mesh3D::new(vertex_positions)
+                .with_vertex_normals(vertex_normals)
+                .with_vertex_colors(vertex_colors)
+                .with_triangle_indices(triangle_indices),
+        )
+        .unwrap();
+
+        // XYZ OF GROUND CONTROL POINTS
+        let gcps = &annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point;
+        let radar_xyz = gcps.iter().map(|gcp| {
+            println!("gcp height = {}", gcp.height);
+            geodetic_to_ecef(gcp.latitude, gcp.longitude, gcp.height).map(|val| val as f32)
+        });
+
+        rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
+            .unwrap();
     }
 }
