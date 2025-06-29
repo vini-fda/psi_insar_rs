@@ -123,7 +123,7 @@ where
         .collect())
 }
 
-fn serialize_space_separated_floats<S>(values: &Vec<f64>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_space_separated_floats<S>(values: &[f64], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -148,7 +148,7 @@ where
         .collect())
 }
 
-pub fn serialize_space_separated_u32<S>(values: &Vec<u32>, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_space_separated_u32<S>(values: &[u32], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {

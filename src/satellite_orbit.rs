@@ -240,7 +240,7 @@ impl OrbitalStateHistory {
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
     pub fn find_ground_target(&self, radar_coords: RadarCoords, dem: &DEM) -> Vector3<f64> {
-        let mut current_min = std::f64::MAX;
+        let mut current_min = f64::MAX;
         let mut optimal_ground_pos = Vector3::<f64>::zero();
         let (sat_pos, sat_vel) = self.interp_pos_vel(radar_coords.time);
         let sat_vel_hat = sat_vel.normalize();

@@ -363,7 +363,9 @@ impl FromStr for OrbitNumber {
     type Err = GranuleIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let number = u32::from_str_radix(s, 10).map_err(|_| GranuleIdError::InvalidOrbitNumber)?;
+        let number = s
+            .parse::<u32>()
+            .map_err(|_| GranuleIdError::InvalidOrbitNumber)?;
         OrbitNumber::new(number)
     }
 }

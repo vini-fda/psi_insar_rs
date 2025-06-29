@@ -179,7 +179,7 @@ pub fn theta_from_pixel_index(
     let osh_primary = primary_burst.orbital_state_history();
     let annotation_1 = &primary_burst.metadata;
     let radar_coords = pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-    let mut current_min = std::f64::MAX;
+    let mut current_min = f64::MAX;
     let mut ground_target_pos_geodetic = (0.0, 0.0);
     let mut ground_target_pos = Vector3::<f64>::zero();
     let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords.time);
@@ -458,7 +458,7 @@ impl FlatEarthComponentsInterpolator {
         let annotation_1 = &primary_burst.metadata;
         let radar_coords_1 =
             pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-        let mut current_min = std::f64::MAX;
+        let mut current_min = f64::MAX;
         let mut ground_target_lat = 0.0;
         let mut ground_target_lon = 0.0;
         let mut ground_target_pos = Vector3::<f64>::zero();
@@ -508,7 +508,7 @@ pub fn flat_earth_dphi(
     let annotation_1 = &primary_burst.metadata;
     let radar_coords_1 =
         pixel_coords_to_radar_coords(azimuth_index, slant_range_index, annotation_1);
-    let mut current_min = std::f64::MAX;
+    let mut current_min = f64::MAX;
     let mut ground_target_lat = 0.0;
     let mut ground_target_lon = 0.0;
     let mut ground_target_pos = Vector3::<f64>::zero();
