@@ -47,7 +47,7 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
 
     // Iterate through DEM points in latitude order
     let mut points: Vec<(usize, usize, f64, f64)> = dem
-        .indexed_lat_lon_height()
+        .indexed_lat_lon_height_iter()
         .map(|(i, j, lat, lon, _)| (i, j, lat, lon))
         .collect();
     points.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());

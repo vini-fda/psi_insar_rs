@@ -5,7 +5,7 @@ use crate::granule_id::{
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
-use crate::satellite_orbit::OrbitalStateHistory;
+use crate::satellite_orbit::{ContinuousOrbitalStateHistory, OrbitalStateHistory};
 use crate::slc_image::SlcImage;
 use chrono::{DateTime, Utc};
 use gdal::{
@@ -452,6 +452,17 @@ impl Sentinel1SlcBurst {
     pub fn orbital_state_history(&self) -> OrbitalStateHistory {
         let orbit_list = &self.metadata.general_annotation.orbit_list;
         OrbitalStateHistory::from(orbit_list)
+    }
+
+    pub fn continuous_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        let osh = OrbitalStateHistory::from(orbit_list);
+        let t_start = self
+            .metadata
+            .image_annotation
+            .image_information
+            .product_first_line_utc_time;
+        ContinuousOrbitalStateHistory::from_osh(&osh, t_start, &self.metadata)
     }
 }
 

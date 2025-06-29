@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{f64::NAN, path::Path};
 
 use crate::{
     constants::C_LIGHT,
@@ -7,11 +7,13 @@ use crate::{
     interpolation::{
         unit_derivative_interval_cubic_hermite_spline_interpolation,
         unit_interval_cubic_hermite_spline_interpolation,
+        unit_second_derivative_interval_cubic_hermite_spline_interpolation,
     },
     metadata::{
         annotation_xml::{OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
+    sentinel::Sentinel1SlcMetadata,
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use nalgebra::Vector3;
@@ -98,18 +100,70 @@ impl OrbitalStateHistory {
         let dt = (t - t_prev).num_nanoseconds().unwrap() as f64;
         let alpha = dt / total_dt;
 
+        let total_dt_sec = total_dt * 1e-9;
         // cubic hermite interpolation
-        let pos_interp =
-            unit_interval_cubic_hermite_spline_interpolation(p_prev, v_prev, p_next, v_next, alpha);
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
         // Derivative of Hermite spline w.r.t. time
-        // (the scale factor of 1e9 / total_dt comes from the chain rule
-        // and also the fact that we have to use the metric/SI system,
-        // thus we convert nanoseconds to seconds, that's why 1e9 appears in the numerator)
-        let vel_interp =
-            1e9 * unit_derivative_interval_cubic_hermite_spline_interpolation(
-                p_prev, v_prev, p_next, v_next, alpha,
-            ) / total_dt;
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
         (pos_interp, vel_interp)
+    }
+
+    #[inline(always)]
+    pub fn interp_pos(&self, t: DateTime<Utc>) -> Vector3<f64> {
+        let time: &[DateTime<Utc>] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        assert!(time.len() >= 2);
+        // Try to find "t" in the slice "time"
+        // 1. If you can find it, return the corresponding position, velocity pair
+        match time.binary_search(&t) {
+            Ok(i) => return pos[i], // exact match
+            Err(_) => { /* continue to interpolation */ }
+        }
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        // 2. Otherwise, search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 3. With "t_prev" and "t_next", perform interpolation
+        let total_dt = (t_next - t_prev).num_nanoseconds().unwrap() as f64;
+        let dt = (t - t_prev).num_nanoseconds().unwrap() as f64;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt * 1e-9;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        pos_interp
     }
 
     /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
@@ -124,8 +178,8 @@ impl OrbitalStateHistory {
     ///
     /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
     pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> RadarCoords {
-        const NUM_BISECTION_ITER: usize = 32;
-        const TOLERANCE: f64 = 1e-9;
+        const NUM_BISECTION_ITER: usize = 64;
+        const TOLERANCE: f64 = 1e-12;
         let time = self.time.as_slice();
         assert!(time.len() >= 2);
 
@@ -167,7 +221,8 @@ impl OrbitalStateHistory {
                         left = mid;
                     }
                 }
-                let mid = left + (right - left) / 2;
+                let half = (right - left) / 2;
+                let mid = left + half;
                 return state(mid);
             }
         }
@@ -191,7 +246,7 @@ impl OrbitalStateHistory {
         let mut optimal_ground_pos = Vector3::<f64>::zero();
         let (sat_pos, sat_vel) = self.interp_pos_vel(radar_coords.time);
         let sat_vel_hat = sat_vel.normalize();
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
             let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
             if val < current_min {
@@ -283,6 +338,357 @@ impl From<&ListOfOsvs> for OrbitalStateHistory {
             position,
             velocity,
         }
+    }
+}
+
+/// A collection of orbital state vectors (position and velocity) over time.
+///
+/// In this struct, unlike `OrbitalStateHistory`, the time points are represented as seconds since the start time (from metadata).
+///
+/// This structure stores a time series of orbital states and provides methods
+/// for interpolating state values at arbitrary times and computing related
+/// orbital parameters.
+pub struct ContinuousOrbitalStateHistory {
+    pub time: Vec<f64>,
+    pub position: Vec<Vector3<f64>>,
+    pub velocity: Vec<Vector3<f64>>,
+    near_edge_slant_range: f64,
+    range_spacing: f64,
+    azimuth_time_interval: f64,
+}
+
+impl ContinuousOrbitalStateHistory {
+    /// From a Orbital State History
+    pub fn from_osh(
+        osh: &OrbitalStateHistory,
+        start_time: DateTime<Utc>,
+        annotation: &SlcProductAnnotation,
+    ) -> Self {
+        let time = osh
+            .time
+            .iter()
+            .map(|&t_datetime| {
+                t_datetime
+                    .signed_duration_since(start_time)
+                    .as_seconds_f64()
+            })
+            .collect();
+        let slant_range_time = annotation
+            .image_annotation
+            .image_information
+            .slant_range_time;
+
+        Self {
+            time,
+            near_edge_slant_range: 0.5 * C_LIGHT * slant_range_time,
+            range_spacing: annotation
+                .image_annotation
+                .image_information
+                .range_pixel_spacing,
+            azimuth_time_interval: annotation
+                .image_annotation
+                .image_information
+                .azimuth_time_interval,
+            position: osh.position.clone(),
+            velocity: osh.velocity.clone(),
+        }
+    }
+
+    /// Interpolate p(t) and v(t) at
+    #[inline(always)]
+    pub fn interp_pos_vel(&self, t: f64) -> (Vector3<f64>, Vector3<f64>) {
+        let time: &[f64] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        assert!(time.len() >= 2);
+        // 1. Search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 2. With "t_prev" and "t_next", perform interpolation
+        let total_dt = t_next - t_prev;
+        let dt = t - t_prev;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+        // Derivative of Hermite spline w.r.t. time
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        (pos_interp, vel_interp)
+    }
+
+    #[inline(always)]
+    pub fn interp_pos(&self, t: f64) -> Vector3<f64> {
+        let time: &[f64] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        assert!(time.len() >= 2);
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        // 1. Search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+        // 2. With "t_prev" and "t_next", perform interpolation
+        let total_dt = t_next - t_prev;
+        let dt = t - t_prev;
+        let alpha = dt / total_dt;
+
+        let total_dt_sec = total_dt;
+        // cubic hermite interpolation
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev,
+            v_prev,
+            p_next,
+            v_next,
+            total_dt_sec,
+            alpha,
+        );
+
+        pos_interp
+    }
+
+    /// Interpolate p(t), v(t), and a(t) at time t
+    #[inline(always)]
+    pub fn interp_pos_vel_acc(&self, t: f64) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
+        let time: &[f64] = self.time.as_slice();
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        assert!(time.len() >= 2);
+
+        // Search for the previous and next position & velocity (panics if out of bounds)
+        let i = time
+            .windows(2)
+            .position(|w| w[0] <= t && t <= w[1])
+            .expect("Interpolation time out of bounds");
+
+        let t_prev = time[i];
+        let t_next = time[i + 1];
+        let p_prev = pos[i];
+        let p_next = pos[i + 1];
+        let v_prev = vel[i];
+        let v_next = vel[i + 1];
+
+        // With "t_prev" and "t_next", perform interpolation
+        let total_dt = t_next - t_prev;
+        let dt = t - t_prev;
+        let alpha = dt / total_dt;
+
+        // cubic hermite interpolation for position
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        );
+
+        // First derivative of Hermite spline w.r.t. time (velocity)
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        );
+
+        // Second derivative of Hermite spline w.r.t. time (acceleration)
+        let acc_interp = unit_second_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        );
+
+        (pos_interp, vel_interp, acc_interp)
+    }
+
+    /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
+    ///
+    /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
+    /// is perpendicular to the vector pointing from the satellite to the ground target:
+    ///
+    ///     v(t) · (ground_target_pos - s(t)) = 0
+    ///
+    /// This condition implies a dot product of zero between the velocity vector and
+    /// the look vector, indicating orthogonality.
+    ///
+    /// With the time "t" calculated, we can also obtain the slant range distance to the ground target.
+    pub fn find_zero_doppler_state(&self, ground_target_pos: Vector3<f64>) -> [f64; 2] {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        let mut distance_to_target = NAN;
+        let mut delta_time_secs = NAN;
+        'outer: for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over time
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2.0;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        let sat_pos = self.interp_pos(mid);
+                        distance_to_target = (ground_target_pos - sat_pos).norm();
+                        delta_time_secs = mid;
+                        break 'outer;
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let half = (right - left) / 2.0;
+                let mid = left + half;
+                let sat_pos = self.interp_pos(mid);
+                distance_to_target = (ground_target_pos - sat_pos).norm();
+                delta_time_secs = mid;
+                break 'outer;
+            }
+        }
+
+        if distance_to_target.is_nan() || delta_time_secs.is_nan() {
+            panic!("NaN found in bisection");
+        }
+
+        // Calculation using azimuth_time_interval (similar to linear interp)
+        // This is what the official SNAP microwave toolbox performs:
+        // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-io/src/main/java/eu/esa/sar/io/sentinel1/Sentinel1Level1Directory.java
+        // - https://github.com/senbox-org/microwave-toolbox/blob/ff89cf020b8c426c101502f3187c2b2b389722c0/sar-op-insar/src/main/java/eu/esa/sar/insar/gpf/support/SARPosition.java
+        let azimuth_index = delta_time_secs / self.azimuth_time_interval;
+
+        // Column calculation:
+        let slant_range_index =
+            (distance_to_target - self.near_edge_slant_range) / self.range_spacing;
+        [azimuth_index, slant_range_index]
+    }
+
+    /// Calculate the zero-Doppler state using Newton-Raphson method.
+    ///
+    /// This is an alternative implementation to the bisection method that can converge
+    /// faster but requires computing the derivative (using satellite acceleration).
+    ///
+    /// The zero-Doppler time is the time `t` such that:
+    ///     v(t) · (ground_target_pos - s(t)) = 0
+    pub fn find_zero_doppler_state_newton_raphson(
+        &self,
+        ground_target_pos: Vector3<f64>,
+    ) -> [f64; 2] {
+        const MAX_ITER: usize = 10;
+        const TOLERANCE: f64 = 1e-12;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        // Function f(t) = v(t) · (ground_target_pos - s(t))
+        // We don't normalize here to simplify the derivative
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            sat_vel.dot(&(ground_target_pos - sat_pos))
+        };
+
+        // Derivative f'(t) = a(t) · (ground_target_pos - s(t)) - v(t) · v(t)
+        let f_prime = |t: f64| {
+            let (sat_pos, sat_vel, sat_acc) = self.interp_pos_vel_acc(t);
+            sat_acc.dot(&(ground_target_pos - sat_pos)) - sat_vel.dot(&sat_vel)
+        };
+
+        // Step 1: Find a good initial guess by searching for a sign change
+        let mut t_guess = NAN;
+        for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Use the midpoint as initial guess
+                t_guess = (t0 + t1) / 2.0;
+                break;
+            }
+        }
+
+        if t_guess.is_nan() {
+            panic!("No sign change found - zero-Doppler point may not exist in trajectory window");
+        }
+
+        // Step 2: Newton-Raphson iteration
+        let mut t = t_guess;
+        for iter in 0..MAX_ITER {
+            let f_val = f(t);
+
+            if f_val.abs() < TOLERANCE {
+                break;
+            }
+
+            let f_prime_val = f_prime(t);
+
+            if f_prime_val.abs() < 1e-15 {
+                // Derivative too small, fall back to bisection for this step
+                // This is rare but can happen at inflection points
+                break;
+            }
+
+            let dt = -f_val / f_prime_val;
+            t += dt;
+
+            // Ensure t stays within bounds
+            if t < time[0] {
+                t = time[0];
+            } else if t > time[time.len() - 1] {
+                t = time[time.len() - 1];
+            }
+
+            if dt.abs() < 1e-12 {
+                break;
+            }
+        }
+
+        // Calculate final results
+        let sat_pos = self.interp_pos(t);
+        let distance_to_target = (ground_target_pos - sat_pos).norm();
+        let delta_time_secs = t;
+
+        // Convert to pixel indices
+        let azimuth_index = delta_time_secs / self.azimuth_time_interval;
+        let slant_range_index =
+            (distance_to_target - self.near_edge_slant_range) / self.range_spacing;
+
+        [azimuth_index, slant_range_index]
     }
 }
 
@@ -395,6 +801,24 @@ pub fn pixel_coords_to_radar_coords(
     }
 }
 
+pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) -> DateTime<Utc> {
+    let t_start = annotation
+        .image_annotation
+        .image_information
+        .product_first_line_utc_time;
+
+    let azimuth_time_interval = annotation
+        .image_annotation
+        .image_information
+        .azimuth_time_interval;
+
+    // Reverse azimuth index calculation to get time
+    let delta_time_secs = azimuth_index * azimuth_time_interval;
+    let delta_time_nanos = (delta_time_secs * 1_000_000_000.0).round() as i64;
+    let zero_doppler_time = t_start + TimeDelta::nanoseconds(delta_time_nanos);
+    zero_doppler_time
+}
+
 #[cfg(test)]
 mod manual_tests_satellite_orbit {
     use std::f32::consts::PI;
@@ -464,7 +888,7 @@ mod manual_tests_satellite_orbit {
         let dem = DEM::open_file("dem.tif");
 
         let mut points = vec![];
-        for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
@@ -506,7 +930,7 @@ mod manual_tests_satellite_orbit {
         let dem = DEM::open_file("dem.tif");
 
         let mut points = vec![];
-        for (i, j, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let [azimuth_idx, slant_range_idx] =
@@ -683,9 +1107,8 @@ mod manual_tests_satellite_orbit {
 
         // DEM
         let dem = DEM::open_file("dem.tif");
-        let (rows, cols) = dem.array_dim();
         let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
-        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; rows * cols];
+        let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; dem.len()];
         let vertex_colors: Vec<u32> = dem.vertex_colors();
         let triangle_indices = dem.triangle_indices();
         rec.log_static(

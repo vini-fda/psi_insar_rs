@@ -340,7 +340,7 @@ impl DerampSlcBurst {
         let tau: Array1<f64> =
             Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
 
-        let buffer = slc.data.read_buffer();
+        let buffer = &slc.data.array;
         let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
         for (i, &eta_val) in eta.iter().enumerate() {
             for (j, &tau_val) in tau.iter().enumerate() {

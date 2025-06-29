@@ -341,7 +341,7 @@ pub fn extract_data(measurement_path: &str) -> Array2<Complex<f32>> {
 mod manual_tests {
     use ndarray::{Array2, s};
 
-    use crate::dem::DEM;
+    use crate::{dem::DEM, sentinel::Sentinel1SlcBurst};
 
     use super::{CoarseCoregistration, CoregistrationResult, extract_data};
 
@@ -355,16 +355,21 @@ mod manual_tests {
     /// This test is intended to be ignored by CI/CD, as it only works
     /// if you have a local Rerun instance running.
     #[test]
-    #[ignore]
     fn visual_test_rerun() {
-        let measurement_path_1 = "./download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE/measurement/s1a-iw3-slc-vv-20151022t122546-20151022t122549-008265-00ba51-001.tiff";
-        let reference_image = extract_data(measurement_path_1);
-        let measurement_path_2 = "./download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE/measurement/s1a-iw3-slc-vv-20151010t122546-20151010t122550-008090-00b578-001.tiff";
-        let secondary_image = extract_data(measurement_path_2);
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+        )
+        .unwrap();
+        let reference_image = primary.data.array_f32();
+        let secondary_image = secondary.data.array_f32();
         let rec = rerun::RecordingStreamBuilder::new("visual_test_coregistration")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let coregistration = CoarseCoregistration::new(255, 64).unwrap();
+        let coregistration = CoarseCoregistration::new(255, 128).unwrap();
         let CoregistrationResult {
             offsets,
             correlation,
@@ -463,7 +468,7 @@ mod manual_tests {
         let mut dem_corners = dem.corners_lat_lon().to_vec();
         let first = dem_corners.first().unwrap();
         dem_corners.push(*first);
-        let dem_array = dem.read_raster_data();
+        let dem_array = dem.array();
         let tensor = rerun::Tensor::try_from(dem_array)
             .unwrap()
             .with_dim_names(["rows", "cols"]);

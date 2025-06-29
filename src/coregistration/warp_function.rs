@@ -72,7 +72,7 @@ impl HasPosition for ExactMapping {
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
     pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
-        let [azimuth_size, slant_range_size] = reference.data.raster_size();
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
         let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -84,13 +84,13 @@ impl DelaunayWarpFunction {
             radar_coords_to_pixel_coords(zero_doppler, annotation)
         };
         let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
             let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
 
-            if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f32)
-                && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f32)
+            if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f32)
+                && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f32)
             {
                 let mapping = ExactMapping {
                     reference_coords: rc_ref,
@@ -266,7 +266,7 @@ mod tests {
             .expect("Could not log resampled_phase to Rerun");
 
         // Log the reference image amplitude
-        let ref_array = reference.data.array_data();
+        let ref_array = reference.data.array_f32();
         let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
         let ref_array_norm = ref_array.map(|c| c.norm());
         let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));

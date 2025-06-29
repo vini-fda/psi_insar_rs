@@ -24,7 +24,7 @@ pub fn compute_warp_function(
     secondary: &Sentinel1SlcBurst,
     dem: &DEM,
 ) -> Array2<[u8; 4]> {
-    let [azimuth_size, slant_range_size] = reference.data.raster_size();
+    let [slant_range_size, azimuth_size] = reference.data.raster_size();
     let ref_osh = reference.orbital_state_history();
     let sec_osh = secondary.orbital_state_history();
     let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -34,14 +34,14 @@ pub fn compute_warp_function(
         let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
         radar_coords_to_pixel_coords(zero_doppler, annotation)
     };
-    let mut rho = Array2::<[f32; 2]>::default((slant_range_size, azimuth_size));
-    for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+    let mut rho = Array2::<[f32; 2]>::default((azimuth_size, slant_range_size));
+    for (lat, lon) in dem.lat_lon_iter() {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
         let rc_ref = radar_coords(pos.into(), &ref_osh, &reference.metadata);
         let rc_sec = radar_coords(pos.into(), &sec_osh, &secondary.metadata);
 
-        if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f32)
-            && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f32)
+        if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f32)
+            && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f32)
         {
             let displacement = [rc_ref[0] - rc_sec[0], rc_ref[1] - rc_sec[1]];
             let i = rc_ref[0].floor() as usize;
@@ -117,13 +117,14 @@ mod tests {
         // Collect vertices and heights
         let mut vertices = Vec::new();
         let mut heights = Vec::new();
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             vertices.push([lon as f32, lat as f32, 0.0]);
             heights.push(height as f32);
         }
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {
@@ -170,7 +171,7 @@ mod tests {
         let mut vertices = Vec::new();
         let mut lons = Vec::new();
         let mut lats = Vec::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             vertices.push([lon as f32, lat as f32, 0.0 as f32]);
             lons.push(lon);
             lats.push(lat);
@@ -199,7 +200,8 @@ mod tests {
             .collect();
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {
@@ -282,7 +284,7 @@ mod tests {
         let mut vertices = Vec::new();
         let mut lons = Vec::new();
         let mut lats = Vec::new();
-        for (_, _, lat, lon, _) in dem.indexed_lat_lon_height() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = ref_osh.find_zero_doppler_state(pos.into());
             let [azimuth, slant_range] =
@@ -316,7 +318,8 @@ mod tests {
             .collect();
 
         // Create triangle indices for a grid
-        let (rows, cols) = dem.array_dim();
+        let rows = dem.rows();
+        let cols = dem.cols();
         let mut indices: Vec<[u32; 3]> = Vec::new();
         for i in 0..(rows - 1) {
             for j in 0..(cols - 1) {

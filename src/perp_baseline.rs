@@ -81,6 +81,7 @@
 // #   # )
 // #   # bperp_value = baseline_info['B_perpendicular_signed']
 
+use core::panic;
 use nalgebra::{Complex, Vector3};
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
@@ -189,7 +190,7 @@ pub fn theta_from_pixel_index(
     let mut ground_target_pos = Vector3::<f64>::zero();
     let (sat_pos, sat_vel) = &osh_primary.interp_pos_vel(radar_coords.time);
     let sat_vel_hat = sat_vel.normalize();
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+    for (lat, lon, height) in dem.lat_lon_height_iter() {
         ground_target_pos_geodetic = (lat, lon);
         let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
         let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
@@ -472,7 +473,7 @@ impl FlatEarthComponentsInterpolator {
         const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
         let sat_vel_hat = sat_vel.normalize();
         // 2D root finding to find the ground target position
-        for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+        for (lat, lon, height) in dem.lat_lon_height_iter() {
             let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
             let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
             let r = (ground_pos - sat_pos).norm();
@@ -522,7 +523,7 @@ pub fn flat_earth_dphi(
     const MAX_DISTANCE_TO_TARGET_DIFF: f64 = 20.0;
     let sat_vel_hat = sat_vel.normalize();
     // 2D root finding to find the ground target position
-    for (_, _, lat, lon, height) in dem.indexed_lat_lon_height() {
+    for (lat, lon, height) in dem.lat_lon_height_iter() {
         let ground_pos = Vector3::from(geodetic_to_ecef(lat, lon, height));
         let val = (ground_pos - sat_pos).dot(&sat_vel_hat).abs();
         let r = (ground_pos - sat_pos).norm();
@@ -592,7 +593,7 @@ impl HasPosition for WarpFunctionExactMapping {
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
     pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
-        let [azimuth_size, slant_range_size] = reference.data.raster_size();
+        let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
         let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -620,8 +621,8 @@ impl EnhancedDelaunayWarpFunction {
                 let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
                 let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
 
-                if (rc_ref[0] >= 0.0 && rc_ref[0] < slant_range_size as f64)
-                    && (rc_ref[1] >= 0.0 && rc_ref[1] < azimuth_size as f64)
+                if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
+                    && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
                 {
                     let mapping = WarpFunctionExactMapping {
                         reference_coords: rc_ref,
@@ -743,11 +744,6 @@ pub fn coregister_and_remove_flat_phase(
     let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
-    // The indices in the domain of the reference image
-    let indices = (0..ref_slant_range_dim)
-        .flat_map(|ref_rg| (0..ref_azimuth_dim).map(move |ref_az| [ref_az, ref_rg]));
-    let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
-
     let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
 
@@ -810,8 +806,9 @@ pub fn coregister_and_remove_flat_phase(
     let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
     for i in 0..ref_azimuth_dim {
         for j in 0..ref_slant_range_dim {
-            phase_diff[[i, j]] =
-                reference_img[[i, j]].arg() - coregistered_secondary_img[[i, j]].arg();
+            let s1 = reference_img[[i, j]];
+            let s2 = coregistered_secondary_img[[i, j]];
+            phase_diff[[i, j]] = (s1 * s2.conj()).arg();
         }
     }
 
@@ -887,7 +884,7 @@ pub fn coregister_and_remove_flat_phase(
                         *phase -= accumulated_dphi as f32;
 
                         let height =
-                            dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon);
+                            dem.get_height_at_lat_lon(ground_target_lat, ground_target_lon) as f64;
 
                         if let Some(current_height) = current_height {
                             let height_diff = height - current_height;
@@ -1138,5 +1135,78 @@ mod tests {
         ];
         let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
         println!("dem: {:?}", dem.corners_lat_lon());
+    }
+
+    #[test]
+    fn plot_warp_fn() {
+        init_logger();
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        )
+        .unwrap();
+        let [min_lat, max_lat, min_lon, max_lon] = &primary
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.05;
+        let offset_lon = 0.05;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let warp_fn = EnhancedDelaunayWarpFunction::new(&primary, &secondary, &dem);
+        let [ref_slant_range_dim, ref_azimuth_dim] = primary.data.raster_size();
+        let mut offsets = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+        const CHUNK_SIZE: usize = 256;
+        offsets
+            .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+            .into_par_iter()
+            .enumerate()
+            .for_each_init(
+                || warp_fn.triangulation.natural_neighbor(),
+                |nn, (chunk_idx, mut chunk)| {
+                    let az_offset = chunk_idx * CHUNK_SIZE;
+
+                    for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                        let ref_az = az_offset + i;
+
+                        for (ref_rg, val) in row.iter_mut().enumerate() {
+                            let ref_coords = [ref_az as f64, ref_rg as f64];
+                            // let u = match nn
+                            //     .interpolate(|v| v.data().secondary_coords[0], ref_coords.into())
+                            // {
+                            //     Some(v) => v - ref_coords[0],
+                            //     None => 0.0,
+                            // };
+                            let v = match nn
+                                .interpolate(|v| v.data().secondary_coords[1], ref_coords.into())
+                            {
+                                Some(v) => v - ref_coords[1],
+                                None => 0.0,
+                            };
+                            *val = v;
+                        }
+                    }
+                },
+            );
+        // let max = *img
+        //     .iter()
+        //     .max_by(|&a, &b| a.partial_cmp(b).unwrap())
+        //     .unwrap();
+        let rr = rerun::RecordingStreamBuilder::new("warp_fn_offsets")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let tensor = rerun::Tensor::try_from(offsets.clone()).expect("Unable to create tensor.");
+        rr.log("offsets", &tensor).expect("Unable to log tensor.");
+        let img = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, offsets).unwrap();
+        rr.log("offsets_img", &img).unwrap();
     }
 }
