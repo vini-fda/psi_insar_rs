@@ -645,7 +645,7 @@ impl ContinuousOrbitalStateHistory {
 
         // Step 2: Newton-Raphson iteration
         let mut t = t_guess;
-        for iter in 0..MAX_ITER {
+        for _ in 0..MAX_ITER {
             let f_val = f(t);
 
             if f_val.abs() < TOLERANCE {
@@ -980,11 +980,11 @@ mod manual_tests_satellite_orbit {
             let sat_pos = orbital_history.position[k];
             let vel = orbital_history.velocity[k];
             let time = orbital_history.time[k];
-            let look_rot3x3 = look_rotation_from_velocity_and_position(
-                vel.map(|c| c as f32),
-                sat_pos.map(|c| c as f32),
+            let time_nanos = time.timestamp_nanos_opt().unwrap();
+            rec.set_time(
+                "satellite_time",
+                rerun::TimeCell::from_timestamp_nanos_since_epoch(time_nanos),
             );
-            rec.set_time_nanos("satellite_time", time.timestamp_nanos_opt().unwrap());
 
             // log normals as arrows
             let mut normals = vec![];
@@ -1073,7 +1073,7 @@ mod manual_tests_satellite_orbit {
         const EARTH_RADIUS: f32 = 6_378_137.0;
         rec.log_static("universe", &rerun::ViewCoordinates::RIGHT_HAND_Z_UP())
             .unwrap();
-        let asset = rerun::Asset3D::from_file("earth.glb").unwrap();
+        let asset = rerun::Asset3D::from_file_path("earth.glb").unwrap();
 
         rec.log_static(
             "universe/earth",
@@ -1127,22 +1127,6 @@ mod manual_tests_satellite_orbit {
 
         rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
             .unwrap();
-    }
-
-    fn look_rotation_from_velocity_and_position(v: Vector3<f32>, p: Vector3<f32>) -> Matrix3<f32> {
-        let forward = Unit::new_normalize(v);
-        let radial = Unit::new_normalize(p);
-
-        // Remove component of radial in the direction of forward (Gram-Schmidt)
-        let up_raw = radial.into_inner();
-        let up = Unit::new_normalize(up_raw - forward.into_inner() * up_raw.dot(&forward));
-
-        // Right vector
-        let right = Unit::new_normalize(up.cross(&forward));
-
-        // Compose rotation matrix from right, up, forward as columns
-
-        Matrix3::from_columns(&[right.into_inner(), up.into_inner(), forward.into_inner()])
     }
 
     /// Constructs a rotation matrix that orients an object at `p_sat` to point toward `p_target`.
