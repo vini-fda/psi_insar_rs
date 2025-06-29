@@ -2,7 +2,6 @@ pub mod asf_burst_download;
 pub mod constants;
 pub mod coregistration;
 pub mod dem;
-pub mod dem_gdal;
 mod egm_2008;
 pub mod geocoding;
 pub mod geodesy;

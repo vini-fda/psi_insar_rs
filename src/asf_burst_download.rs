@@ -6,11 +6,9 @@
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use std::env;
-use std::fs::File;
-use std::io::{self, Read, Write, copy};
+use std::io::{self, Read};
 use std::path::Path;
 use ureq::{self, ResponseExt};
-use url::Url;
 
 /// List of Sentinel-1 bursts to download.
 /// The first element is the granule name, the second is the URL.
