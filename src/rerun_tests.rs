@@ -17,7 +17,10 @@ mod tests {
         geodesy::{geodetic_to_ecef, local_normal},
         interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
-        perp_baseline::{EnhancedDelaunayWarpFunction, perp_baseline},
+        perp_baseline::{
+            EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
+            perp_baseline,
+        },
         satellite_orbit::{
             OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
             zero_doppler_time,
@@ -876,5 +879,228 @@ mod tests {
         rr.log_static("mesh_rg_offsets", &mesh_rg_offsets).unwrap();
 
         log::info!("Done!");
+    }
+
+    #[test]
+    fn test_flat_earth_dphi() {
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+        let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        rr.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
+        let [rg_size, az_size] = primary.data.raster_size();
+        let data = Array2::<f64>::from_shape_fn((az_size, rg_size / 10), |(az_index, rg_index)| {
+            flat_earth_dphi(&primary, &secondary, az_index as f64, rg_index as f64, &dem)
+        });
+        let vector = data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase =
+                    (phase + std::f64::consts::PI) / (2.0 * std::f64::consts::PI);
+                cubehelix_colormap(normalized_phase as f32).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [rg_size as u32 / 10, az_size as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log_static("dphi", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn test_interpolated_flat_earth_dphi() {
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        )
+        .unwrap();
+        let dem = DEM::open_file("dem.tif");
+        let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let mut dem_corners = dem.corners_lat_lon().to_vec();
+        let first = dem_corners.first().unwrap();
+        dem_corners.push(*first);
+        rr.log(
+            "DEM Extent",
+            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .unwrap();
+        let interpolator =
+            FlatEarthComponentsInterpolator::from_grid_params(&primary, &secondary, &dem, 140, 20);
+        let wrap_phase = |phase: f64| {
+            phase - 2.0 * std::f64::consts::PI * (phase / (2.0 * std::f64::consts::PI)).floor()
+        };
+        let data = interpolator
+            .calculate_array()
+            .map(|phase| wrap_phase(*phase));
+        let data = data.slice(s![.., 0..data.dim().1 / 2]).to_owned();
+        let (az_size, rg_size) = data.dim();
+        let vector = data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase = phase / (2.0 * std::f64::consts::PI);
+                cubehelix_colormap(normalized_phase as f32).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [rg_size as u32, az_size as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log_static("dphi", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn test_interpolated_flat_earth_removal() {
+        env_logger::init();
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        )
+        .unwrap();
+        let [min_lat, max_lat, min_lon, max_lon] = &primary
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.05;
+        let offset_lon = 0.05;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let wrap_phase = |phase: f32| {
+            phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
+        };
+        let phase =
+            crate::perp_baseline::coregister_and_remove_flat_phase(&primary, &secondary, &dem)
+                .map(|phase| wrap_phase(*phase));
+        let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
+        let (az_size, rg_size) = phase.dim();
+        let vector = phase.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&phase| {
+                let normalized_phase = phase / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [rg_size as u32, az_size as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log_static("phase", &rr_image).unwrap();
+    }
+
+    #[test]
+    fn plot_warp_fn() {
+        env_logger::init();
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        )
+        .unwrap();
+        let [min_lat, max_lat, min_lon, max_lon] = &primary
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let offset_lat = 0.05;
+        let offset_lon = 0.05;
+        let bounds = [
+            min_lat - offset_lat,
+            max_lat + offset_lat,
+            min_lon - offset_lon,
+            max_lon + offset_lon,
+        ];
+        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let warp_fn = EnhancedDelaunayWarpFunction::new(&primary, &secondary, &dem);
+        let [ref_slant_range_dim, ref_azimuth_dim] = primary.data.raster_size();
+        let mut offsets = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
+        const CHUNK_SIZE: usize = 256;
+        offsets
+            .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+            .into_par_iter()
+            .enumerate()
+            .for_each_init(
+                || warp_fn.triangulation.natural_neighbor(),
+                |nn, (chunk_idx, mut chunk)| {
+                    let az_offset = chunk_idx * CHUNK_SIZE;
+
+                    for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                        let ref_az = az_offset + i;
+
+                        for (ref_rg, val) in row.iter_mut().enumerate() {
+                            let ref_coords = [ref_az as f64, ref_rg as f64];
+                            // let u = match nn
+                            //     .interpolate(|v| v.data().secondary_coords[0], ref_coords.into())
+                            // {
+                            //     Some(v) => v - ref_coords[0],
+                            //     None => 0.0,
+                            // };
+                            let v = match nn
+                                .interpolate(|v| v.data().secondary_coords[1], ref_coords.into())
+                            {
+                                Some(v) => v - ref_coords[1],
+                                None => 0.0,
+                            };
+                            *val = v;
+                        }
+                    }
+                },
+            );
+        // let max = *img
+        //     .iter()
+        //     .max_by(|&a, &b| a.partial_cmp(b).unwrap())
+        //     .unwrap();
+        let rr = rerun::RecordingStreamBuilder::new("warp_fn_offsets")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let tensor = rerun::Tensor::try_from(offsets.clone()).expect("Unable to create tensor.");
+        rr.log("offsets", &tensor).expect("Unable to log tensor.");
+        let img = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, offsets).unwrap();
+        rr.log("offsets_img", &img).unwrap();
     }
 }
