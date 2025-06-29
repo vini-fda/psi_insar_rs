@@ -883,7 +883,7 @@ mod manual_tests_satellite_orbit {
         let dem = DEM::open_file("dem.tif");
 
         let mut points = vec![];
-        for (lat, lon, height) in dem.lat_lon_height_iter() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let ground_target_pos = Vector3::<f64>::from(pos);
             let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
@@ -925,7 +925,7 @@ mod manual_tests_satellite_orbit {
         let dem = DEM::open_file("dem.tif");
 
         let mut points = vec![];
-        for (lat, lon, height) in dem.lat_lon_height_iter() {
+        for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
             let zero_doppler = osh.find_zero_doppler_state(pos.into());
             let [azimuth_idx, slant_range_idx] =

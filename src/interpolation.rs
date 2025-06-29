@@ -82,7 +82,3 @@ pub fn unit_second_derivative_interval_cubic_hermite_spline_interpolation(
     (h00_second_deriv * p_0 + h01_second_deriv * p_1) / (t_interval * t_interval)
         + (h10_second_deriv * m_0 + h11_second_deriv * m_1) / t_interval
 }
-
-fn print_vec(v: nalgebra::Vector3<f64>) {
-    println!("[{}, {}, {}]", v.x, v.y, v.z);
-}
