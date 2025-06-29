@@ -1,7 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use std::f32::NAN;
-
     use nalgebra::Vector3;
     use ndarray::{Array1, Array2, Axis, s};
     use ndarray_npy::WriteNpyExt;
@@ -820,9 +818,7 @@ mod tests {
         let rows = dem.rows() / FACTOR_ROWS;
         let cols = dem.cols() / FACTOR_COLS;
         let n = rows * cols;
-        log::info!(
-            "DEM sampled length: {n}, sampled dimensions = {rows}, {cols}"
-        );
+        log::info!("DEM sampled length: {n}, sampled dimensions = {rows}, {cols}");
         let mut delta_azimuth_coords = Vec::with_capacity(n);
         let mut delta_slant_range_coords = Vec::with_capacity(n);
         let mut vertices = Vec::with_capacity(n);
@@ -840,8 +836,8 @@ mod tests {
                     delta_azimuth_coords.push((rc_sec[0] - rc_ref[0]) as f32);
                     delta_slant_range_coords.push((rc_sec[1] - rc_ref[1]) as f32);
                 } else {
-                    delta_azimuth_coords.push(NAN);
-                    delta_slant_range_coords.push(NAN);
+                    delta_azimuth_coords.push(f32::NAN);
+                    delta_slant_range_coords.push(f32::NAN);
                 }
                 vertices.push([lon as f32, lat as f32, 0.0]);
             }
