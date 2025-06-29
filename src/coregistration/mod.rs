@@ -1,6 +1,6 @@
 use std::f32;
 
-use nalgebra::{ComplexField, Vector3};
+use nalgebra::Vector3;
 use ndarray::Array2;
 
 use crate::{
@@ -99,7 +99,7 @@ pub fn vector_to_rgba_u32(vector: &[f32; 2]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{Dimension, s};
+    use ndarray::s;
 
     use crate::{
         dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcBurst,
@@ -261,7 +261,7 @@ mod tests {
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let (rows, cols) = rho.dim();
-        let (v, offset) = rho.into_raw_vec_and_offset();
+        let (v, _) = rho.into_raw_vec_and_offset();
         let img = rerun::Image::from_rgba32(v.as_flattened(), [cols as u32, rows as u32]);
         rr.log("warp_fn", &img).expect("Could not finish recording");
     }

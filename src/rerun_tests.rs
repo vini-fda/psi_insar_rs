@@ -800,7 +800,7 @@ mod tests {
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
-        let dem = DEM::open_file("dem90.tif");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram

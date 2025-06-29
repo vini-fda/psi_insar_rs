@@ -176,15 +176,15 @@ mod tests {
         )?;
 
         // For dimension 1 (columns), average across rows
-        // for col in 0..cols {
-        //     let col_avg = spectrum_1.column(col).map(|&x| x.norm_sqr()).sum() / rows as f32;
+        for col in 0..cols {
+            let col_avg = spectrum_1.column(col).map(|&x| x.norm_sqr()).sum() / rows as f32;
 
-        //     // Map column index to FFT frequency ordering
-        //     let freq_idx = if col <= cols / 2 { col } else { col - cols };
+            // Map column index to FFT frequency ordering
+            let freq_idx = if col <= cols / 2 { col } else { col - cols };
 
-        //     rec.set_time_sequence("col", freq_idx as i64);
-        //     rec.log("fft_dim1", &rerun::Scalar::new(col_avg as f64))?;
-        // }
+            rec.set_time_sequence("col", freq_idx as i64);
+            rec.log("fft_dim1", &rerun::Scalars::new([col_avg as f64]))?;
+        }
 
         Ok(())
     }

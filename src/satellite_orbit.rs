@@ -849,8 +849,7 @@ mod manual_tests_satellite_orbit {
 
     #[test]
     fn read_orbit_list() {
-        let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
-        // println!("orbitList = {:?}", orbit_list);
+        read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
     }
 
     #[test]

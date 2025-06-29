@@ -19,7 +19,6 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
         Initial,
         Increasing,
         Decreasing,
-        LayoverDetected,
     }
 
     // Helper function to get radar coordinates for a point
@@ -170,9 +169,6 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
                 last_i = Some(i);
                 last_j = Some(j);
             }
-            OrderingState::LayoverDetected => {
-                return true;
-            }
         }
 
         // Check slant range dimension
@@ -283,9 +279,6 @@ pub fn check_for_layover(burst: &Sentinel1SlcBurst, dem: &DEM) -> bool {
                 }
                 last_lon = Some(lon);
                 last_slant_range_idx = Some(slant_range_idx);
-            }
-            OrderingState::LayoverDetected => {
-                return true;
             }
         }
     }
