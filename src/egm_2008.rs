@@ -837,9 +837,7 @@ mod tests {
             while longitude <= 180.0 {
                 assert!(
                     geoid_height(latitude, longitude).is_ok(),
-                    "geoid_height({}, {}) caused a crash",
-                    latitude,
-                    longitude
+                    "geoid_height({latitude}, {longitude}) caused a crash"
                 );
                 longitude += 0.09;
             }
@@ -859,9 +857,7 @@ mod tests {
             let result = geoid_height(lat, lon);
             assert!(
                 result.is_err(),
-                "Expected an error computing height for ({}, {})",
-                lat,
-                lon
+                "Expected an error computing height for ({lat}, {lon})"
             );
             if let Err(actual) = result {
                 assert_eq!(expected, actual, "Got a different error than expected");
@@ -894,15 +890,12 @@ mod tests {
             let result = geoid_height(lat, lon);
             assert!(
                 result.is_ok(),
-                "could not calculate geoid height at ({}, {})",
-                lat,
-                lon
+                "could not calculate geoid height at ({lat}, {lon})"
             );
             if let Ok(actual) = result {
                 assert_eq!(
                     actual, expected,
-                    "got unexpected height at ({}, {})",
-                    lat, lon
+                    "got unexpected height at ({lat}, {lon})"
                 );
             }
         }

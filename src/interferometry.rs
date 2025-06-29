@@ -149,7 +149,7 @@ pub fn coregister_and_remove_flat_phase(
         log::info!("Time taken: {:?}", end_time - start_time);
 
         let secondary_name = &secondary.granule_id.raw_filename;
-        let file = std::fs::File::create(format!("phase_diff_{}.npy", secondary_name)).unwrap();
+        let file = std::fs::File::create(format!("phase_diff_{secondary_name}.npy")).unwrap();
         phase_diff
             .write_npy(file)
             .expect("Failed to write npy file");
@@ -224,7 +224,7 @@ mod tests {
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
-        println!("Bounding box: {:?}", bounding_box);
+        println!("Bounding box: {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         coregister_and_remove_flat_phase(&reference, &secondaries, &dem);
         // let rr = rerun::RecordingStreamBuilder::new("test_stack_interferograms")
@@ -277,7 +277,7 @@ mod tests {
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
-        println!("Bounding box: {:?}", bounding_box);
+        println!("Bounding box: {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 

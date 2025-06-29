@@ -171,8 +171,7 @@ mod tests {
         rec.log(
             "dc_center",
             &rerun::TextLog::new(format!(
-                "DC center row: {}, value: {}",
-                dc_center_row, dc_center
+                "DC center row: {dc_center_row}, value: {dc_center}"
             )),
         )?;
 

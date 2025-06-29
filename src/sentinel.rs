@@ -5,7 +5,6 @@ use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::{ContinuousOrbitalStateHistory, OrbitalStateHistory};
 use crate::slc_image::SlcImage;
 use chrono::{DateTime, Utc};
-use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::AsRef;
@@ -168,12 +167,12 @@ impl Sentinel1SlcBurst {
 
         // Find file matching pattern
         let entries = std::fs::read_dir(&measurement_dir)
-            .map_err(|e| format!("Failed to read measurement directory: {}", e))?;
+            .map_err(|e| format!("Failed to read measurement directory: {e}"))?;
 
         let mut granule_str = None;
         for entry_result in entries {
             let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
             let file_name = entry.file_name();
             if let Some(file_name) = file_name.to_str() {
                 if file_name.ends_with(".tiff") || file_name.ends_with(".tif") {
@@ -190,7 +189,7 @@ impl Sentinel1SlcBurst {
         let granule_str = granule_str.unwrap();
 
         let granule_id =
-            Sentinel1TIFFFileName::parse(&granule_str).map_err(|e| format!("ERROR: {}", e))?;
+            Sentinel1TIFFFileName::parse(&granule_str).map_err(|e| format!("ERROR: {e}"))?;
 
         // Construct paths to necessary files
         let calibration_path = Self::find_calibration_xml(directory, &granule_str)?;
@@ -254,11 +253,11 @@ impl Sentinel1SlcBurst {
 
         // Find file matching pattern
         let entries = std::fs::read_dir(&calibration_dir)
-            .map_err(|e| format!("Failed to read calibration directory: {}", e))?;
+            .map_err(|e| format!("Failed to read calibration directory: {e}"))?;
 
         for entry_result in entries {
             let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -302,11 +301,11 @@ impl Sentinel1SlcBurst {
 
         // Find file matching pattern
         let entries = std::fs::read_dir(&noise_dir)
-            .map_err(|e| format!("Failed to read calibration directory: {}", e))?;
+            .map_err(|e| format!("Failed to read calibration directory: {e}"))?;
 
         for entry_result in entries {
             let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -350,11 +349,11 @@ impl Sentinel1SlcBurst {
 
         // Find file matching pattern
         let entries = std::fs::read_dir(&annotation_dir)
-            .map_err(|e| format!("Failed to read annotation directory: {}", e))?;
+            .map_err(|e| format!("Failed to read annotation directory: {e}"))?;
 
         for entry_result in entries {
             let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == pattern {
@@ -399,11 +398,11 @@ impl Sentinel1SlcBurst {
 
         // Find file matching pattern
         let entries = std::fs::read_dir(&measurement_dir)
-            .map_err(|e| format!("Failed to read measurement directory: {}", e))?;
+            .map_err(|e| format!("Failed to read measurement directory: {e}"))?;
 
         for entry_result in entries {
             let entry =
-                entry_result.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
             if let Some(file_name) = entry.file_name().to_str() {
                 // Check for both possible TIFF extensions

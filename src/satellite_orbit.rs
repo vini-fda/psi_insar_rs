@@ -841,7 +841,7 @@ mod manual_tests_satellite_orbit {
             Ok(val) => val,
             Err(err) => {
                 let path = err.path().to_string();
-                panic!("Error parsing XML\nError path: {}\nError: {}", path, err);
+                panic!("Error parsing XML\nError path: {path}\nError: {err}");
             }
         };
         slc_product_annotation.general_annotation.orbit_list
@@ -866,7 +866,7 @@ mod manual_tests_satellite_orbit {
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
 
         let zero_doppler = osh.find_zero_doppler_state(pos.into());
-        println!("Zero-Doppler time = {:?}", zero_doppler);
+        println!("Zero-Doppler time = {zero_doppler:?}");
         let [row, col]: [f32; 2] = radar_coords_to_pixel_coords(zero_doppler, &annotation);
         println!("Found pixel at {row}, {col}");
     }

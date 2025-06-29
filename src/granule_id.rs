@@ -125,7 +125,7 @@ impl std::str::FromStr for IWSwath {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_str(s).ok_or_else(|| format!("Invalid sub-swath: {}", s))
+        Self::from_str(s).ok_or_else(|| format!("Invalid sub-swath: {s}"))
     }
 }
 
@@ -676,8 +676,7 @@ impl Subswath {
     pub fn new(value: u8) -> Result<Self, GranuleIdError> {
         if !(1..=5).contains(&value) {
             return Err(GranuleIdError::InvalidSubswath(format!(
-                "Invalid subswath: {}",
-                value
+                "Invalid subswath: {value}"
             )));
         }
         Ok(Subswath(value))
@@ -765,8 +764,8 @@ mod tests {
     fn test_display() {
         let granule_id = "S1A_IW_SLC__1SDV_20180101T103955_20180101T104022_019964_021FFD_0A9F";
         let parsed = Sentinel1GranuleId::parse(granule_id).unwrap();
-        let display_str = format!("{}", parsed);
-        println!("{}", display_str);
+        let display_str = format!("{parsed}");
+        println!("{display_str}");
 
         assert!(display_str.starts_with("S1A_IW_SLC_"));
         assert!(display_str.contains("1SDV"));

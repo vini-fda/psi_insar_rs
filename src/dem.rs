@@ -47,14 +47,13 @@ impl DEM {
         let api_key =
             std::env::var("OPENTOPOGRAPHY_API_KEY").expect("OPENTOPOGRAPHY_API_KEY not set");
         let url = format!(
-            "https://portal.opentopography.org/API/globaldem?demtype={}&south={}&north={}&west={}&east={}&outputFormat=GTiff&API_Key={}",
-            dem_type, min_lat, max_lat, min_lon, max_lon, api_key
+            "https://portal.opentopography.org/API/globaldem?demtype={dem_type}&south={min_lat}&north={max_lat}&west={min_lon}&east={max_lon}&outputFormat=GTiff&API_Key={api_key}"
         );
         let response = ureq::get(url).call().expect("Failed to download DEM");
         if response.status() == 200 {
             let body = response.into_body();
             let mut reader = body.into_reader();
-            let file_path = std::env::temp_dir().join(format!("dem_{}.tif", dem_type));
+            let file_path = std::env::temp_dir().join(format!("dem_{dem_type}.tif"));
             let mut dem_file = std::fs::File::create(file_path.clone()).unwrap();
             std::io::copy(&mut reader, &mut dem_file).unwrap();
             Self::open_file(file_path)

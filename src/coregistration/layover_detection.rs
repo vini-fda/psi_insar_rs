@@ -311,11 +311,11 @@ mod tests {
 
         println!("\nChecking layover in reference image...");
         let ref_layover = check_for_layover(&reference, &dem);
-        println!("Reference image layover detected: {}\n", ref_layover);
+        println!("Reference image layover detected: {ref_layover}\n");
 
         println!("Checking layover in secondary image...");
         let sec_layover = check_for_layover(&secondary, &dem);
-        println!("Secondary image layover detected: {}\n", sec_layover);
+        println!("Secondary image layover detected: {sec_layover}\n");
 
         // If layover is detected in either image, we should fail the test
         assert!(

@@ -30,7 +30,7 @@ mod tests {
 
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
         let name = &burst.granule_id.raw_filename;
-        let log_name = format!("slc_amplitude_{}", name);
+        let log_name = format!("slc_amplitude_{name}");
         let array = burst.data.array_f32();
         let (_, cols) = array.dim();
         let mut amplitude = array
@@ -108,12 +108,12 @@ mod tests {
             Vector3::new(-975242.9191498039, -5932367.375945898, 2129940.582817596);
         let zero_doppler1 = osh1.find_zero_doppler_state(ground_target_pos);
         let zero_doppler2 = osh2.find_zero_doppler_state(ground_target_pos);
-        println!("zero doppler 1 = {:?}", zero_doppler1);
-        println!("zero doppler 1 = {:?}", zero_doppler2);
+        println!("zero doppler 1 = {zero_doppler1:?}");
+        println!("zero doppler 1 = {zero_doppler2:?}");
         let rcoords1: [f32; 2] = radar_coords_to_pixel_coords(zero_doppler1, &primary.metadata);
         let rcoords2: [f32; 2] = radar_coords_to_pixel_coords(zero_doppler2, &secondary.metadata);
-        println!("radar coords 1 = {:?}", rcoords1);
-        println!("radar coords 2 = {:?}", rcoords2);
+        println!("radar coords 1 = {rcoords1:?}");
+        println!("radar coords 2 = {rcoords2:?}");
 
         // Dist to target at t0'
         let start_time = secondary.metadata.ads_header.start_time;
@@ -191,7 +191,7 @@ mod tests {
             let points = rerun::Points2D::new(points)
                 .with_colors(dem.vertex_colors())
                 .with_radii([10.0]);
-            rr.log_static(format!("backgeocoded_points/{}", burst_name), &points)
+            rr.log_static(format!("backgeocoded_points/{burst_name}"), &points)
                 .unwrap();
 
             // Log ground control points
@@ -210,7 +210,7 @@ mod tests {
                 points.push([slant_range_idx, azimuth_idx]);
             }
             let points = rerun::Points2D::new(points).with_radii([30.0]);
-            rr.log_static(format!("backgeocoded_gcps/{}", burst_name), &points)
+            rr.log_static(format!("backgeocoded_gcps/{burst_name}"), &points)
                 .unwrap();
 
             // GCPs on the map
@@ -263,14 +263,14 @@ mod tests {
                         + std::time::Duration::from_nanos((i * dt_nanos) as u64),
                 );
                 rr.log(
-                    format!("sat_pos_{}", burst_id),
+                    format!("sat_pos_{burst_id}"),
                     &rerun::Points3D::new([pos_f32]),
                 )
                 .expect("Unable to log sat pos");
                 let arrow_vel = rerun::Arrows3D::from_vectors([vel_f32]).with_origins([pos_f32]);
-                rr.log(format!("sat_vel_{}", burst_id), &arrow_vel).unwrap();
+                rr.log(format!("sat_vel_{burst_id}"), &arrow_vel).unwrap();
                 rr.log(
-                    format!("sat_vel_scalar_{}", burst_id),
+                    format!("sat_vel_scalar_{burst_id}"),
                     &rerun::Scalars::new([vel.norm()]),
                 )
                 .expect("Unable to log scalar");
@@ -279,7 +279,7 @@ mod tests {
 
             let sat_trajectory = rerun::LineStrip3D::from_iter(sat_pos);
             rr.log_static(
-                format!("Satellite trajectory {}", burst_id),
+                format!("Satellite trajectory {burst_id}"),
                 &rerun::LineStrips3D::new([sat_trajectory]),
             )
             .expect("Unable to log sat trajectory");
@@ -291,7 +291,7 @@ mod tests {
                 .map(|p| p.map(|x| x as f32).data.0[0])
                 .collect::<Vec<_>>();
             rr.log_static(
-                format!("Satellite position original points {}", burst_id),
+                format!("Satellite position original points {burst_id}"),
                 &rerun::Points3D::new(sat_points),
             )
             .expect("Unable to log sat points");
@@ -328,7 +328,7 @@ mod tests {
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
-        println!("Bounding box: {:?}", bounding_box);
+        println!("Bounding box: {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
@@ -510,7 +510,7 @@ mod tests {
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
-        println!("Bounding box: {:?}", bounding_box);
+        println!("Bounding box: {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
@@ -821,10 +821,7 @@ mod tests {
         let cols = dem.cols() / FACTOR_COLS;
         let n = rows * cols;
         log::info!(
-            "DEM sampled length: {}, sampled dimensions = {}, {}",
-            n,
-            rows,
-            cols
+            "DEM sampled length: {n}, sampled dimensions = {rows}, {cols}"
         );
         let mut delta_azimuth_coords = Vec::with_capacity(n);
         let mut delta_slant_range_coords = Vec::with_capacity(n);
@@ -864,7 +861,7 @@ mod tests {
                 triangle_indices.push([a, d, c]);
             }
         }
-        log::info!("max_index = {}", max_index);
+        log::info!("max_index = {max_index}");
         let colors_delta_azimuth_coords = turbo_colorized_values(&delta_azimuth_coords);
         let colors_delta_slant_range_coords = turbo_colorized_values(&delta_slant_range_coords);
 

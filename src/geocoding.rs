@@ -316,11 +316,7 @@ mod tests {
         assert_eq!(
             (dx, dy),
             (offset_rows as i32, offset_cols as i32),
-            "Expected offset ({}, {}) but got ({}, {})",
-            offset_rows,
-            offset_cols,
-            dx,
-            dy
+            "Expected offset ({offset_rows}, {offset_cols}) but got ({dx}, {dy})"
         );
     }
 }

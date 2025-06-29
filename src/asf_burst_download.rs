@@ -111,7 +111,7 @@ impl AsfBurstDownloader {
     pub fn new(username: &str, password: &str) -> Self {
         let auth_header = format!(
             "Basic {}",
-            BASE64_STANDARD.encode(format!("{}:{}", username, password))
+            BASE64_STANDARD.encode(format!("{username}:{password}"))
         );
         AsfBurstDownloader {
             agent: ureq::agent(),
@@ -131,7 +131,7 @@ impl AsfBurstDownloader {
     /// Result indicating success or the reason for failure
     pub fn download_file(&self, url: &str, output_path: &Path) -> Result<(), AsfDownloadError> {
         // 1. Initial request to the target URL to see if we get redirected to login
-        println!("Attempting initial access to: {}", url);
+        println!("Attempting initial access to: {url}");
         let initial_resp = self.agent.get(url).call()?;
         let current_url = initial_resp.get_uri().to_string();
         let status_code = initial_resp.status();
@@ -139,7 +139,7 @@ impl AsfBurstDownloader {
         // Check if we were redirected to a URS login page
         // or if we received the file directly
         let download_url = if current_url.contains("urs.earthdata.nasa.gov") {
-            println!("Redirected to Earthdata Login page: {}", current_url);
+            println!("Redirected to Earthdata Login page: {current_url}");
 
             let resp = self
                 .agent
@@ -149,16 +149,15 @@ impl AsfBurstDownloader {
 
             resp.get_uri().to_string()
         } else if status_code == 200 {
-            println!("Received file directly: {}", current_url);
+            println!("Received file directly: {current_url}");
             current_url
         } else {
             // This path means initial request was not to URS, and it wasn't recognized as a direct small response.
             // It might be an HTML page from ASF that isn't the login page.
             println!(
-                "Initial request to {} did not redirect to URS and doesn't look like a direct file. It might be an unexpected page from ASF. Current URL: {}",
-                url, current_url
+                "Initial request to {url} did not redirect to URS and doesn't look like a direct file. It might be an unexpected page from ASF. Current URL: {current_url}"
             );
-            println!("STATUS CODE: {}", status_code);
+            println!("STATUS CODE: {status_code}");
             // Potentially, this could be an error page from ASF itself.
             // The download attempt later will clarify.
             // The original `else` branch here would throw "Missing redirect_uri".
@@ -166,8 +165,7 @@ impl AsfBurstDownloader {
             // However, if `current_url` is not a URS URL, then `redirect_uri` wouldn't be expected here.
             // This part of the logic might need refinement based on actual non-URS initial responses.
             return Err(AsfDownloadError::AuthenticationError(format!(
-                "Initial request did not redirect to URS login, but was not recognized as a direct file/small error. Current URL: {}. This path indicates an issue in the expected auth flow.",
-                current_url
+                "Initial request did not redirect to URS login, but was not recognized as a direct file/small error. Current URL: {current_url}. This path indicates an issue in the expected auth flow."
             )));
         };
 
@@ -205,7 +203,7 @@ mod tests {
 
         let downloader = AsfBurstDownloader::new_with_env_auth().unwrap();
         for (name, url) in VALUES {
-            let output_filename = format!("test_download_{}", name);
+            let output_filename = format!("test_download_{name}");
             let output_path = Path::new(&output_filename);
 
             println!(

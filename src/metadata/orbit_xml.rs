@@ -224,7 +224,7 @@ where
     let s = s.trim_end_matches('0').trim_end_matches('.');
 
     // Parse with chrono (assumes full seconds or microsecond precision)
-    Ok(DateTime::parse_from_rfc3339(&format!("{}Z", s))
+    Ok(DateTime::parse_from_rfc3339(&format!("{s}Z"))
         .map_err(de::Error::custom)?
         .with_timezone(&Utc))
 }
@@ -247,6 +247,6 @@ mod tests {
         let xml_content = include_str!("test_data/orbit_example.xml");
         let orbit: EarthExplorerFile = from_str(xml_content).expect("Failed to parse orbit XML");
         let osv = &orbit.data_block.list_of_osvs.osv[0];
-        println!("First OSV = {:?}", osv);
+        println!("First OSV = {osv:?}");
     }
 }

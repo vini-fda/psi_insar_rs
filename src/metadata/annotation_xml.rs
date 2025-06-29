@@ -530,7 +530,7 @@ impl std::str::FromStr for ReferenceFrame {
             "GM2000" => Ok(ReferenceFrame::GM2000),
             "GCRF" => Ok(ReferenceFrame::GCRF),
             "ITRF" => Ok(ReferenceFrame::ITRF),
-            _ => Err(format!("Unknown reference frame: {}", input)),
+            _ => Err(format!("Unknown reference frame: {input}")),
         }
     }
 }
@@ -562,8 +562,7 @@ impl<'de> Deserialize<'de> for ReferenceFrame {
             "GCRF" => Ok(ReferenceFrame::GCRF),
             "ITRF" => Ok(ReferenceFrame::ITRF),
             _ => Err(serde::de::Error::custom(format!(
-                "Unknown reference frame: {}",
-                frame_str
+                "Unknown reference frame: {frame_str}"
             ))),
         }
     }
@@ -1594,7 +1593,7 @@ mod tests {
             Ok(_) => (),
             Err(err) => {
                 let path = err.path().to_string();
-                panic!("Error parsing XML\nError path: {}\nError: {}", path, err);
+                panic!("Error parsing XML\nError path: {path}\nError: {err}");
             }
         }
     }
