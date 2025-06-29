@@ -12,6 +12,7 @@ use ureq::{self, ResponseExt};
 
 /// List of Sentinel-1 bursts to download.
 /// The first element is the granule name, the second is the URL.
+#[allow(dead_code)]
 const VALUES: [(&str, &str); 7] = [
     (
         "S1_305967_IW3_20150916T122546_VV_8302-BURST",
