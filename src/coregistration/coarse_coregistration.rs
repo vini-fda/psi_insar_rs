@@ -25,7 +25,7 @@ impl CoarseCoregistration {
     /// Create a new instance of `CoregistrationParams`, enforcing valid values.
     ///
     /// # Arguments
-    /// - `k`: Half-side of the kernel. Must be > 0.
+    /// - `k`: Half-side of the kernel. Must be ≥ 1.
     /// - `search_size`: Size of the search window. Must be ≥ 1.
     ///
     /// # Returns
@@ -44,18 +44,18 @@ impl CoarseCoregistration {
     }
 
     /// Estimate integer-valued coarse offset `(Δx, Δy)` that maximizes the normalized
-    /// cross-correlation (NCC) between a fixed kernel of the `secondary_image`
-    /// and a sliding window in the `reference_image`.
+    /// cross-correlation (NCC) between a fixed kernel of the `reference_image`
+    /// and a sliding window in the `secondary_image`.
     ///
     /// The objective is to solve:
     ///
     /// ```text
-    /// argmax_{(i,j)} Re ⟨R_{i,j}, S⟩
+    /// argmax_{(i,j)} Re ⟨R, S_{i,j}⟩
     /// ```
     ///
     /// where:
-    /// - `R_{i,j}` is a `KERNEL_SIZE × KERNEL_SIZE` patch of the reference image centered at offset `(i, j)`
-    /// - `S` is a fixed patch from the secondary image
+    /// - `R` is a fixed patch from the reference image
+    /// - `S_{i,j}` is a `KERNEL_SIZE × KERNEL_SIZE` patch of the secondary image centered at offset `(i, j)`
     /// - `⟨·,·⟩` denotes the Hermitian inner product on ℂⁿ
     ///
     /// # Mathematical Notes
@@ -79,14 +79,14 @@ impl CoarseCoregistration {
     /// or, more rigorously, the displacement `(Δx, Δy)` maximizes the spatial cross-correlation:
     ///
     /// ```math
-    /// (\Delta x, \Delta y) = \arg\max_{(i, j) \in \mathcal{W}} \left| \sum_{(u,v) \in \mathcal{K}} \overline{R[u + i, v + j]} \cdot S[u, v] \right|^2
+    /// (\Delta x, \Delta y) = \arg\max_{(i, j) \in \mathcal{W}} \left| \sum_{(u,v) \in \mathcal{K}} \overline{S[u + i, v + j]} \cdot R[u, v] \right|^2
     /// ```
     ///
     /// where:
-    /// - `R` is the reference image,
-    /// - `S` is the patch extracted from the secondary image,
+    /// - `R` is the patch extracted from the reference image,
+    /// - `S` is the secondary image,
     /// - `𝒦` is the kernel domain (a square of side `2k + 1`),
-    /// - `𝒲` is the search window domain in the reference image.
+    /// - `𝒲` is the search window domain in the secondary image.
     ///
     /// # Panics
     ///
@@ -106,18 +106,18 @@ impl CoarseCoregistration {
         let (rows1, cols1) = reference_image.dim();
         let (rows2, cols2) = secondary_image.dim();
         // Preliminary checks
-        assert!(rows1 >= search_size + 2 * k, "Reference image too small.");
-        assert!(cols1 >= search_size + 2 * k, "Reference image too small.");
-        assert!(rows2 >= kernel_size, "Secondary image too small.");
-        assert!(cols2 >= kernel_size, "Secondary image too small.");
+        assert!(rows1 >= search_size + 2 * k, "Secondary image too small.");
+        assert!(cols1 >= search_size + 2 * k, "Secondary image too small.");
+        assert!(rows2 >= kernel_size, "Reference image too small.");
+        assert!(cols2 >= kernel_size, "Reference image too small.");
 
-        // Patch offsets (in secondary image):
-        let offset_rows2 = (rows2 - kernel_size) / 2;
-        let offset_cols2 = (cols2 - kernel_size) / 2;
+        // Search window offsets (in secondary image):
+        let offset_rows2 = (rows2 - search_size) / 2;
+        let offset_cols2 = (cols2 - search_size) / 2;
         let mut correlation = Array2::<Complex32>::zeros((search_size, search_size));
-        // Search window offsets (in reference image):
-        let offset_rows1 = (rows1 - search_size) / 2;
-        let offset_cols1 = (cols1 - search_size) / 2;
+        // Patch offsets (in reference image):
+        let offset_rows1 = (rows1 - kernel_size) / 2;
+        let offset_cols1 = (cols1 - kernel_size) / 2;
         self.compute_correlation_naive(
             &mut correlation,
             reference_image,
@@ -141,16 +141,21 @@ impl CoarseCoregistration {
             }
         }
 
-        let delta_x = (offset_rows2 as i32) - (max_x + offset_rows1 - k) as i32;
-        let delta_y = (offset_cols2 as i32) - (max_y + offset_cols1 - k) as i32;
+        // Now we can obtain the offsets of the patch on the secondary image
+        // which maximizes the correlation of the secondary image with the reference image patch
+        let max_patch_offset_rows = max_x + offset_rows2 - k;
+        let max_patch_offset_cols = max_y + offset_cols2 - k;
+
+        let delta_x = (max_patch_offset_rows - offset_rows1) as i32;
+        let delta_y = (max_patch_offset_cols - offset_cols1) as i32;
         let offsets = (delta_x, delta_y);
         let ref_image_range = [
-            offset_rows1 - k + max_x..offset_rows1 - k + max_x + kernel_size,
-            offset_cols1 - k + max_y..offset_cols1 - k + max_y + kernel_size,
+            offset_rows1..offset_rows1 + kernel_size,
+            offset_cols1..offset_cols1 + kernel_size,
         ];
         let sec_image_range = [
-            offset_rows2..offset_rows2 + kernel_size,
-            offset_cols2..offset_cols2 + kernel_size,
+            max_patch_offset_rows..max_patch_offset_rows + kernel_size,
+            max_patch_offset_cols..max_patch_offset_cols + kernel_size,
         ];
         CoregistrationResult {
             offsets,
@@ -165,8 +170,8 @@ impl CoarseCoregistration {
     /// # Arguments
     ///
     /// * `out` - A mutable 2D array (must be of shape `[search_size, search_size]`) where the correlation result will be stored.
-    /// * `reference_image` - The primary complex-valued 2D image.
-    /// * `secondary_image` - The secondary image to compare against, with the kernel extracted from its center.
+    /// * `reference_image` - The primary complex-valued 2D image, with the kernel extracted from its center.
+    /// * `secondary_image` - The secondary image to compare against.
     ///
     /// # Panics
     ///
@@ -198,86 +203,12 @@ impl CoarseCoregistration {
                 let mut acc = Complex32::new(0.0, 0.0);
                 for dx in 0..kernel_size {
                     for dy in 0..kernel_size {
-                        let ref_val =
-                            reference_image[[x + dx + offset_rows1 - k, y + dy + offset_cols1 - k]];
-                        let sec_val = secondary_image[[dx + offset_rows2, dy + offset_cols2]];
-                        acc += ref_val.conj() * sec_val;
+                        let ref_val = reference_image[[dx + offset_rows1, dy + offset_cols1]];
+                        let sec_val =
+                            secondary_image[[x + dx + offset_rows2 - k, y + dy + offset_cols2 - k]];
+                        acc += sec_val.conj() * ref_val;
                     }
                 }
-                out[[x, y]] = acc;
-            }
-        }
-    }
-
-    /// Computes the coarse cross-correlation between a reference and secondary image using
-    /// fast memory-aware access patterns.
-    ///
-    /// # Assumptions
-    /// - The images are large enough to extract the required patches based on the configured `k`.
-    /// - The output array must be pre-allocated with shape `(search_size, search_size)`.
-    /// - This implementation assumes that the user is **not memory-bound**, and the kernel and
-    ///   search windows are **small relative to the full image size**.
-    ///
-    /// # Performance
-    /// This method is optimized for CPU cache locality and vectorization. It extracts the kernel
-    /// and search patches as contiguous array slices, significantly improving access speed by
-    /// avoiding scattered indexing. The compiler can more effectively apply loop unrolling and
-    /// SIMD operations in the inner loop.
-    ///
-    /// # Arguments
-    /// - `out`: Mutable 2D array to hold the correlation result. Must match `(search_size, search_size)`.
-    /// - `reference_image`: The full reference image containing the target patch in the center.
-    /// - `secondary_image`: The full secondary image containing the kernel patch in the center.
-    ///
-    /// # Panics
-    /// Panics if `out.dim()` does not match `(search_size, search_size)`.
-    #[inline(always)]
-    pub fn compute_correlation_optimized(
-        &self,
-        out: &mut Array2<Complex32>,
-        reference_image: &Array2<Complex32>,
-        secondary_image: &Array2<Complex32>,
-        offset_rows1: usize,
-        offset_cols1: usize,
-        offset_rows2: usize,
-        offset_cols2: usize,
-    ) {
-        let CoarseCoregistration {
-            k,
-            kernel_size,
-            search_size,
-            ..
-        } = *self;
-
-        // Compute the center kernel slice from secondary_image
-        let kernel = secondary_image
-            .slice(s![
-                offset_rows2..offset_rows2 + kernel_size,
-                offset_cols2..offset_cols2 + kernel_size
-            ])
-            .to_owned();
-
-        // Precompute the full region needed from reference_image
-        let ref_patch = reference_image
-            .slice(s![
-                offset_rows1 - k..offset_rows1 - k + search_size + kernel_size,
-                offset_cols1 - k..offset_cols1 - k + search_size + kernel_size
-            ])
-            .to_owned();
-
-        for x in 0..search_size {
-            for y in 0..search_size {
-                let mut acc = Complex32::new(0.0, 0.0);
-
-                // Element-wise conj multiplication and accumulation
-                for dx in 0..kernel_size {
-                    for dy in 0..kernel_size {
-                        let ref_val = ref_patch[[x + dx, y + dy]].conj();
-                        let sec_val = kernel[[dx, dy]];
-                        acc += ref_val * sec_val;
-                    }
-                }
-
                 out[[x, y]] = acc;
             }
         }
