@@ -500,8 +500,10 @@ mod tests {
         for (k, secondary) in secondaries.iter().enumerate() {
             rec.set_time_sequence("secondary_index", k as i64);
             let secondary_image = secondary.data.array_f32();
+            let kernel_half = 255;
+            let search_size = 128;
 
-            let coregistration = CoarseCoregistration::new(255, 128).unwrap();
+            let coregistration = CoarseCoregistration::new(kernel_half, search_size).unwrap();
             let CoregistrationResult {
                 offsets,
                 correlation,
@@ -546,6 +548,14 @@ mod tests {
             )
             .unwrap();
 
+            // Log interferometric phase
+            let ref_patch =
+                reference_image.slice(s![ref_image_range[0].clone(), ref_image_range[1].clone()]);
+            let sec_patch =
+                secondary_image.slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()]);
+            let phase: Array2<f32> = (&ref_patch.map(|x| x.conj()) * &sec_patch).map(|x| x.arg());
+            rec.log("insar_phase", &rr_phase(&phase)).unwrap();
+
             let lat_lon = secondary
                 .metadata
                 .geolocation_grid
@@ -562,24 +572,6 @@ mod tests {
             rec.log("ref_img", &ref_img)
                 .expect("Could not finish recording");
         }
-        let dem = DEM::open_file("dem.tif");
-
-        let mut dem_corners = dem.corners_lat_lon().to_vec();
-        let first = dem_corners.first().unwrap();
-        dem_corners.push(*first);
-        let dem_array = dem.array();
-        let tensor = rerun::Tensor::try_from(dem_array)
-            .unwrap()
-            .with_dim_names(["rows", "cols"]);
-        rec.log_static("DEM", &tensor)
-            .expect("Could not finish recording");
-        rec.log_static(
-            "DEM Extent",
-            &rerun::GeoLineStrings::from_lat_lon([dem_corners.windows(2).flatten()])
-                .with_radii([rerun::Radius::new_ui_points(2.0)])
-                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
-        )
-        .unwrap();
     }
 
     #[test]
