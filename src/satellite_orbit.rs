@@ -51,7 +51,6 @@ impl OrbitalStateHistory {
     ) -> Self {
         let eef = EarthExplorerFile::open(path);
         let osvs = eef.data_block.list_of_osvs.osv;
-        // osv.utc
         let first_index: usize = osvs.iter().rposition(|osv| osv.utc <= start_time).unwrap();
         let last_index: usize = osvs.iter().position(|osv| osv.utc >= end_time).unwrap();
         let n = (last_index + 1) - first_index;
