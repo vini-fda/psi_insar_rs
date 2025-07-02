@@ -5,9 +5,6 @@ use urlencoding::encode;
 
 use crate::{granule_id::Mission, metadata::orbit_xml::EarthExplorerFile};
 
-/// Base URL for Identity Access Management on CDSE
-const CDSE_IAM_BASE_URL: &str =
-    "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token";
 /// Base URL for searching CDSE Products
 const CDSE_PRODUCTS_SEARCH_BASE_URL: &str =
     "https://catalogue.dataspace.copernicus.eu/odata/v1/Products";
