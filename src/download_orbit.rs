@@ -12,11 +12,6 @@ const CDSE_PRODUCTS_SEARCH_BASE_URL: &str =
 const CDSE_PRODUCTS_DOWNLOAD_BASE_URL: &str =
     "https://download.dataspace.copernicus.eu/odata/v1/Products";
 
-#[derive(Deserialize)]
-struct CDSETokenResponse {
-    access_token: String,
-}
-
 /// Obtains precise orbit files from the Copernicus Data Space Ecosystem (CDSE)
 pub struct CDSEOrbitDownloader {
     agent: ureq::Agent,
