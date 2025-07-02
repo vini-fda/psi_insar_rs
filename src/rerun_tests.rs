@@ -1644,18 +1644,18 @@ mod tests {
             let (s_ref, delta_time_secs_ref) = ref_osh.find_zero_doppler_state_sat_pos(pos.into());
 
             rr.log(
-                format!("delta_time_secs_ref"),
+                "delta_time_secs_ref".to_string(),
                 &rerun::Scalars::new([delta_time_secs_ref]),
             )
             .expect("Unable to log scalar");
             let (s_sec, delta_time_secs_sec) = sec_osh.find_zero_doppler_state_sat_pos(pos.into());
             rr.log(
-                format!("delta_time_secs_sec"),
+                "delta_time_secs_sec".to_string(),
                 &rerun::Scalars::new([delta_time_secs_sec]),
             )
             .expect("Unable to log scalar");
             rr.log(
-                format!("time_diff_secs"),
+                "time_diff_secs".to_string(),
                 &rerun::Scalars::new([(delta_time_secs_ref - delta_time_secs_sec)
                     / primary
                         .metadata

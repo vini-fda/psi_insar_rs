@@ -86,8 +86,7 @@ impl CDSEOrbitDownloader {
         let orderby = encode("ContentDate/Start desc");
 
         let url = format!(
-            "{}?$filter={}&$orderby={}&$top=1&$select=Id",
-            CDSE_PRODUCTS_SEARCH_BASE_URL, filter, orderby
+            "{CDSE_PRODUCTS_SEARCH_BASE_URL}?$filter={filter}&$orderby={orderby}&$top=1&$select=Id"
         );
 
         let auth_header = format!("Bearer {}", self.auth_token);
@@ -104,8 +103,8 @@ impl CDSEOrbitDownloader {
                 .read_to_string()
                 .expect("Could not read response as String");
             let parsed: Value = serde_json::from_str(&json_str).unwrap();
-            let id = extract_id(&parsed).unwrap();
-            return id;
+
+            extract_id(&parsed).unwrap()
         } else {
             panic!("Error");
         }
@@ -113,7 +112,7 @@ impl CDSEOrbitDownloader {
 
     /// Downloads the product with the given `uuid`, and returns the result as a String.
     fn download(&self, uuid: &str) -> String {
-        let url = format!("{}({})/$value", CDSE_PRODUCTS_DOWNLOAD_BASE_URL, uuid);
+        let url = format!("{CDSE_PRODUCTS_DOWNLOAD_BASE_URL}({uuid})/$value");
         let auth_header = format!("Bearer {}", self.auth_token);
 
         let response = self
@@ -126,11 +125,10 @@ impl CDSEOrbitDownloader {
             Ok(mut response) => {
                 let status_code = response.status();
                 if status_code == 200 {
-                    let text = response
+                    response
                         .body_mut()
                         .read_to_string()
-                        .expect("Could not read response as String");
-                    text
+                        .expect("Could not read response as String")
                 } else {
                     println!("status_code = {status_code}");
                     panic!("Error");
@@ -159,7 +157,7 @@ impl CDSEOrbitDownloader {
 fn extract_id(response: &Value) -> Option<String> {
     response["value"]
         .as_array()?
-        .get(0)?
+        .first()?
         .get("Id")?
         .as_str()
         .map(|s| s.to_string())
