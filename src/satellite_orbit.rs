@@ -10,7 +10,7 @@ use crate::{
         unit_second_derivative_interval_cubic_hermite_spline_interpolation,
     },
     metadata::{
-        annotation_xml::{OrbitList, SlcProductAnnotation},
+        annotation_xml::{Orbit, OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
 };
@@ -43,13 +43,12 @@ pub struct OrbitalStateHistory {
 }
 
 impl OrbitalStateHistory {
-    /// From a Precise Orbit Ephemerides file, and a timeframe (start_time, end_time)
-    pub fn from_poe_timeframe<P: AsRef<Path>>(
-        path: P,
+    /// Create a [`OrbitalStateHistory`] instance from a Precise Orbit Ephemerides file, and a timeframe (start_time, end_time)
+    pub fn from_poe_timeframe(
+        eef: EarthExplorerFile,
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
     ) -> Self {
-        let eef = EarthExplorerFile::open(path);
         let osvs = eef.data_block.list_of_osvs.osv;
         let first_index: usize = osvs.iter().rposition(|osv| osv.utc <= start_time).unwrap();
         let last_index: usize = osvs.iter().position(|osv| osv.utc >= end_time).unwrap();
@@ -389,6 +388,16 @@ impl ContinuousOrbitalStateHistory {
             position: osh.position.clone(),
             velocity: osh.velocity.clone(),
         }
+    }
+
+    pub fn from_poe_timeframe(
+        eef: EarthExplorerFile,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        annotation: &SlcProductAnnotation,
+    ) -> Self {
+        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
+        Self::from_osh(&osh, start_time, annotation)
     }
 
     /// Interpolate p(t) and v(t)
@@ -864,7 +873,10 @@ mod tests {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
+        metadata::{
+            annotation_xml::{OrbitList, SlcProductAnnotation},
+            orbit_xml::EarthExplorerFile,
+        },
         satellite_orbit::radar_coords_to_pixel_coords,
     };
 
@@ -898,7 +910,8 @@ mod tests {
         // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;
-        let osh = OrbitalStateHistory::from_poe_timeframe("orbit.EOF", start_time, end_time);
+        let eef = EarthExplorerFile::open("orbit.EOF");
+        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
         let dem = DEM::open_file("dem.tif");
         let [lat, lon] = [19.49831428810679, -98.59301000370277];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);

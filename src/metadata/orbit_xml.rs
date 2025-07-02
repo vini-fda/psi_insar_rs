@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
+/// The EarthExplorerFile (.EOF) format describes both Precise Orbit Ephemerides `AUX_POEORB`
+/// and Restituted Orbit files `AUX_RESORB`.
 #[derive(Serialize, Deserialize)]
 pub struct EarthExplorerFile {
     #[serde(rename = "$text")]
