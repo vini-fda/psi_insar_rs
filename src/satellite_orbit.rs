@@ -392,7 +392,7 @@ impl ContinuousOrbitalStateHistory {
         }
     }
 
-    /// Interpolate p(t) and v(t) at
+    /// Interpolate p(t) and v(t)
     #[inline(always)]
     pub fn interp_pos_vel(&self, t: f64) -> (Vector3<f64>, Vector3<f64>) {
         let time: &[f64] = self.time.as_slice();
@@ -415,26 +415,16 @@ impl ContinuousOrbitalStateHistory {
         let total_dt = t_next - t_prev;
         let dt = t - t_prev;
         let alpha = dt / total_dt;
-
-        let total_dt_sec = total_dt;
         // cubic hermite interpolation
-        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
-            p_prev,
-            v_prev,
-            p_next,
-            v_next,
-            total_dt_sec,
-            alpha,
-        );
+        // let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+        //     p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        // );
         // Derivative of Hermite spline w.r.t. time
-        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
-            p_prev,
-            v_prev,
-            p_next,
-            v_next,
-            total_dt_sec,
-            alpha,
-        );
+        // let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+        //     p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        // );
+        let pos_interp = (1.0 - alpha) * p_prev + alpha * p_next;
+        let vel_interp = (1.0 - alpha) * v_prev + alpha * v_next;
 
         (pos_interp, vel_interp)
     }
@@ -517,6 +507,62 @@ impl ContinuousOrbitalStateHistory {
         );
 
         (pos_interp, vel_interp, acc_interp)
+    }
+
+    pub fn find_zero_doppler_state_sat_pos(
+        &self,
+        ground_target_pos: Vector3<f64>,
+    ) -> (Vector3<f64>, f64) {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        let mut distance_to_target = f64::NAN;
+        let mut delta_time_secs = f64::NAN;
+        'outer: for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over time
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2.0;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        let sat_pos = self.interp_pos(mid);
+                        distance_to_target = (ground_target_pos - sat_pos).norm();
+                        delta_time_secs = mid;
+                        return (sat_pos, delta_time_secs);
+                        break 'outer;
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let half = (right - left) / 2.0;
+                let mid = left + half;
+                let sat_pos = self.interp_pos(mid);
+                distance_to_target = (ground_target_pos - sat_pos).norm();
+                delta_time_secs = mid;
+                return (sat_pos, delta_time_secs);
+                break 'outer;
+            }
+        }
+        panic!("OHNOOO")
     }
 
     /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.

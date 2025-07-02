@@ -235,6 +235,10 @@ impl EarthExplorerFile {
         let buf_reader = std::io::BufReader::new(reader);
         quick_xml::de::from_reader(buf_reader).unwrap()
     }
+
+    pub fn parse(s: &str) -> Self {
+        quick_xml::de::from_str(s).expect("Unable to parse Earth Explorer File")
+    }
 }
 
 #[cfg(test)]
