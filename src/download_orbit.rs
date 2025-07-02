@@ -171,9 +171,9 @@ mod tests {
 
     #[test]
     fn simple_orbit_info() {
-        let username = "vinifreitas.d.a@gmail.com";
-        let password = "cQb!h87v7HKao";
-        let client = CDSEOrbitDownloader::new(username, password);
+        let username = std::env::var("CDSE_USERNAME").expect("expected CDSE_USERNAME");
+        let password = std::env::var("CDSE_PAWSSWORD").expect("expected CDSE_PAWSSWORD");
+        let client = CDSEOrbitDownloader::new(&username, &password);
         let start = DateTime::parse_from_rfc3339("2025-06-09T13:59:42Z")
             .unwrap()
             .to_utc();
