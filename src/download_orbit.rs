@@ -27,8 +27,10 @@ pub struct CDSEOrbitDownloader {
 }
 
 impl CDSEOrbitDownloader {
-    pub fn new(username: &str, password: &str) -> Self {
-        let access_token: String = Self::obtain_access_token(username, password);
+    pub fn new() -> Self {
+        let access_token = std::env::var("CDSE_ACCESS_TOKEN").expect(
+            "The CDSEOrbitDownloader needs the CDSE_ACCESS_TOKEN environment variable set up.",
+        );
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(10)))
             .https_only(true)
@@ -40,28 +42,6 @@ impl CDSEOrbitDownloader {
         Self {
             agent,
             access_token,
-        }
-    }
-
-    fn obtain_access_token(username: &str, password: &str) -> String {
-        let response = ureq::post(CDSE_IAM_BASE_URL)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .send_form([
-                ("client_id", "cdse-public"),
-                ("username", username),
-                ("password", password),
-                ("grant_type", "password"),
-            ]);
-
-        match response {
-            Ok(mut response) => {
-                let token: CDSETokenResponse = response
-                    .body_mut()
-                    .read_json()
-                    .expect("Failed to parse JSON response");
-                token.access_token
-            }
-            Err(e) => panic!("Failed to obtain token: {e}"),
         }
     }
 
@@ -155,6 +135,12 @@ impl CDSEOrbitDownloader {
     }
 }
 
+impl Default for CDSEOrbitDownloader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Extracts the product UUID from the JSON response
 fn extract_id(response: &Value) -> Option<String> {
     response["value"]
@@ -173,9 +159,7 @@ mod tests {
 
     #[test]
     fn simple_orbit_info() {
-        let username = std::env::var("CDSE_USERNAME").expect("expected CDSE_USERNAME");
-        let password = std::env::var("CDSE_PASSWORD").expect("expected CDSE_PASSWORD");
-        let client = CDSEOrbitDownloader::new(&username, &password);
+        let client = CDSEOrbitDownloader::new();
         let start = DateTime::parse_from_rfc3339("2025-06-09T13:59:42Z")
             .unwrap()
             .to_utc();
