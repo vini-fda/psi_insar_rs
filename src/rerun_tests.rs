@@ -15,7 +15,9 @@ mod tests {
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         dem::{CopernicusDemType, DEM},
+        download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
+        granule_id::Mission,
         interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
@@ -23,8 +25,8 @@ mod tests {
             perp_baseline,
         },
         satellite_orbit::{
-            OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
-            zero_doppler_time,
+            ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
+            radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
         stft::{Stft, WindowFunction},
@@ -2318,5 +2320,81 @@ mod tests {
 
         rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
             .unwrap();
+    }
+
+    #[test]
+    fn compare_poe_with_metadata() {
+        env_logger::init();
+        let rr = rerun::RecordingStreamBuilder::new("compare_poe_with_metadata")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let mission = primary.metadata.ads_header.mission_id;
+        let start = primary.metadata.ads_header.start_time;
+        let end = primary.metadata.ads_header.stop_time;
+        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        let osh_poe = ContinuousOrbitalStateHistory::from_poe_timeframe(
+            poe_orbit,
+            start,
+            end,
+            &primary.metadata,
+        );
+        let osh_metadata = primary.continuous_orbital_state_history();
+
+        log::info!("Number of points in osh_poe = {}", osh_poe.time.len());
+        log::info!(
+            "Number of points in osh_metadata = {}",
+            osh_metadata.time.len()
+        );
+
+        let t0_metadata = *osh_metadata.time.first().unwrap();
+        let t0_poe = *osh_poe.time.first().unwrap();
+        let t0_max = if t0_poe < t0_metadata {
+            t0_metadata
+        } else {
+            t0_poe
+        };
+
+        let t1_metadata = *osh_metadata.time.last().unwrap();
+        let t1_poe = *osh_poe.time.last().unwrap();
+
+        let t1_min = if t1_poe < t1_metadata {
+            t1_poe
+        } else {
+            t1_metadata
+        };
+
+        let n = 1000;
+        let dt = (t1_min - t0_max) / n as f64;
+        for (osh, id) in [osh_poe, osh_metadata]
+            .iter()
+            .zip(["poe", "metadata"].iter())
+        {
+            let mut t = t0_max;
+            let mut sat_pos = vec![];
+            let mut sat_vel = vec![];
+
+            for i in 0..n {
+                let (pos, vel) = osh.interp_pos_vel(t);
+                let pos_f32 = pos.map(|x| x as f32).data.0[0];
+                let vel_f32 = vel.map(|x| x as f32).data.0[0];
+                sat_pos.push(pos_f32);
+                sat_vel.push(vel_f32);
+                rr.set_duration_secs("time_since_start", t - t0_max);
+                rr.log(format!("sat_pos_{id}"), &rerun::Points3D::new([pos_f32]))
+                    .expect("Unable to log sat pos");
+                let arrow_vel = rerun::Arrows3D::from_vectors([vel_f32]).with_origins([pos_f32]);
+                rr.log(format!("sat_vel_{id}"), &arrow_vel).unwrap();
+                rr.log(
+                    format!("sat_vel_scalar_{id}"),
+                    &rerun::Scalars::new([vel.norm()]),
+                )
+                .expect("Unable to log scalar");
+                t += dt;
+            }
+        }
     }
 }
