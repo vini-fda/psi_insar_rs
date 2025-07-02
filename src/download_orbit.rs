@@ -23,13 +23,12 @@ struct CDSETokenResponse {
 /// Obtains precise orbit files from the Copernicus Data Space Ecosystem (CDSE)
 pub struct CDSEOrbitDownloader {
     agent: ureq::Agent,
-    auth_token: String,
+    access_token: String,
 }
 
 impl CDSEOrbitDownloader {
     pub fn new(username: &str, password: &str) -> Self {
-        let auth_token: String = Self::obtain_auth_token(username, password);
-        // let agent = ureq::agent();
+        let access_token: String = Self::obtain_access_token(username, password);
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(10)))
             .https_only(true)
@@ -38,10 +37,13 @@ impl CDSEOrbitDownloader {
             .build();
 
         let agent = ureq::Agent::new_with_config(config);
-        Self { agent, auth_token }
+        Self {
+            agent,
+            access_token,
+        }
     }
 
-    fn obtain_auth_token(username: &str, password: &str) -> String {
+    fn obtain_access_token(username: &str, password: &str) -> String {
         let response = ureq::post(CDSE_IAM_BASE_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .send_form([
@@ -89,7 +91,7 @@ impl CDSEOrbitDownloader {
             "{CDSE_PRODUCTS_SEARCH_BASE_URL}?$filter={filter}&$orderby={orderby}&$top=1&$select=Id"
         );
 
-        let auth_header = format!("Bearer {}", self.auth_token);
+        let auth_header = format!("Bearer {}", self.access_token);
         let mut response = self
             .agent
             .get(url)
@@ -113,7 +115,7 @@ impl CDSEOrbitDownloader {
     /// Downloads the product with the given `uuid`, and returns the result as a String.
     fn download(&self, uuid: &str) -> String {
         let url = format!("{CDSE_PRODUCTS_DOWNLOAD_BASE_URL}({uuid})/$value");
-        let auth_header = format!("Bearer {}", self.auth_token);
+        let auth_header = format!("Bearer {}", self.access_token);
 
         let response = self
             .agent
@@ -172,7 +174,7 @@ mod tests {
     #[test]
     fn simple_orbit_info() {
         let username = std::env::var("CDSE_USERNAME").expect("expected CDSE_USERNAME");
-        let password = std::env::var("CDSE_PAWSSWORD").expect("expected CDSE_PAWSSWORD");
+        let password = std::env::var("CDSE_PASSWORD").expect("expected CDSE_PASSWORD");
         let client = CDSEOrbitDownloader::new(&username, &password);
         let start = DateTime::parse_from_rfc3339("2025-06-09T13:59:42Z")
             .unwrap()
