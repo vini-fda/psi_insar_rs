@@ -1,15 +1,16 @@
-#!/bin/bash
-
-set -eEuo pipefail
+#!/bin/zsh
 
 # This is a script to login to the CDSE and get the access token
+# To run this script and properly export the token, you need to source it:
+# source scripts/cdse_token.sh
 # Reference: https://documentation.dataspace.copernicus.eu/APIs/Token.html
 
-read -p "Username: " USERNAME
-read -s -p "Password: " PASSWORD
+read "CDSE_USERNAME?username: "
+read -s "CDSE_PASSWORD?password: "
 echo
-read -s -p "2FA Token: " TOTP
+read -s "TOTP?2FA token: "
 echo
+
 
 urlencode() {
     # Function to URL encode the username and password
@@ -29,22 +30,33 @@ urlencode() {
     echo "${encoded}"
 }
 
-USERNAME_ENCODED=$(urlencode "$USERNAME")
-PASSWORD_ENCODED=$(urlencode "$PASSWORD")
+USERNAME_ENCODED=$(urlencode "$CDSE_USERNAME")
+PASSWORD_ENCODED=$(urlencode "$CDSE_PASSWORD")
 
 if [ -z "$TOTP" ]; then
     echo "Error: You have no more attempts left to enter the 2FA token."
-    exit 1
+    #exit 1
 fi
 
-if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+if [ -z "$CDSE_USERNAME" ] || [ -z "$CDSE_PASSWORD" ]; then
     echo "Error: Username, password and 2FA token required"
-    exit 1
+    #exit 1
 fi
 
-export CDSE_ACCESS_TOKEN=$(curl -d 'client_id=cdse-public' \
+RESPONSE=$(curl -s -d 'client_id=cdse-public' \
                     -d "username=$USERNAME_ENCODED" \
                     -d "password=$PASSWORD_ENCODED" \
                     -d 'grant_type=password' \
                     -d "totp=$TOTP" \
-                    'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token' | jq -r .access_token)
+                    'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token')
+
+ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r .access_token)
+
+if [ "$ACCESS_TOKEN" != "null" ] && [ -n "$ACCESS_TOKEN" ]; then
+    echo "Success! Token obtained."
+    
+    export CDSE_ACCESS_TOKEN="$ACCESS_TOKEN"
+else
+    echo "Error: Failed to obtain access token"
+    echo "Response: $RESPONSE"
+fi
