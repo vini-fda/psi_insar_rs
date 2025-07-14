@@ -1125,6 +1125,7 @@ mod tests {
             .expect("Could not log phase_difference to Rerun");
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn differential_phase_plot() {
         env_logger::init();
@@ -1227,9 +1228,9 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            let osh_1 = reference.orbital_state_history();
+            let osh_1 = reference.precise_orbital_state_history();
             let annotation_1 = &reference.metadata;
-            let osh_2 = secondary.orbital_state_history();
+            let osh_2 = secondary.precise_orbital_state_history();
             let annotation_2 = &secondary.metadata;
             let mut phase_diff =
                 Array2::from_shape_fn((ref_azimuth_dim, ref_slant_range_dim / 2), |(i, j)| {
@@ -1243,6 +1244,14 @@ mod tests {
 
             log::info!("Removing topographic phase");
             let start_time = std::time::Instant::now();
+            let azimuth_time_interval_1 = annotation_1
+                .image_annotation
+                .image_information
+                .azimuth_time_interval;
+            let azimuth_time_interval_2 = annotation_2
+                .image_annotation
+                .image_information
+                .azimuth_time_interval;
             phase_diff
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
@@ -1283,8 +1292,8 @@ mod tests {
                                     dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                                 );
 
-                                let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
+                                let zero_doppler_1 = ref_az as f64 * azimuth_time_interval_1;
+                                let zero_doppler_2 = sec_az * azimuth_time_interval_2;
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 
@@ -1545,7 +1554,7 @@ mod tests {
         )
         .unwrap();
         let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
@@ -1556,19 +1565,9 @@ mod tests {
         // Build (dx, dy) offset values for histogram
         log::info!("Building (dx, dy) offset values for histogram");
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.orbital_state_history();
-        let sec_osh = secondary.orbital_state_history();
-        let radar_coords = |ground_target_pos: Vector3<f64>,
-                            osh: &OrbitalStateHistory,
-                            annotation: &SlcProductAnnotation|
-         -> [f64; 2] {
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        let ref_osh = reference.precise_orbital_state_history();
+        let sec_osh = secondary.precise_orbital_state_history();
 
-            radar_coords_to_pixel_coords(zero_doppler, annotation)
-        };
-
-        let reference_metadata = &reference.metadata;
-        let secondary_metadata = &secondary.metadata;
         let n = dem.len();
         let mut delta_azimuth_coords = Vec::with_capacity(n);
         let mut delta_slant_range_coords = Vec::with_capacity(n);
@@ -1576,8 +1575,8 @@ mod tests {
         let mut longitudes = Vec::with_capacity(n);
         for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
-            let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+            let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+            let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
             if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                 && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
@@ -1606,6 +1605,7 @@ mod tests {
         log::info!("Done!");
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn orbital_path_coregistration() {
         env_logger::init();
@@ -1623,8 +1623,8 @@ mod tests {
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
-        let ref_osh = &primary.continuous_orbital_state_history();
-        let sec_osh = &secondary.continuous_orbital_state_history();
+        let ref_osh = &primary.precise_orbital_state_history();
+        let sec_osh = &secondary.precise_orbital_state_history();
 
         let lat0 = 19.57468_f64;
         let lon0 = -99.08250_f64;
@@ -1688,12 +1688,12 @@ mod tests {
 
         for (burst_id, burst) in bursts.iter().enumerate() {
             let mut sat_pos = vec![];
-            let osh = burst.orbital_state_history();
-            let start_time = burst.metadata.ads_header.start_time;
+            let osh = burst.precise_orbital_state_history();
+            // let start_time = burst.metadata.ads_header.start_time;
             let end_time = osh.time.last().unwrap();
             let n = 100;
-            let dt_nanos = (*end_time - start_time).num_nanoseconds().unwrap() / n;
-            let mut t = start_time;
+            let dt = *end_time / n as f64;
+            let mut t = 0.0;
 
             for i in 0..n {
                 let pos = osh.interp_pos(t);
@@ -1710,7 +1710,7 @@ mod tests {
                 // )
                 // .expect("Unable to log sat pos");
 
-                t += chrono::TimeDelta::nanoseconds(dt_nanos);
+                t += dt;
             }
             let sat_trajectory = rerun::LineStrip3D::from_iter(sat_pos);
             rr.log_static(
@@ -1745,8 +1745,8 @@ mod tests {
             for j in 0..cols {
                 let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
                 let pos = dem.get_ecef_at_lat_lon(lat, lon);
-                let rc_ref = ref_osh.find_zero_doppler_state_newton_raphson(pos.into());
-                let rc_sec = sec_osh.find_zero_doppler_state_newton_raphson(pos.into());
+                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
                 if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                     && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
@@ -2336,6 +2336,12 @@ mod tests {
         let start = primary.metadata.ads_header.start_time;
         let end = primary.metadata.ads_header.stop_time;
         let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        // save poe_orbit to file
+        let poe_orbit_path = format!("poe_orbit_{mission}.xml");
+        let poe_orbit_xml = quick_xml::se::to_string(&poe_orbit).unwrap();
+        std::fs::write(poe_orbit_path, poe_orbit_xml).unwrap();
+
+        println!("Start = {start}, End = {end}");
         let osh_poe = ContinuousOrbitalStateHistory::from_poe_timeframe(
             poe_orbit,
             start,
@@ -2369,7 +2375,9 @@ mod tests {
 
         let n = 1000;
         let dt = (t1_min - t0_max) / n as f64;
-        for (osh, id) in [osh_poe, osh_metadata]
+
+        // First, log individual satellite data
+        for (osh, id) in [&osh_poe, &osh_metadata]
             .iter()
             .zip(["poe", "metadata"].iter())
         {
@@ -2395,6 +2403,22 @@ mod tests {
                 .expect("Unable to log scalar");
                 t += dt;
             }
+        }
+
+        // Now calculate and log the distance between the two satellites
+        let mut t = t0_max;
+        for i in 0..n {
+            let (pos_poe, _) = osh_poe.interp_pos_vel(t);
+            let (pos_metadata, _) = osh_metadata.interp_pos_vel(t);
+
+            // Calculate the distance between the two positions
+            let distance = (pos_poe - pos_metadata).norm();
+
+            rr.set_duration_secs("time_since_start", t - t0_max);
+            rr.log("sat_dist_scalar", &rerun::Scalars::new([distance]))
+                .expect("Unable to log distance scalar");
+
+            t += dt;
         }
     }
 }

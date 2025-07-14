@@ -98,7 +98,8 @@ use crate::{
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
     satellite_orbit::{
-        OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
+        ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
+        radar_coords_to_pixel_coords,
     },
     sentinel::Sentinel1SlcBurst,
 };
@@ -588,16 +589,8 @@ impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
     pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.orbital_state_history();
-        let sec_osh = secondary.orbital_state_history();
-        let radar_coords = |ground_target_pos: Vector3<f64>,
-                            osh: &OrbitalStateHistory,
-                            annotation: &SlcProductAnnotation|
-         -> [f64; 2] {
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
-
-            radar_coords_to_pixel_coords(zero_doppler, annotation)
-        };
+        let ref_osh = reference.precise_orbital_state_history();
+        let sec_osh = secondary.precise_orbital_state_history();
         let mut triangulation = DelaunayTriangulation::<
             WarpFunctionExactMapping,
             (),
@@ -605,15 +598,13 @@ impl EnhancedDelaunayWarpFunction {
             (),
             HierarchyHintGenerator<f64>,
         >::new();
-        let reference_metadata = &reference.metadata;
-        let secondary_metadata = &secondary.metadata;
         let mappings: Vec<_> = dem
             .lat_lon_iter()
             .par_bridge()
             .filter_map(|(lat, lon)| {
                 let pos = dem.get_ecef_at_lat_lon(lat, lon);
-                let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
-                let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
                 if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                     && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)

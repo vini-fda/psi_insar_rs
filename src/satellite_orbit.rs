@@ -68,7 +68,7 @@ impl OrbitalStateHistory {
             velocity,
         }
     }
-    #[inline(always)]
+
     pub fn interp_pos_vel(&self, t: DateTime<Utc>) -> (Vector3<f64>, Vector3<f64>) {
         let time: &[DateTime<Utc>] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -120,7 +120,6 @@ impl OrbitalStateHistory {
         (pos_interp, vel_interp)
     }
 
-    #[inline(always)]
     pub fn interp_pos(&self, t: DateTime<Utc>) -> Vector3<f64> {
         let time: &[DateTime<Utc>] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -401,7 +400,6 @@ impl ContinuousOrbitalStateHistory {
     }
 
     /// Interpolate p(t) and v(t)
-    #[inline(always)]
     pub fn interp_pos_vel(&self, t: f64) -> (Vector3<f64>, Vector3<f64>) {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -424,20 +422,19 @@ impl ContinuousOrbitalStateHistory {
         let dt = t - t_prev;
         let alpha = dt / total_dt;
         // cubic hermite interpolation
-        // let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
-        //     p_prev, v_prev, p_next, v_next, total_dt, alpha,
-        // );
+        let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        );
         // Derivative of Hermite spline w.r.t. time
-        // let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
-        //     p_prev, v_prev, p_next, v_next, total_dt, alpha,
-        // );
-        let pos_interp = (1.0 - alpha) * p_prev + alpha * p_next;
-        let vel_interp = (1.0 - alpha) * v_prev + alpha * v_next;
+        let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
+        );
+        // let pos_interp = (1.0 - alpha) * p_prev + alpha * p_next;
+        // let vel_interp = (1.0 - alpha) * v_prev + alpha * v_next;
 
         (pos_interp, vel_interp)
     }
 
-    #[inline(always)]
     pub fn interp_pos(&self, t: f64) -> Vector3<f64> {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -474,7 +471,6 @@ impl ContinuousOrbitalStateHistory {
     }
 
     /// Interpolate p(t), v(t), and a(t) at time t
-    #[inline(always)]
     pub fn interp_pos_vel_acc(&self, t: f64) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -573,7 +569,7 @@ impl ContinuousOrbitalStateHistory {
         panic!("OHNOOO")
     }
 
-    /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
+    /// Calculate the zero-Doppler state in Radar Coordinates (Azimuth index and slant range index) for a given ground target and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
     /// is perpendicular to the vector pointing from the satellite to the ground target:
