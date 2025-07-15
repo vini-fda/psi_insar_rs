@@ -17,7 +17,6 @@ mod tests {
         dem::{CopernicusDemType, DEM},
         download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
-        granule_id::Mission,
         interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
@@ -29,7 +28,6 @@ mod tests {
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
-        stft::{Stft, WindowFunction},
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
@@ -974,72 +972,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spectrogram() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-        )
-        .unwrap();
-
-        let image = reference.data.array_f32();
-        let rec = rerun::RecordingStreamBuilder::new("spectrogram_visualization").connect_grpc()?;
-
-        // cut cols in half
-        let image = image.slice(s![.., ..image.dim().1 / 2]).to_owned();
-        let rows = image.dim().0;
-
-        // Example usage of STFT
-        // fn main() {
-        //     // Initialize a new STFT object
-        //     let n_fft = 1024;
-        //     let hop_length = 256;
-        //     let stft = Stft::new(n_fft, hop_length, WindowFunction::Hann::<f64>, true);
-        //     // Create a 2D array of f64
-        //     let data = vec![0.0; 2048];
-        //     let input = ArrayView2::from_shape((2, 1024), &data).unwrap();
-        //     let expected_output = input.clone();
-        //     // Perform the forward STFT
-        //     let stft_res = stft.forward(input).unwrap();
-        //     // perform the inverse STFT
-        //     let istft_res = stft.inverse(stft_res.view()).unwrap();
-        //     assert_eq!(expected_output, istft_res);
-        // }
-        let hop_length = 32;
-        let stft = Stft::new(rows, hop_length, WindowFunction::Hann::<f32>, true);
-        // Let's apply to a single column
-        let column = image.column(1000);
-        let stft_res = stft.forward(column).unwrap();
-        let (cols, rows) = stft_res.dim();
-        // let istft_res = stft.inverse(stft_res.view()).unwrap();
-        // assert_eq!(column, istft_res);
-
-        let array = stft_res.map(|x| x.norm());
-
-        // log as image
-        let rr_image = rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, array)?;
-        rec.log("spectrogram_visualization", &rr_image)?;
-        // log also phase
-
-        let vector = stft_res.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [cols as u32, rows as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
-        );
-        rec.log("phase_visualization", &rr_image)?;
-        Ok(())
-    }
-
-    #[test]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -1695,7 +1627,7 @@ mod tests {
             let dt = *end_time / n as f64;
             let mut t = 0.0;
 
-            for i in 0..n {
+            for _ in 0..n {
                 let pos = osh.interp_pos(t);
                 let pos_f32 = pos.map(|x| x as f32).data.0[0];
                 sat_pos.push(pos_f32);
@@ -2153,7 +2085,8 @@ mod tests {
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let annotation =
-            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml")
+                .expect("Failed to open test annotation file");
         let orbit_list = &annotation.general_annotation.orbit_list;
         let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
         let points = orbital_history
@@ -2385,7 +2318,7 @@ mod tests {
             let mut sat_pos = vec![];
             let mut sat_vel = vec![];
 
-            for i in 0..n {
+            for _ in 0..n {
                 let (pos, vel) = osh.interp_pos_vel(t);
                 let pos_f32 = pos.map(|x| x as f32).data.0[0];
                 let vel_f32 = vel.map(|x| x as f32).data.0[0];
@@ -2407,7 +2340,7 @@ mod tests {
 
         // Now calculate and log the distance between the two satellites
         let mut t = t0_max;
-        for i in 0..n {
+        for _ in 0..n {
             let (pos_poe, _) = osh_poe.interp_pos_vel(t);
             let (pos_metadata, _) = osh_metadata.interp_pos_vel(t);
 

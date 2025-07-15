@@ -239,11 +239,11 @@ pub struct ProductInformation {
     #[serde(rename = "platformHeading")]
     pub platform_heading: String,
     pub projection: String,
-    #[serde(rename = "rangeSamplingRate", with = "string_to_f64")]
+    #[serde(rename = "rangeSamplingRate")]
     pub range_sampling_rate: f64,
-    #[serde(rename = "radarFrequency", with = "string_to_f64")]
+    #[serde(rename = "radarFrequency")]
     pub radar_frequency: f64,
-    #[serde(rename = "azimuthSteeringRate", with = "string_to_f64")]
+    #[serde(rename = "azimuthSteeringRate")]
     pub azimuth_steering_rate: f64,
 }
 
@@ -526,10 +526,10 @@ impl std::str::FromStr for ReferenceFrame {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input {
-            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
-            "GM2000" => Ok(ReferenceFrame::GM2000),
-            "GCRF" => Ok(ReferenceFrame::GCRF),
-            "ITRF" => Ok(ReferenceFrame::ITRF),
+            "Earth Fixed" => Ok(Self::EarthFixed),
+            "GM2000" => Ok(Self::GM2000),
+            "GCRF" => Ok(Self::GCRF),
+            "ITRF" => Ok(Self::ITRF),
             _ => Err(format!("Unknown reference frame: {input}")),
         }
     }
@@ -541,26 +541,26 @@ impl Serialize for ReferenceFrame {
         S: serde::Serializer,
     {
         let frame_str = match self {
-            ReferenceFrame::EarthFixed => "Earth Fixed",
-            ReferenceFrame::GM2000 => "GM2000",
-            ReferenceFrame::GCRF => "GCRF",
-            ReferenceFrame::ITRF => "ITRF",
+            Self::EarthFixed => "Earth Fixed",
+            Self::GM2000 => "GM2000",
+            Self::GCRF => "GCRF",
+            Self::ITRF => "ITRF",
         };
         serializer.serialize_str(frame_str)
     }
 }
 
 impl<'de> Deserialize<'de> for ReferenceFrame {
-    fn deserialize<D>(deserializer: D) -> Result<ReferenceFrame, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let frame_str = String::deserialize(deserializer)?;
         match frame_str.as_str() {
-            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
-            "GM2000" => Ok(ReferenceFrame::GM2000),
-            "GCRF" => Ok(ReferenceFrame::GCRF),
-            "ITRF" => Ok(ReferenceFrame::ITRF),
+            "Earth Fixed" => Ok(Self::EarthFixed),
+            "GM2000" => Ok(Self::GM2000),
+            "GCRF" => Ok(Self::GCRF),
+            "ITRF" => Ok(Self::ITRF),
             _ => Err(serde::de::Error::custom(format!(
                 "Unknown reference frame: {frame_str}"
             ))),
@@ -594,7 +594,7 @@ pub struct Velocity {
 // Vector3 -> Position
 impl From<Vector3<f64>> for Position {
     fn from(v: Vector3<f64>) -> Self {
-        Position {
+        Self {
             x: v.x,
             y: v.y,
             z: v.z,
@@ -605,14 +605,14 @@ impl From<Vector3<f64>> for Position {
 // Position -> Vector3
 impl From<Position> for Vector3<f64> {
     fn from(p: Position) -> Self {
-        Vector3::new(p.x, p.y, p.z)
+        Self::new(p.x, p.y, p.z)
     }
 }
 
 // Vector3 -> Velocity
 impl From<Vector3<f64>> for Velocity {
     fn from(v: Vector3<f64>) -> Self {
-        Velocity {
+        Self {
             x: v.x,
             y: v.y,
             z: v.z,
@@ -623,7 +623,7 @@ impl From<Vector3<f64>> for Velocity {
 // Velocity -> Vector3
 impl From<Velocity> for Vector3<f64> {
     fn from(v: Velocity) -> Self {
-        Vector3::new(v.x, v.y, v.z)
+        Self::new(v.x, v.y, v.z)
     }
 }
 
@@ -641,27 +641,15 @@ pub struct Attitude {
 
     pub frame: String,
 
-    #[serde(with = "string_to_f64")]
     pub q0: f64,
-    #[serde(with = "string_to_f64")]
     pub q1: f64,
-    #[serde(with = "string_to_f64")]
     pub q2: f64,
-    #[serde(with = "string_to_f64")]
     pub q3: f64,
-
-    #[serde(with = "string_to_f64")]
     pub wx: f64,
-    #[serde(with = "string_to_f64")]
     pub wy: f64,
-    #[serde(with = "string_to_f64")]
     pub wz: f64,
-
-    #[serde(with = "string_to_f64")]
     pub roll: f64,
-    #[serde(with = "string_to_f64")]
     pub pitch: f64,
-    #[serde(with = "string_to_f64")]
     pub yaw: f64,
 }
 
@@ -868,7 +856,7 @@ pub struct AzimuthFmRate {
     pub text: Option<String>,
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
-    #[serde(with = "string_to_f64")]
+
     pub t0: f64,
     #[serde(rename = "azimuthFmRatePolynomial")]
     pub azimuth_fm_rate_polynomial: AzimuthFmRatePolynomial,
@@ -910,23 +898,23 @@ pub struct ImageInformation {
     pub slice_number: String,
     #[serde(rename = "sliceList")]
     pub slice_list: SliceList,
-    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    #[serde(rename = "slantRangeTime")]
     pub slant_range_time: f64,
     #[serde(rename = "pixelValue")]
     pub pixel_value: String,
     #[serde(rename = "outputPixels")]
     pub output_pixels: String,
-    #[serde(rename = "rangePixelSpacing", with = "string_to_f64")]
+    #[serde(rename = "rangePixelSpacing")]
     pub range_pixel_spacing: f64,
-    #[serde(rename = "azimuthPixelSpacing", with = "string_to_f64")]
+    #[serde(rename = "azimuthPixelSpacing")]
     pub azimuth_pixel_spacing: f64,
-    #[serde(rename = "azimuthTimeInterval", with = "string_to_f64")]
+    #[serde(rename = "azimuthTimeInterval")]
     pub azimuth_time_interval: f64,
-    #[serde(rename = "azimuthFrequency", with = "string_to_f64")]
+    #[serde(rename = "azimuthFrequency")]
     pub azimuth_frequency: f64,
-    #[serde(rename = "numberOfSamples", with = "string_to_usize")]
+    #[serde(rename = "numberOfSamples")]
     pub number_of_samples: usize,
-    #[serde(rename = "numberOfLines", with = "string_to_usize")]
+    #[serde(rename = "numberOfLines")]
     pub number_of_lines: usize,
     #[serde(rename = "zeroDopMinusAcqTime")]
     pub zero_dop_minus_acq_time: String,
@@ -1214,11 +1202,12 @@ impl Polynomial {
     /// # Returns
     ///
     /// The value of the polynomial at point `x`
+    #[must_use]
     pub fn evaluate(&self, x: f64) -> f64 {
         self.coefficients
             .iter()
             .rev()
-            .fold(0.0, |acc, &coef| acc * x + coef)
+            .fold(0.0, |acc, &coef| acc.mul_add(x, coef))
     }
 }
 
@@ -1249,7 +1238,7 @@ mod polynomial_format {
         let s = value
             .coefficients
             .iter()
-            .map(|x| x.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(" ");
         serializer.serialize_str(&s)
@@ -1381,7 +1370,7 @@ pub struct Burst {
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     /// "ANX time" (seconds from ANX - Ascending Node Crossing)
-    #[serde(rename = "azimuthAnxTime", with = "string_to_f64")]
+    #[serde(rename = "azimuthAnxTime")]
     pub azimuth_anx_time: f64,
     #[serde(rename = "sensingTime", with = "datetime_format")]
     pub sensing_time: DateTime<Utc>,
@@ -1429,6 +1418,7 @@ pub struct GeolocationGridPointList {
 
 impl GeolocationGridPointList {
     /// Get the (latitude, longitude) of all geolocation grid points, in order.
+    #[must_use]
     pub fn get_lat_lon(&self) -> Vec<[f64; 2]> {
         self.geolocation_grid_point
             .iter()
@@ -1440,6 +1430,7 @@ impl GeolocationGridPointList {
     /// # Returns
     /// An array containing the minimum and maximum latitude and longitude values,
     /// in the order `[min_lat, max_lat, min_lon, max_lon]`.
+    #[must_use]
     pub fn get_bounding_box_lat_lon(&self) -> [f64; 4] {
         let mut min_lat = f64::MAX;
         let mut max_lat = f64::MIN;
@@ -1461,15 +1452,12 @@ pub struct GeolocationGridPoint {
     pub text: Option<String>,
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
-    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    #[serde(rename = "slantRangeTime")]
     pub slant_range_time: f64,
     pub line: usize,
     pub pixel: usize,
-    #[serde(with = "string_to_f64")]
     pub latitude: f64,
-    #[serde(with = "string_to_f64")]
     pub longitude: f64,
-    #[serde(with = "string_to_f64")]
     pub height: f64,
     #[serde(rename = "incidenceAngle")]
     pub incidence_angle: f64,
@@ -1505,13 +1493,18 @@ pub struct SwathMergeList {
     pub count: u32,
 }
 
-/// Custom deserializer for DateTime<Utc>
+/// Custom deserializer for ``DateTime<Utc>``
 pub mod datetime_format {
     use chrono::{DateTime, NaiveDateTime, Utc};
     use serde::{self, Deserialize, Deserializer};
 
     const FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
 
+    /// Deserialize a ``DateTime<Utc>`` from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a ``serde::de::Error`` if the string cannot be parsed as a ``DateTime<Utc>``.
     pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
         D: Deserializer<'de>,
@@ -1526,6 +1519,11 @@ pub mod datetime_format {
         Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc))
     }
 
+    /// Serialize a ``DateTime<Utc>`` to a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a ``serde::ser::Error`` if the string cannot be formatted as a ``DateTime<Utc>``.
     pub fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -1534,53 +1532,52 @@ pub mod datetime_format {
     }
 }
 
-/// Custom deserializer for f64
-mod string_to_f64 {
-    use serde::{self, Deserialize, Deserializer};
+/// Error type for ``SlcProductAnnotation`` operations
+#[derive(Debug)]
+pub enum AnnotationError {
+    /// IO error when reading the file
+    Io(std::io::Error),
+    /// XML deserialization error
+    Deserialization(String),
+}
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        s.parse::<f64>().map_err(serde::de::Error::custom)
-    }
-
-    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
+impl std::fmt::Display for AnnotationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "IO error: {err}"),
+            Self::Deserialization(err) => write!(f, "Deserialization error: {err}"),
+        }
     }
 }
 
-/// Custom serializer/deserializer for usize
-mod string_to_usize {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<usize, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        s.parse::<usize>().map_err(serde::de::Error::custom)
+impl std::error::Error for AnnotationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Deserialization(_) => None,
+        }
     }
+}
 
-    pub fn serialize<S>(value: &usize, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
+impl From<std::io::Error> for AnnotationError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
     }
 }
 
 impl SlcProductAnnotation {
-    pub fn open<P: AsRef<Path>>(path: P) -> Self {
-        let reader = std::fs::File::open(path).unwrap();
+    /// Open an annotation XML file and parse it into a ``SlcProductAnnotation``.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ``AnnotationError`` if:
+    /// - The file cannot be opened
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, AnnotationError> {
+        let reader = std::fs::File::open(path)?;
         let buf_reader = BufReader::new(reader);
         let xml_de = &mut quick_xml::de::Deserializer::from_reader(buf_reader);
-        let result: Result<SlcProductAnnotation, _> = serde_path_to_error::deserialize(xml_de);
-        result.unwrap()
+        let result: Result<Self, _> = serde_path_to_error::deserialize(xml_de);
+        result.map_err(|err| AnnotationError::Deserialization(err.to_string()))
     }
 }
 
