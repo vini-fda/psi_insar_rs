@@ -1627,7 +1627,7 @@ mod tests {
             let dt = *end_time / n as f64;
             let mut t = 0.0;
 
-            for i in 0..n {
+            for _ in 0..n {
                 let pos = osh.interp_pos(t);
                 let pos_f32 = pos.map(|x| x as f32).data.0[0];
                 sat_pos.push(pos_f32);
@@ -2318,7 +2318,7 @@ mod tests {
             let mut sat_pos = vec![];
             let mut sat_vel = vec![];
 
-            for i in 0..n {
+            for _ in 0..n {
                 let (pos, vel) = osh.interp_pos_vel(t);
                 let pos_f32 = pos.map(|x| x as f32).data.0[0];
                 let vel_f32 = vel.map(|x| x as f32).data.0[0];
@@ -2340,7 +2340,7 @@ mod tests {
 
         // Now calculate and log the distance between the two satellites
         let mut t = t0_max;
-        for i in 0..n {
+        for _ in 0..n {
             let (pos_poe, _) = osh_poe.interp_pos_vel(t);
             let (pos_metadata, _) = osh_metadata.interp_pos_vel(t);
 
