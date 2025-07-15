@@ -70,6 +70,11 @@ impl DEM {
         self.cols
     }
 
+    /// Returns true iff the DEM is empty.
+    pub fn is_empty(&self) -> bool {
+        self.rows == 0 || self.cols == 0
+    }
+
     pub fn len(&self) -> usize {
         self.rows * self.cols
     }
