@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 use serde_json::Value;
 use urlencoding::encode;
 
@@ -19,6 +18,12 @@ pub struct CDSEOrbitDownloader {
 }
 
 impl CDSEOrbitDownloader {
+    /// Creates a new ``CDSEOrbitDownloader`` instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `CDSE_ACCESS_TOKEN` environment variable is not set.
+    #[must_use]
     pub fn new() -> Self {
         let access_token = std::env::var("CDSE_ACCESS_TOKEN").expect(
             "The CDSEOrbitDownloader needs the CDSE_ACCESS_TOKEN environment variable set up.",
@@ -39,6 +44,11 @@ impl CDSEOrbitDownloader {
 
     /// Searches for the precise orbital ephemerides (`AUX_POEORB`) related to the given Sentinel-1 mission
     /// which includes the [start, end] time range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `start` datetime is after the `end` datetime.
+    #[must_use]
     pub fn search(&self, mission: Mission, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
         assert!(
             start < end,
@@ -114,6 +124,11 @@ impl CDSEOrbitDownloader {
 
     /// Searches for the precise orbital ephemerides (`AUX_POEORB`) related to the given Sentinel-1 mission
     /// which includes the [start, end] time range, and downloads them. The end result is the parsed [`EarthExplorerFile`]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the search or download fails.
+    #[must_use]
     pub fn search_and_download(
         &self,
         mission: Mission,
@@ -140,7 +155,7 @@ fn extract_id(response: &Value) -> Option<String> {
         .first()?
         .get("Id")?
         .as_str()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]
