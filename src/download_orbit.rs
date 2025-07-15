@@ -138,7 +138,8 @@ impl CDSEOrbitDownloader {
         let uuid = self.search(mission, start, end);
 
         let text = self.download(&uuid);
-        EarthExplorerFile::parse(&text)
+        text.parse::<EarthExplorerFile>()
+            .expect("Failed to parse Earth Explorer File")
     }
 }
 

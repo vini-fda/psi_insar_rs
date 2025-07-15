@@ -907,10 +907,10 @@ mod tests {
         // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;
-        let eef = EarthExplorerFile::open("orbit.EOF");
+        let eef = EarthExplorerFile::open("orbit.EOF").expect("Failed to open orbit file");
         let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
         let dem = DEM::open_file("dem.tif");
-        let [lat, lon] = [19.49831428810679, -98.59301000370277];
+        let [lat, lon] = [19.498_314_288_106_79, -98.593_010_003_702_77];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
 
         let zero_doppler = osh.find_zero_doppler_state(pos.into());

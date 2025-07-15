@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
-/// The EarthExplorerFile (.EOF) format describes both Precise Orbit Ephemerides `AUX_POEORB`
+/// The ``EarthExplorerFile`` (.EOF) format describes both Precise Orbit Ephemerides `AUX_POEORB`
 /// and Restituted Orbit files `AUX_RESORB`.
 #[derive(Serialize, Deserialize)]
 pub struct EarthExplorerFile {
@@ -231,15 +231,58 @@ where
         .with_timezone(&Utc))
 }
 
-impl EarthExplorerFile {
-    pub fn open<P: AsRef<Path>>(path: P) -> Self {
-        let reader = std::fs::File::open(path).unwrap();
-        let buf_reader = std::io::BufReader::new(reader);
-        quick_xml::de::from_reader(buf_reader).unwrap()
-    }
+/// Error type for ``EarthExplorerFile`` operations
+#[derive(Debug)]
+pub enum OrbitError {
+    /// IO error when reading the file
+    Io(std::io::Error),
+    /// XML deserialization error
+    Deserialization(String),
+}
 
-    pub fn parse(s: &str) -> Self {
-        quick_xml::de::from_str(s).expect("Unable to parse Earth Explorer File")
+impl std::fmt::Display for OrbitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "IO error: {err}"),
+            Self::Deserialization(err) => write!(f, "Deserialization error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for OrbitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Deserialization(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for OrbitError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl EarthExplorerFile {
+    /// Open an ``EarthExplorerFile`` from a file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ``OrbitError`` if the file cannot be opened or parsed.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, OrbitError> {
+        let reader = std::fs::File::open(path)?;
+        let buf_reader = std::io::BufReader::new(reader);
+        quick_xml::de::from_reader(buf_reader)
+            .map_err(|err| OrbitError::Deserialization(err.to_string()))
+    }
+}
+
+impl std::str::FromStr for EarthExplorerFile {
+    type Err = OrbitError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        quick_xml::de::from_str(s).map_err(|err| OrbitError::Deserialization(err.to_string()))
     }
 }
 
