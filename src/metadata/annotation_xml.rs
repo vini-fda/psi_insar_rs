@@ -1579,7 +1579,7 @@ impl SlcProductAnnotation {
         let reader = std::fs::File::open(path).unwrap();
         let buf_reader = BufReader::new(reader);
         let xml_de = &mut quick_xml::de::Deserializer::from_reader(buf_reader);
-        let result: Result<SlcProductAnnotation, _> = serde_path_to_error::deserialize(xml_de);
+        let result: Result<Self, _> = serde_path_to_error::deserialize(xml_de);
         result.unwrap()
     }
 }
