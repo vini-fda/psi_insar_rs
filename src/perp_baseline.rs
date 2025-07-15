@@ -86,6 +86,11 @@ use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 use rustfft::num_traits::Zero;
 use spade::{DelaunayTriangulation, HasPosition, HierarchyHintGenerator, Triangulation};
+
+type WarpTriangulation =
+    DelaunayTriangulation<WarpFunctionExactMapping, (), (), (), HierarchyHintGenerator<f64>>;
+type ExactMappingTriangulation =
+    DelaunayTriangulation<ExactMapping, (), (), (), HierarchyHintGenerator<f64>>;
 use std::iter::Map;
 
 use crate::{
@@ -219,14 +224,13 @@ impl HasPosition for ExactMapping {
 }
 
 pub struct GeolocationGridInterpolator {
-    triangulation: DelaunayTriangulation<ExactMapping, (), (), (), HierarchyHintGenerator<f64>>,
+    triangulation: ExactMappingTriangulation,
 }
 
 impl GeolocationGridInterpolator {
     pub fn new(grid: &GeolocationGrid) -> Self {
         let points = &grid.geolocation_grid_point_list.geolocation_grid_point;
-        let mut triangulation =
-            DelaunayTriangulation::<ExactMapping, (), (), (), HierarchyHintGenerator<f64>>::new();
+        let mut triangulation = ExactMappingTriangulation::new();
         for p in points {
             let mapping = ExactMapping {
                 azimuth_index: p.line as f64,
@@ -561,8 +565,7 @@ pub fn flat_earth_dphi(
 // -- Enchanced Delaunay Warp Function --
 
 pub struct EnhancedDelaunayWarpFunction {
-    pub triangulation:
-        DelaunayTriangulation<WarpFunctionExactMapping, (), (), (), HierarchyHintGenerator<f64>>,
+    pub triangulation: WarpTriangulation,
 }
 
 /// A point which contains a single exact mapping of the reference coordinates to the secondary coordinates.
@@ -588,13 +591,7 @@ impl EnhancedDelaunayWarpFunction {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.precise_orbital_state_history();
         let sec_osh = secondary.precise_orbital_state_history();
-        let mut triangulation = DelaunayTriangulation::<
-            WarpFunctionExactMapping,
-            (),
-            (),
-            (),
-            HierarchyHintGenerator<f64>,
-        >::new();
+        let mut triangulation = WarpTriangulation::new();
         let mappings: Vec<_> = dem
             .lat_lon_iter()
             .par_bridge()
@@ -664,34 +661,15 @@ impl EnhancedDelaunayWarpFunction {
     }
 
     // uses rayon IntoParallelIterator trait
+    // TODO: fix this
+    #[allow(clippy::type_complexity)]
     pub fn map_parallel<'a, I>(
         &'a self,
         ref_coords: I,
     ) -> rayon::iter::MapInit<
         I::Iter,
-        impl Fn() -> spade::NaturalNeighbor<
-            'a,
-            DelaunayTriangulation<
-                WarpFunctionExactMapping,
-                (),
-                (),
-                (),
-                HierarchyHintGenerator<f64>,
-            >,
-        >,
-        impl Fn(
-            &mut spade::NaturalNeighbor<
-                'a,
-                DelaunayTriangulation<
-                    WarpFunctionExactMapping,
-                    (),
-                    (),
-                    (),
-                    HierarchyHintGenerator<f64>,
-                >,
-            >,
-            [f64; 2],
-        ) -> Option<[f64; 2]>,
+        impl Fn() -> spade::NaturalNeighbor<'a, WarpTriangulation>,
+        impl Fn(&mut spade::NaturalNeighbor<'a, WarpTriangulation>, [f64; 2]) -> Option<[f64; 2]>,
     >
     where
         I: IntoParallelIterator<Item = [f64; 2]>,
