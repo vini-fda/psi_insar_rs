@@ -104,6 +104,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Needs to open external files"]
     fn test_spectrum() {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",

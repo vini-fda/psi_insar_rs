@@ -166,6 +166,7 @@ mod tests {
     use crate::{download_orbit::CDSEOrbitDownloader, granule_id::Mission};
 
     #[test]
+    #[ignore = "Needs to download external data"]
     fn simple_orbit_info() {
         let client = CDSEOrbitDownloader::new();
         let start = DateTime::parse_from_rfc3339("2025-06-09T13:59:42Z")

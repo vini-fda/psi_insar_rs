@@ -291,6 +291,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Needs to open external files"]
     fn test_check_layover() {
         let dem = DEM::open_file("dem.tif");
         let reference = Sentinel1SlcBurst::load_first_from_directory(

@@ -872,6 +872,7 @@ mod tests {
     use crate::dem::CopernicusDemType;
 
     #[test]
+    #[ignore = "Needs to download external data"]
     fn get_bounding_box_lat_lon() {
         let burst = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",

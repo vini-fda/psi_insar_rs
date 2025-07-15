@@ -891,6 +891,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Needs to open external files"]
     fn find_zero_doppler_from_orbit_list() {
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml")

@@ -447,6 +447,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Needs to open external files"]
     fn test_load_slc_burst() {
         // root directory
         let root = PathBuf::from(

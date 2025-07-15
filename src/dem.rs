@@ -403,6 +403,7 @@ impl Iterator for IndexedLatLonHeightIter<'_> {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "Needs to download external data"]
     fn simple_test() {
         let bounds = [
             19.28241180526043,
