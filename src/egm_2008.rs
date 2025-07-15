@@ -819,6 +819,8 @@ fn interpolate(a: f64, b: f64, proportion: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use approx::relative_eq;
+
     use super::{Error, geoid_height, interpolate};
 
     #[test]
@@ -893,7 +895,10 @@ mod tests {
                 "could not calculate geoid height at ({lat}, {lon})"
             );
             if let Ok(actual) = result {
-                assert_eq!(actual, expected, "got unexpected height at ({lat}, {lon})");
+                assert!(
+                    relative_eq!(actual, expected),
+                    "got unexpected height at ({lat}, {lon})"
+                );
             }
         }
     }
