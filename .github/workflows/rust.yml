@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
+  RUSTC_WORKSPACE_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -24,4 +25,4 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --lib --tests --verbose
+      run: cargo test --verbose
