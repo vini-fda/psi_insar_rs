@@ -129,13 +129,17 @@ where
 {
     let space_separated_string = values
         .iter()
-        .map(|n| n.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join(" ");
     serializer.serialize_str(&space_separated_string)
 }
 
 /// Custom deserializer function for space-separated unsigned 32-bit integers.
+///
+/// # Errors
+///
+/// Returns a ``serde::de::Error`` if the string cannot be parsed as a list of unsigned 32-bit integers.
 fn deserialize_space_separated_u32<'de, D>(deserializer: D) -> Result<Vec<u32>, D::Error>
 where
     D: Deserializer<'de>,
@@ -148,13 +152,18 @@ where
         .collect())
 }
 
+/// Serialize a list of unsigned 32-bit integers to a space-separated string.
+///
+/// # Errors
+///
+/// Returns a ``serde::ser::Error`` if the string cannot be formatted as a space-separated string.
 pub fn serialize_space_separated_u32<S>(values: &[u32], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     let space_separated_string = values
         .iter()
-        .map(|n| n.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join(" ");
     serializer.serialize_str(&space_separated_string)
