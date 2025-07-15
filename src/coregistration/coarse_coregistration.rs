@@ -1,4 +1,4 @@
-use ndarray::{Array2, s};
+use ndarray::Array2;
 use num_complex::Complex32;
 use std::ops::Range;
 

@@ -15,7 +15,9 @@ mod tests {
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         dem::{CopernicusDemType, DEM},
+        download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
+        granule_id::Mission,
         interferometry::bounding_box_from_stack,
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
@@ -23,8 +25,8 @@ mod tests {
             perp_baseline,
         },
         satellite_orbit::{
-            OrbitalStateHistory, pixel_coords_to_radar_coords, radar_coords_to_pixel_coords,
-            zero_doppler_time,
+            ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
+            radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::Sentinel1SlcBurst,
         stft::{Stft, WindowFunction},
@@ -243,6 +245,7 @@ mod tests {
 
     #[test]
     fn test_orbit_speed() {
+        env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
@@ -257,12 +260,12 @@ mod tests {
         let bursts = [primary, secondary];
 
         for (burst_id, burst) in bursts.iter().enumerate() {
-            let osh = burst.orbital_state_history();
-            let start_time = burst.metadata.ads_header.start_time;
+            let osh = burst.continuous_orbital_state_history();
+            let start_time = osh.time.first().unwrap();
             let end_time = osh.time.last().unwrap();
             let n = 1000;
-            let dt_nanos = (*end_time - start_time).num_nanoseconds().unwrap() / n;
-            let mut t = start_time;
+            let dt = (end_time - start_time) / n as f64;
+            let mut t = *start_time;
             let mut sat_pos = vec![];
             let mut sat_vel = vec![];
 
@@ -272,11 +275,7 @@ mod tests {
                 let vel_f32 = vel.map(|x| x as f32).data.0[0];
                 sat_pos.push(pos_f32);
                 sat_vel.push(vel_f32);
-                rr.set_time(
-                    "time",
-                    std::time::SystemTime::UNIX_EPOCH
-                        + std::time::Duration::from_nanos((i * dt_nanos) as u64),
-                );
+                rr.set_duration_secs("time", i as f64 * dt);
                 rr.log(
                     format!("sat_pos_{burst_id}"),
                     &rerun::Points3D::new([pos_f32]),
@@ -289,12 +288,12 @@ mod tests {
                     &rerun::Scalars::new([vel.norm()]),
                 )
                 .expect("Unable to log scalar");
-                t += chrono::TimeDelta::nanoseconds(dt_nanos);
+                t += dt;
             }
 
             let sat_trajectory = rerun::LineStrip3D::from_iter(sat_pos);
             rr.log_static(
-                format!("Satellite trajectory {burst_id}"),
+                format!("satellite_trajectory_{burst_id}"),
                 &rerun::LineStrips3D::new([sat_trajectory]),
             )
             .expect("Unable to log sat trajectory");
@@ -306,7 +305,7 @@ mod tests {
                 .map(|p| p.map(|x| x as f32).data.0[0])
                 .collect::<Vec<_>>();
             rr.log_static(
-                format!("Satellite position original points {burst_id}"),
+                format!("satellite_position_original_points_{burst_id}"),
                 &rerun::Points3D::new(sat_points),
             )
             .expect("Unable to log sat points");
@@ -1126,6 +1125,7 @@ mod tests {
             .expect("Could not log phase_difference to Rerun");
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn differential_phase_plot() {
         env_logger::init();
@@ -1228,9 +1228,9 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            let osh_1 = reference.orbital_state_history();
+            let osh_1 = reference.precise_orbital_state_history();
             let annotation_1 = &reference.metadata;
-            let osh_2 = secondary.orbital_state_history();
+            let osh_2 = secondary.precise_orbital_state_history();
             let annotation_2 = &secondary.metadata;
             let mut phase_diff =
                 Array2::from_shape_fn((ref_azimuth_dim, ref_slant_range_dim / 2), |(i, j)| {
@@ -1244,6 +1244,14 @@ mod tests {
 
             log::info!("Removing topographic phase");
             let start_time = std::time::Instant::now();
+            let azimuth_time_interval_1 = annotation_1
+                .image_annotation
+                .image_information
+                .azimuth_time_interval;
+            let azimuth_time_interval_2 = annotation_2
+                .image_annotation
+                .image_information
+                .azimuth_time_interval;
             phase_diff
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
@@ -1284,8 +1292,8 @@ mod tests {
                                     dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                                 );
 
-                                let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                                let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
+                                let zero_doppler_1 = ref_az as f64 * azimuth_time_interval_1;
+                                let zero_doppler_2 = sec_az * azimuth_time_interval_2;
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 
@@ -1546,7 +1554,7 @@ mod tests {
         )
         .unwrap();
         let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
@@ -1557,19 +1565,9 @@ mod tests {
         // Build (dx, dy) offset values for histogram
         log::info!("Building (dx, dy) offset values for histogram");
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.orbital_state_history();
-        let sec_osh = secondary.orbital_state_history();
-        let radar_coords = |ground_target_pos: Vector3<f64>,
-                            osh: &OrbitalStateHistory,
-                            annotation: &SlcProductAnnotation|
-         -> [f64; 2] {
-            let zero_doppler = osh.find_zero_doppler_state(ground_target_pos);
+        let ref_osh = reference.precise_orbital_state_history();
+        let sec_osh = secondary.precise_orbital_state_history();
 
-            radar_coords_to_pixel_coords(zero_doppler, annotation)
-        };
-
-        let reference_metadata = &reference.metadata;
-        let secondary_metadata = &secondary.metadata;
         let n = dem.len();
         let mut delta_azimuth_coords = Vec::with_capacity(n);
         let mut delta_slant_range_coords = Vec::with_capacity(n);
@@ -1577,8 +1575,8 @@ mod tests {
         let mut longitudes = Vec::with_capacity(n);
         for (lat, lon) in dem.lat_lon_iter() {
             let pos = dem.get_ecef_at_lat_lon(lat, lon);
-            let rc_ref = radar_coords(pos.into(), &ref_osh, reference_metadata);
-            let rc_sec = radar_coords(pos.into(), &sec_osh, secondary_metadata);
+            let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+            let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
             if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                 && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
@@ -1604,6 +1602,195 @@ mod tests {
         delta_slant_range_coords.write_npy(file_rg).unwrap();
         latitudes.write_npy(file_lat).unwrap();
         longitudes.write_npy(file_lon).unwrap();
+        log::info!("Done!");
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn orbital_path_coregistration() {
+        env_logger::init();
+        log::info!("Starting orbital_path_coregistration test.");
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+        )
+        .unwrap();
+        let bounding_box = bounding_box_from_stack([&primary, &secondary]);
+        log::info!("Downloading DEM");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        log::info!("DEM succesfully downloaded!");
+
+        let ref_osh = &primary.precise_orbital_state_history();
+        let sec_osh = &secondary.precise_orbital_state_history();
+
+        let lat0 = 19.57468_f64;
+        let lon0 = -99.08250_f64;
+        let lat1 = 19.4_f64;
+        let lon1 = -99.113_f64;
+
+        // let lat_lon = [[lat0, lon0], [lat1, lon1]];
+        let m = 100;
+        let delta_lat = (lat1 - lat0) / m as f64;
+        let delta_lon = (lon1 - lon0) / m as f64;
+        let lat_lon =
+            (0..m).map(|k| [lat0 + delta_lat * (k as f64), lon0 + delta_lon * (k as f64)]);
+        let rr = rerun::RecordingStreamBuilder::new("orbital_path_coregistration")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        for (frame, [lat, lon]) in lat_lon.enumerate() {
+            rr.set_time_sequence("frame", frame as i64);
+            let pos = dem.get_ecef_at_lat_lon(lat, lon);
+            let (s_ref, delta_time_secs_ref) = ref_osh.find_zero_doppler_state_sat_pos(pos.into());
+
+            rr.log(
+                "delta_time_secs_ref".to_string(),
+                &rerun::Scalars::new([delta_time_secs_ref]),
+            )
+            .expect("Unable to log scalar");
+            let (s_sec, delta_time_secs_sec) = sec_osh.find_zero_doppler_state_sat_pos(pos.into());
+            rr.log(
+                "delta_time_secs_sec".to_string(),
+                &rerun::Scalars::new([delta_time_secs_sec]),
+            )
+            .expect("Unable to log scalar");
+            rr.log(
+                "time_diff_secs".to_string(),
+                &rerun::Scalars::new([(delta_time_secs_ref - delta_time_secs_sec)
+                    / primary
+                        .metadata
+                        .image_annotation
+                        .image_information
+                        .azimuth_time_interval]),
+            )
+            .expect("Unable to log scalar");
+            rr.log(
+                "sat_pos_ref",
+                &rerun::Points3D::new([s_ref.map(|x| x as f32).data.0[0]]),
+            )
+            .unwrap();
+            rr.log(
+                "sat_pos_sec",
+                &rerun::Points3D::new([s_sec.map(|x| x as f32).data.0[0]]),
+            )
+            .unwrap();
+            rr.log(
+                "ground_point",
+                &rerun::Points3D::new([pos.map(|x| x as f32)]),
+            )
+            .unwrap();
+        }
+
+        // Log trajectories
+        let bursts = [&primary, &secondary];
+
+        for (burst_id, burst) in bursts.iter().enumerate() {
+            let mut sat_pos = vec![];
+            let osh = burst.precise_orbital_state_history();
+            // let start_time = burst.metadata.ads_header.start_time;
+            let end_time = osh.time.last().unwrap();
+            let n = 100;
+            let dt = *end_time / n as f64;
+            let mut t = 0.0;
+
+            for i in 0..n {
+                let pos = osh.interp_pos(t);
+                let pos_f32 = pos.map(|x| x as f32).data.0[0];
+                sat_pos.push(pos_f32);
+                // rr.set_time(
+                //     "time",
+                //     std::time::SystemTime::UNIX_EPOCH
+                //         + std::time::Duration::from_nanos((i * dt_nanos) as u64),
+                // );
+                // rr.log(
+                //     format!("sat_pos_{burst_id}"),
+                //     &rerun::Points3D::new([pos_f32]),
+                // )
+                // .expect("Unable to log sat pos");
+
+                t += dt;
+            }
+            let sat_trajectory = rerun::LineStrip3D::from_iter(sat_pos);
+            rr.log_static(
+                format!("sat_trajectory_{burst_id}"),
+                &rerun::LineStrips3D::new([sat_trajectory]),
+            )
+            .expect("Unable to log sat trajectory");
+        }
+
+        // Log DEM Mesh
+        // Build (dx, dy) offset values for histogram
+        log::info!("Building (dx, dy) offset values for histogram");
+        let [slant_range_size, azimuth_size] = primary.data.raster_size();
+
+        log::info!(
+            "DEM original length: {}, original dimensions = {}, {}",
+            dem.len(),
+            dem.rows(),
+            dem.cols()
+        );
+        const FACTOR_ROWS: usize = 2;
+        const FACTOR_COLS: usize = 2;
+        let rows = dem.rows() / FACTOR_ROWS;
+        let cols = dem.cols() / FACTOR_COLS;
+        let n = rows * cols;
+        log::info!("DEM sampled length: {n}, sampled dimensions = {rows}, {cols}");
+        let mut delta_azimuth_coords = Vec::with_capacity(n);
+        let mut delta_slant_range_coords = Vec::with_capacity(n);
+        let mut vertices = Vec::with_capacity(n);
+
+        for i in 0..rows {
+            for j in 0..cols {
+                let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
+                let pos = dem.get_ecef_at_lat_lon(lat, lon);
+                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
+
+                if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
+                    && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
+                {
+                    delta_azimuth_coords.push((rc_sec[0] - rc_ref[0]) as f32);
+                    delta_slant_range_coords.push((rc_sec[1] - rc_ref[1]) as f32);
+                } else {
+                    delta_azimuth_coords.push(f32::NAN);
+                    delta_slant_range_coords.push(f32::NAN);
+                }
+                vertices.push(pos.map(|x| x as f32));
+            }
+        }
+        let mut triangle_indices = Vec::with_capacity((rows - 1) * (cols - 1) * 2);
+        let mut max_index = 0;
+        for i in 0..(rows - 1) {
+            for j in 0..(cols - 1) {
+                let a = (i * cols + j) as u32;
+                let b = (i * cols + j + 1) as u32;
+                let c = ((i + 1) * cols + j) as u32;
+                let d = ((i + 1) * cols + j + 1) as u32; // rows * cols - 1
+                if d > max_index {
+                    max_index = d;
+                }
+                triangle_indices.push([a, b, d]);
+                triangle_indices.push([a, d, c]);
+            }
+        }
+        log::info!("max_index = {max_index}");
+        let colors_delta_azimuth_coords = turbo_colorized_values(&delta_azimuth_coords);
+        let colors_delta_slant_range_coords = turbo_colorized_values(&delta_slant_range_coords);
+
+        log::info!("Built offset values!");
+        // Log as a 3D Mesh
+        let mesh_az_offsets = rerun::Mesh3D::new(vertices.iter())
+            .with_vertex_colors(colors_delta_azimuth_coords)
+            .with_triangle_indices(triangle_indices.iter());
+        let mesh_rg_offsets = rerun::Mesh3D::new(vertices)
+            .with_vertex_colors(colors_delta_slant_range_coords)
+            .with_triangle_indices(triangle_indices);
+
+        rr.log_static("mesh_az_offsets", &mesh_az_offsets).unwrap();
+        rr.log_static("mesh_rg_offsets", &mesh_rg_offsets).unwrap();
+
         log::info!("Done!");
     }
 
@@ -2133,5 +2320,105 @@ mod tests {
 
         rec.log_static("geo_points", &rerun::Points3D::new(radar_xyz))
             .unwrap();
+    }
+
+    #[test]
+    fn compare_poe_with_metadata() {
+        env_logger::init();
+        let rr = rerun::RecordingStreamBuilder::new("compare_poe_with_metadata")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        let primary = Sentinel1SlcBurst::load_first_from_directory(
+            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        )
+        .unwrap();
+        let mission = primary.metadata.ads_header.mission_id;
+        let start = primary.metadata.ads_header.start_time;
+        let end = primary.metadata.ads_header.stop_time;
+        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        // save poe_orbit to file
+        let poe_orbit_path = format!("poe_orbit_{mission}.xml");
+        let poe_orbit_xml = quick_xml::se::to_string(&poe_orbit).unwrap();
+        std::fs::write(poe_orbit_path, poe_orbit_xml).unwrap();
+
+        println!("Start = {start}, End = {end}");
+        let osh_poe = ContinuousOrbitalStateHistory::from_poe_timeframe(
+            poe_orbit,
+            start,
+            end,
+            &primary.metadata,
+        );
+        let osh_metadata = primary.continuous_orbital_state_history();
+
+        log::info!("Number of points in osh_poe = {}", osh_poe.time.len());
+        log::info!(
+            "Number of points in osh_metadata = {}",
+            osh_metadata.time.len()
+        );
+
+        let t0_metadata = *osh_metadata.time.first().unwrap();
+        let t0_poe = *osh_poe.time.first().unwrap();
+        let t0_max = if t0_poe < t0_metadata {
+            t0_metadata
+        } else {
+            t0_poe
+        };
+
+        let t1_metadata = *osh_metadata.time.last().unwrap();
+        let t1_poe = *osh_poe.time.last().unwrap();
+
+        let t1_min = if t1_poe < t1_metadata {
+            t1_poe
+        } else {
+            t1_metadata
+        };
+
+        let n = 1000;
+        let dt = (t1_min - t0_max) / n as f64;
+
+        // First, log individual satellite data
+        for (osh, id) in [&osh_poe, &osh_metadata]
+            .iter()
+            .zip(["poe", "metadata"].iter())
+        {
+            let mut t = t0_max;
+            let mut sat_pos = vec![];
+            let mut sat_vel = vec![];
+
+            for i in 0..n {
+                let (pos, vel) = osh.interp_pos_vel(t);
+                let pos_f32 = pos.map(|x| x as f32).data.0[0];
+                let vel_f32 = vel.map(|x| x as f32).data.0[0];
+                sat_pos.push(pos_f32);
+                sat_vel.push(vel_f32);
+                rr.set_duration_secs("time_since_start", t - t0_max);
+                rr.log(format!("sat_pos_{id}"), &rerun::Points3D::new([pos_f32]))
+                    .expect("Unable to log sat pos");
+                let arrow_vel = rerun::Arrows3D::from_vectors([vel_f32]).with_origins([pos_f32]);
+                rr.log(format!("sat_vel_{id}"), &arrow_vel).unwrap();
+                rr.log(
+                    format!("sat_vel_scalar_{id}"),
+                    &rerun::Scalars::new([vel.norm()]),
+                )
+                .expect("Unable to log scalar");
+                t += dt;
+            }
+        }
+
+        // Now calculate and log the distance between the two satellites
+        let mut t = t0_max;
+        for i in 0..n {
+            let (pos_poe, _) = osh_poe.interp_pos_vel(t);
+            let (pos_metadata, _) = osh_metadata.interp_pos_vel(t);
+
+            // Calculate the distance between the two positions
+            let distance = (pos_poe - pos_metadata).norm();
+
+            rr.set_duration_secs("time_since_start", t - t0_max);
+            rr.log("sat_dist_scalar", &rerun::Scalars::new([distance]))
+                .expect("Unable to log distance scalar");
+
+            t += dt;
+        }
     }
 }

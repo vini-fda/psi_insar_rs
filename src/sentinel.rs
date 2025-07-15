@@ -1,3 +1,4 @@
+use crate::download_orbit::CDSEOrbitDownloader;
 use crate::granule_id::{Sentinel1GranuleId, Sentinel1TIFFFileName};
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
@@ -429,6 +430,15 @@ impl Sentinel1SlcBurst {
             .image_information
             .product_first_line_utc_time;
         ContinuousOrbitalStateHistory::from_osh(&osh, t_start, &self.metadata)
+    }
+
+    pub fn precise_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let mission = self.metadata.ads_header.mission_id;
+        let start = self.metadata.ads_header.start_time;
+        let end = self.metadata.ads_header.stop_time;
+        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+
+        ContinuousOrbitalStateHistory::from_poe_timeframe(poe_orbit, start, end, &self.metadata)
     }
 }
 

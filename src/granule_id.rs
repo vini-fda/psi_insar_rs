@@ -82,7 +82,10 @@ pub enum IWSwath {
     IW3,
 }
 
-impl IWSwath {
+impl IWSwath {}
+
+impl std::str::FromStr for IWSwath {
+    type Err = String;
     /// Converts a string to a IWSwath enum value
     ///
     /// # Arguments
@@ -92,40 +95,27 @@ impl IWSwath {
     /// # Returns
     ///
     /// * `Option<IWSwath>` - The corresponding IWSwath variant or None if the string is invalid
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "IW1" => Some(IWSwath::IW1),
-            "IW2" => Some(IWSwath::IW2),
-            "IW3" => Some(IWSwath::IW3),
-            _ => None,
-        }
-    }
-
-    /// Converts the IWSwath enum to a lowercase string
-    ///
-    /// # Returns
-    ///
-    /// * `String` - The string representation ("IW1", "IW2", or "IW3")
-    pub fn to_string(&self) -> String {
-        match self {
-            IWSwath::IW1 => "IW1".to_string(),
-            IWSwath::IW2 => "IW2".to_string(),
-            IWSwath::IW3 => "IW3".to_string(),
+            "IW1" => Ok(IWSwath::IW1),
+            "IW2" => Ok(IWSwath::IW2),
+            "IW3" => Ok(IWSwath::IW3),
+            s => Err(format!("Invalid value for IWSwath: {s}")),
         }
     }
 }
 
 impl std::fmt::Display for IWSwath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
-    }
-}
-
-impl std::str::FromStr for IWSwath {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_str(s).ok_or_else(|| format!("Invalid sub-swath: {s}"))
+        write!(
+            f,
+            "{}",
+            match self {
+                IWSwath::IW1 => "IW1".to_string(),
+                IWSwath::IW2 => "IW2".to_string(),
+                IWSwath::IW3 => "IW3".to_string(),
+            }
+        )
     }
 }
 

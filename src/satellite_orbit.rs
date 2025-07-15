@@ -10,7 +10,7 @@ use crate::{
         unit_second_derivative_interval_cubic_hermite_spline_interpolation,
     },
     metadata::{
-        annotation_xml::{OrbitList, SlcProductAnnotation},
+        annotation_xml::{Orbit, OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
 };
@@ -43,15 +43,13 @@ pub struct OrbitalStateHistory {
 }
 
 impl OrbitalStateHistory {
-    /// From a Precise Orbit Ephemerides file, and a timeframe (start_time, end_time)
-    pub fn from_poe_timeframe<P: AsRef<Path>>(
-        path: P,
+    /// Create a [`OrbitalStateHistory`] instance from a Precise Orbit Ephemerides file, and a timeframe (start_time, end_time)
+    pub fn from_poe_timeframe(
+        eef: EarthExplorerFile,
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
     ) -> Self {
-        let eef = EarthExplorerFile::open(path);
         let osvs = eef.data_block.list_of_osvs.osv;
-        // osv.utc
         let first_index: usize = osvs.iter().rposition(|osv| osv.utc <= start_time).unwrap();
         let last_index: usize = osvs.iter().position(|osv| osv.utc >= end_time).unwrap();
         let n = (last_index + 1) - first_index;
@@ -70,7 +68,7 @@ impl OrbitalStateHistory {
             velocity,
         }
     }
-    #[inline(always)]
+
     pub fn interp_pos_vel(&self, t: DateTime<Utc>) -> (Vector3<f64>, Vector3<f64>) {
         let time: &[DateTime<Utc>] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -122,7 +120,6 @@ impl OrbitalStateHistory {
         (pos_interp, vel_interp)
     }
 
-    #[inline(always)]
     pub fn interp_pos(&self, t: DateTime<Utc>) -> Vector3<f64> {
         let time: &[DateTime<Utc>] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -392,8 +389,17 @@ impl ContinuousOrbitalStateHistory {
         }
     }
 
-    /// Interpolate p(t) and v(t) at
-    #[inline(always)]
+    pub fn from_poe_timeframe(
+        eef: EarthExplorerFile,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        annotation: &SlcProductAnnotation,
+    ) -> Self {
+        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
+        Self::from_osh(&osh, start_time, annotation)
+    }
+
+    /// Interpolate p(t) and v(t)
     pub fn interp_pos_vel(&self, t: f64) -> (Vector3<f64>, Vector3<f64>) {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -415,31 +421,20 @@ impl ContinuousOrbitalStateHistory {
         let total_dt = t_next - t_prev;
         let dt = t - t_prev;
         let alpha = dt / total_dt;
-
-        let total_dt_sec = total_dt;
         // cubic hermite interpolation
         let pos_interp = unit_interval_cubic_hermite_spline_interpolation(
-            p_prev,
-            v_prev,
-            p_next,
-            v_next,
-            total_dt_sec,
-            alpha,
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
         );
         // Derivative of Hermite spline w.r.t. time
         let vel_interp = unit_derivative_interval_cubic_hermite_spline_interpolation(
-            p_prev,
-            v_prev,
-            p_next,
-            v_next,
-            total_dt_sec,
-            alpha,
+            p_prev, v_prev, p_next, v_next, total_dt, alpha,
         );
+        // let pos_interp = (1.0 - alpha) * p_prev + alpha * p_next;
+        // let vel_interp = (1.0 - alpha) * v_prev + alpha * v_next;
 
         (pos_interp, vel_interp)
     }
 
-    #[inline(always)]
     pub fn interp_pos(&self, t: f64) -> Vector3<f64> {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -476,7 +471,6 @@ impl ContinuousOrbitalStateHistory {
     }
 
     /// Interpolate p(t), v(t), and a(t) at time t
-    #[inline(always)]
     pub fn interp_pos_vel_acc(&self, t: f64) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
         let time: &[f64] = self.time.as_slice();
         let pos: &[Vector3<f64>] = self.position.as_slice();
@@ -519,7 +513,63 @@ impl ContinuousOrbitalStateHistory {
         (pos_interp, vel_interp, acc_interp)
     }
 
-    /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
+    pub fn find_zero_doppler_state_sat_pos(
+        &self,
+        ground_target_pos: Vector3<f64>,
+    ) -> (Vector3<f64>, f64) {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        let mut distance_to_target = f64::NAN;
+        let mut delta_time_secs = f64::NAN;
+        'outer: for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over time
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2.0;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        let sat_pos = self.interp_pos(mid);
+                        distance_to_target = (ground_target_pos - sat_pos).norm();
+                        delta_time_secs = mid;
+                        return (sat_pos, delta_time_secs);
+                        break 'outer;
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let half = (right - left) / 2.0;
+                let mid = left + half;
+                let sat_pos = self.interp_pos(mid);
+                distance_to_target = (ground_target_pos - sat_pos).norm();
+                delta_time_secs = mid;
+                return (sat_pos, delta_time_secs);
+                break 'outer;
+            }
+        }
+        panic!("OHNOOO")
+    }
+
+    /// Calculate the zero-Doppler state in Radar Coordinates (Azimuth index and slant range index) for a given ground target and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
     /// is perpendicular to the vector pointing from the satellite to the ground target:
@@ -819,7 +869,10 @@ mod tests {
     use super::OrbitalStateHistory;
     use crate::{
         dem::DEM,
-        metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
+        metadata::{
+            annotation_xml::{OrbitList, SlcProductAnnotation},
+            orbit_xml::EarthExplorerFile,
+        },
         satellite_orbit::radar_coords_to_pixel_coords,
     };
 
@@ -853,7 +906,8 @@ mod tests {
         // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;
-        let osh = OrbitalStateHistory::from_poe_timeframe("orbit.EOF", start_time, end_time);
+        let eef = EarthExplorerFile::open("orbit.EOF");
+        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
         let dem = DEM::open_file("dem.tif");
         let [lat, lon] = [19.49831428810679, -98.59301000370277];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);

@@ -5,6 +5,7 @@ use nalgebra::Vector3;
 /// m_0: slope/derivative at starting point
 /// p_1: value at end point
 /// m_1: slope/derivative at end point
+/// t_interval: time interval
 #[inline(always)]
 pub fn unit_interval_cubic_hermite_spline_interpolation(
     p_0: Vector3<f64>,
@@ -28,6 +29,7 @@ pub fn unit_interval_cubic_hermite_spline_interpolation(
 /// m_0: slope/derivative at starting point
 /// p_1: value at end point
 /// m_1: slope/derivative at end point
+/// t_interval: time interval
 #[inline(always)]
 pub fn unit_derivative_interval_cubic_hermite_spline_interpolation(
     p_0: Vector3<f64>,
@@ -43,19 +45,6 @@ pub fn unit_derivative_interval_cubic_hermite_spline_interpolation(
     let h10_deriv = 3.0 * t2 - 4.0 * t + 1.0;
     let h01_deriv = -6.0 * t2 + 6.0 * t;
     let h11_deriv = 3.0 * t2 - 2.0 * t;
-    // if t > 0.99 {
-    //     println!("h00_deriv = {}", h00_deriv);
-    //     let a = h00_deriv * p_0;
-    //     let b = h10_deriv * m_0;
-    //     let c = h01_deriv * p_1;
-    //     let d = h11_deriv * m_1;
-    //     let sum = a + b + c + d;
-    //     print_vec(a);
-    //     print_vec(b);
-    //     print_vec(c);
-    //     print_vec(d);
-    //     print_vec(sum);
-    // }
 
     (h00_deriv * p_0 + h01_deriv * p_1) / t_interval + h10_deriv * m_0 + h11_deriv * m_1
 }
