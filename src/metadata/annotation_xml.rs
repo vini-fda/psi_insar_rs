@@ -526,10 +526,10 @@ impl std::str::FromStr for ReferenceFrame {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input {
-            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
-            "GM2000" => Ok(ReferenceFrame::GM2000),
-            "GCRF" => Ok(ReferenceFrame::GCRF),
-            "ITRF" => Ok(ReferenceFrame::ITRF),
+            "Earth Fixed" => Ok(Self::EarthFixed),
+            "GM2000" => Ok(Self::GM2000),
+            "GCRF" => Ok(Self::GCRF),
+            "ITRF" => Ok(Self::ITRF),
             _ => Err(format!("Unknown reference frame: {input}")),
         }
     }
@@ -541,26 +541,26 @@ impl Serialize for ReferenceFrame {
         S: serde::Serializer,
     {
         let frame_str = match self {
-            ReferenceFrame::EarthFixed => "Earth Fixed",
-            ReferenceFrame::GM2000 => "GM2000",
-            ReferenceFrame::GCRF => "GCRF",
-            ReferenceFrame::ITRF => "ITRF",
+            Self::EarthFixed => "Earth Fixed",
+            Self::GM2000 => "GM2000",
+            Self::GCRF => "GCRF",
+            Self::ITRF => "ITRF",
         };
         serializer.serialize_str(frame_str)
     }
 }
 
 impl<'de> Deserialize<'de> for ReferenceFrame {
-    fn deserialize<D>(deserializer: D) -> Result<ReferenceFrame, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let frame_str = String::deserialize(deserializer)?;
         match frame_str.as_str() {
-            "Earth Fixed" => Ok(ReferenceFrame::EarthFixed),
-            "GM2000" => Ok(ReferenceFrame::GM2000),
-            "GCRF" => Ok(ReferenceFrame::GCRF),
-            "ITRF" => Ok(ReferenceFrame::ITRF),
+            "Earth Fixed" => Ok(Self::EarthFixed),
+            "GM2000" => Ok(Self::GM2000),
+            "GCRF" => Ok(Self::GCRF),
+            "ITRF" => Ok(Self::ITRF),
             _ => Err(serde::de::Error::custom(format!(
                 "Unknown reference frame: {frame_str}"
             ))),
@@ -594,7 +594,7 @@ pub struct Velocity {
 // Vector3 -> Position
 impl From<Vector3<f64>> for Position {
     fn from(v: Vector3<f64>) -> Self {
-        Position {
+        Self {
             x: v.x,
             y: v.y,
             z: v.z,
@@ -605,14 +605,14 @@ impl From<Vector3<f64>> for Position {
 // Position -> Vector3
 impl From<Position> for Vector3<f64> {
     fn from(p: Position) -> Self {
-        Vector3::new(p.x, p.y, p.z)
+        Self::new(p.x, p.y, p.z)
     }
 }
 
 // Vector3 -> Velocity
 impl From<Vector3<f64>> for Velocity {
     fn from(v: Vector3<f64>) -> Self {
-        Velocity {
+        Self {
             x: v.x,
             y: v.y,
             z: v.z,
@@ -623,7 +623,7 @@ impl From<Vector3<f64>> for Velocity {
 // Velocity -> Vector3
 impl From<Velocity> for Vector3<f64> {
     fn from(v: Velocity) -> Self {
-        Vector3::new(v.x, v.y, v.z)
+        Self::new(v.x, v.y, v.z)
     }
 }
 
@@ -1202,11 +1202,12 @@ impl Polynomial {
     /// # Returns
     ///
     /// The value of the polynomial at point `x`
+    #[must_use]
     pub fn evaluate(&self, x: f64) -> f64 {
         self.coefficients
             .iter()
             .rev()
-            .fold(0.0, |acc, &coef| acc * x + coef)
+            .fold(0.0, |acc, &coef| acc.mul_add(x, coef))
     }
 }
 
@@ -1237,7 +1238,7 @@ mod polynomial_format {
         let s = value
             .coefficients
             .iter()
-            .map(|x| x.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(" ");
         serializer.serialize_str(&s)
@@ -1417,6 +1418,7 @@ pub struct GeolocationGridPointList {
 
 impl GeolocationGridPointList {
     /// Get the (latitude, longitude) of all geolocation grid points, in order.
+    #[must_use]
     pub fn get_lat_lon(&self) -> Vec<[f64; 2]> {
         self.geolocation_grid_point
             .iter()
@@ -1428,6 +1430,7 @@ impl GeolocationGridPointList {
     /// # Returns
     /// An array containing the minimum and maximum latitude and longitude values,
     /// in the order `[min_lat, max_lat, min_lon, max_lon]`.
+    #[must_use]
     pub fn get_bounding_box_lat_lon(&self) -> [f64; 4] {
         let mut min_lat = f64::MAX;
         let mut max_lat = f64::MIN;
@@ -1490,13 +1493,18 @@ pub struct SwathMergeList {
     pub count: u32,
 }
 
-/// Custom deserializer for DateTime<Utc>
+/// Custom deserializer for ``DateTime<Utc>``
 pub mod datetime_format {
     use chrono::{DateTime, NaiveDateTime, Utc};
     use serde::{self, Deserialize, Deserializer};
 
     const FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
 
+    /// Deserialize a ``DateTime<Utc>`` from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a ``serde::de::Error`` if the string cannot be parsed as a ``DateTime<Utc>``.
     pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
         D: Deserializer<'de>,
@@ -1511,6 +1519,11 @@ pub mod datetime_format {
         Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc))
     }
 
+    /// Serialize a ``DateTime<Utc>`` to a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a ``serde::ser::Error`` if the string cannot be formatted as a ``DateTime<Utc>``.
     pub fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
