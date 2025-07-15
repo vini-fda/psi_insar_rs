@@ -239,11 +239,11 @@ pub struct ProductInformation {
     #[serde(rename = "platformHeading")]
     pub platform_heading: String,
     pub projection: String,
-    #[serde(rename = "rangeSamplingRate", with = "string_to_f64")]
+    #[serde(rename = "rangeSamplingRate")]
     pub range_sampling_rate: f64,
-    #[serde(rename = "radarFrequency", with = "string_to_f64")]
+    #[serde(rename = "radarFrequency")]
     pub radar_frequency: f64,
-    #[serde(rename = "azimuthSteeringRate", with = "string_to_f64")]
+    #[serde(rename = "azimuthSteeringRate")]
     pub azimuth_steering_rate: f64,
 }
 
@@ -641,27 +641,15 @@ pub struct Attitude {
 
     pub frame: String,
 
-    #[serde(with = "string_to_f64")]
     pub q0: f64,
-    #[serde(with = "string_to_f64")]
     pub q1: f64,
-    #[serde(with = "string_to_f64")]
     pub q2: f64,
-    #[serde(with = "string_to_f64")]
     pub q3: f64,
-
-    #[serde(with = "string_to_f64")]
     pub wx: f64,
-    #[serde(with = "string_to_f64")]
     pub wy: f64,
-    #[serde(with = "string_to_f64")]
     pub wz: f64,
-
-    #[serde(with = "string_to_f64")]
     pub roll: f64,
-    #[serde(with = "string_to_f64")]
     pub pitch: f64,
-    #[serde(with = "string_to_f64")]
     pub yaw: f64,
 }
 
@@ -868,7 +856,7 @@ pub struct AzimuthFmRate {
     pub text: Option<String>,
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
-    #[serde(with = "string_to_f64")]
+
     pub t0: f64,
     #[serde(rename = "azimuthFmRatePolynomial")]
     pub azimuth_fm_rate_polynomial: AzimuthFmRatePolynomial,
@@ -910,23 +898,23 @@ pub struct ImageInformation {
     pub slice_number: String,
     #[serde(rename = "sliceList")]
     pub slice_list: SliceList,
-    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    #[serde(rename = "slantRangeTime")]
     pub slant_range_time: f64,
     #[serde(rename = "pixelValue")]
     pub pixel_value: String,
     #[serde(rename = "outputPixels")]
     pub output_pixels: String,
-    #[serde(rename = "rangePixelSpacing", with = "string_to_f64")]
+    #[serde(rename = "rangePixelSpacing")]
     pub range_pixel_spacing: f64,
-    #[serde(rename = "azimuthPixelSpacing", with = "string_to_f64")]
+    #[serde(rename = "azimuthPixelSpacing")]
     pub azimuth_pixel_spacing: f64,
-    #[serde(rename = "azimuthTimeInterval", with = "string_to_f64")]
+    #[serde(rename = "azimuthTimeInterval")]
     pub azimuth_time_interval: f64,
-    #[serde(rename = "azimuthFrequency", with = "string_to_f64")]
+    #[serde(rename = "azimuthFrequency")]
     pub azimuth_frequency: f64,
-    #[serde(rename = "numberOfSamples", with = "string_to_usize")]
+    #[serde(rename = "numberOfSamples")]
     pub number_of_samples: usize,
-    #[serde(rename = "numberOfLines", with = "string_to_usize")]
+    #[serde(rename = "numberOfLines")]
     pub number_of_lines: usize,
     #[serde(rename = "zeroDopMinusAcqTime")]
     pub zero_dop_minus_acq_time: String,
@@ -1381,7 +1369,7 @@ pub struct Burst {
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     /// "ANX time" (seconds from ANX - Ascending Node Crossing)
-    #[serde(rename = "azimuthAnxTime", with = "string_to_f64")]
+    #[serde(rename = "azimuthAnxTime")]
     pub azimuth_anx_time: f64,
     #[serde(rename = "sensingTime", with = "datetime_format")]
     pub sensing_time: DateTime<Utc>,
@@ -1461,15 +1449,12 @@ pub struct GeolocationGridPoint {
     pub text: Option<String>,
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
-    #[serde(rename = "slantRangeTime", with = "string_to_f64")]
+    #[serde(rename = "slantRangeTime")]
     pub slant_range_time: f64,
     pub line: usize,
     pub pixel: usize,
-    #[serde(with = "string_to_f64")]
     pub latitude: f64,
-    #[serde(with = "string_to_f64")]
     pub longitude: f64,
-    #[serde(with = "string_to_f64")]
     pub height: f64,
     #[serde(rename = "incidenceAngle")]
     pub incidence_angle: f64,
@@ -1531,46 +1516,6 @@ pub mod datetime_format {
         S: serde::Serializer,
     {
         serializer.serialize_str(&value.format(FORMAT).to_string())
-    }
-}
-
-/// Custom deserializer for f64
-mod string_to_f64 {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        s.parse::<f64>().map_err(serde::de::Error::custom)
-    }
-
-    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-}
-
-/// Custom serializer/deserializer for usize
-mod string_to_usize {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<usize, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        s.parse::<usize>().map_err(serde::de::Error::custom)
-    }
-
-    pub fn serialize<S>(value: &usize, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
     }
 }
 
