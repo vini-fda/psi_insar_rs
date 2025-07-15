@@ -85,6 +85,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn plot_slc_images() {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
@@ -107,6 +108,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn compare_zero_doppler() {
         env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
@@ -160,6 +162,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_backgeocoding() {
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
             .connect_grpc()
@@ -242,6 +245,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_orbit_speed() {
         env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
@@ -317,6 +321,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn baseline_plot() {
         env_logger::init();
         let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
@@ -473,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn coarse_coregistration_stack() {
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
@@ -572,6 +578,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_resample_secondary_to_reference() {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -655,6 +662,7 @@ mod tests {
             .expect("Could not log reference_phase to Rerun");
     }
     #[test]
+    #[ignore]
     fn testfn_dem() {
         let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
@@ -708,6 +716,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn testfn_dem_rgb() {
         let dem = DEM::open_file("dem.tif");
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
@@ -790,6 +799,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_warp_function() {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -814,6 +824,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn testfn_dem_radar_coords() {
         let dem = DEM::open_file("dem.tif");
         let reference = Sentinel1SlcBurst::load_first_from_directory(
@@ -907,6 +918,7 @@ mod tests {
         .expect("Could not log wireframe to Rerun");
     }
     #[test]
+    #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -972,6 +984,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -1006,6 +1019,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_resampled_phase_difference() {
         let reference = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -1059,6 +1073,7 @@ mod tests {
 
     #[allow(clippy::too_many_lines)]
     #[test]
+    #[ignore]
     fn differential_phase_plot() {
         env_logger::init();
         log::info!("Starting differential_phase_plot test.");
@@ -1249,6 +1264,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn topo_phase_plot() {
         env_logger::init();
         log::info!("Starting topo_phase_plot test.");
@@ -1478,6 +1494,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn warp_fn_offsets_histogram() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_histogram test.");
@@ -1539,6 +1556,7 @@ mod tests {
 
     #[allow(clippy::too_many_lines)]
     #[test]
+    #[ignore]
     fn orbital_path_coregistration() {
         env_logger::init();
         log::info!("Starting orbital_path_coregistration test.");
@@ -1727,6 +1745,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn warp_fn_offsets_mesh() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_mesh test.");
@@ -1822,6 +1841,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_flat_earth_dphi() {
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -1868,6 +1888,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_interpolated_flat_earth_dphi() {
         let primary = Sentinel1SlcBurst::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
@@ -1919,6 +1940,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_interpolated_flat_earth_removal() {
         env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
@@ -1972,6 +1994,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn plot_warp_fn() {
         env_logger::init();
         let primary = Sentinel1SlcBurst::load_first_from_directory(
@@ -2045,6 +2068,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn dem_mesh_test() {
         let dem = DEM::open_file("dem.tif");
         let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
@@ -2080,6 +2104,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn simple_test_satellite_orbit() {
         let rec = rerun::RecordingStreamBuilder::new("simple_test_satellite_orbit")
             .connect_grpc()
@@ -2256,6 +2281,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn compare_poe_with_metadata() {
         env_logger::init();
         let rr = rerun::RecordingStreamBuilder::new("compare_poe_with_metadata")
