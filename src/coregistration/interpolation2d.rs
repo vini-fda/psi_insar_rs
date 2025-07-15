@@ -64,11 +64,13 @@ impl<T: Float> CubicKernel<T> {
     pub fn new(a: T) -> Self {
         Self { a }
     }
+}
 
-    pub fn default() -> Self {
+impl<T: Float> Default for CubicKernel<T> {
+    fn default() -> Self {
         Self {
             a: T::from(-0.5).unwrap(),
-        } // Common coefficient value
+        }
     }
 }
 
