@@ -96,11 +96,8 @@ use crate::{
     },
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
-    metadata::annotation_xml::{GeolocationGrid, SlcProductAnnotation},
-    satellite_orbit::{
-        ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
-        radar_coords_to_pixel_coords,
-    },
+    metadata::annotation_xml::GeolocationGrid,
+    satellite_orbit::pixel_coords_to_radar_coords,
     sentinel::Sentinel1SlcBurst,
 };
 
