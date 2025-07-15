@@ -118,14 +118,14 @@ impl CoarseCoregistration {
         // Patch offsets (in reference image):
         let offset_rows1 = (rows1 - kernel_size) / 2;
         let offset_cols1 = (cols1 - kernel_size) / 2;
+        let ref_offset = [offset_rows1, offset_cols1];
+        let sec_offset = [offset_rows2, offset_cols2];
         self.compute_correlation_naive(
             &mut correlation,
             reference_image,
             secondary_image,
-            offset_rows1,
-            offset_cols1,
-            offset_rows2,
-            offset_cols2,
+            ref_offset,
+            sec_offset,
         );
         let mut max_x = 0;
         let mut max_y = 0;
@@ -187,10 +187,8 @@ impl CoarseCoregistration {
         out: &mut Array2<Complex32>,
         reference_image: &Array2<Complex32>,
         secondary_image: &Array2<Complex32>,
-        offset_rows1: usize,
-        offset_cols1: usize,
-        offset_rows2: usize,
-        offset_cols2: usize,
+        ref_offset: [usize; 2],
+        sec_offset: [usize; 2],
     ) {
         let CoarseCoregistration {
             k,
@@ -203,9 +201,9 @@ impl CoarseCoregistration {
                 let mut acc = Complex32::new(0.0, 0.0);
                 for dx in 0..kernel_size {
                     for dy in 0..kernel_size {
-                        let ref_val = reference_image[[dx + offset_rows1, dy + offset_cols1]];
-                        let sec_val =
-                            secondary_image[[x + dx + offset_rows2 - k, y + dy + offset_cols2 - k]];
+                        let ref_val = reference_image[[dx + ref_offset[0], dy + ref_offset[1]]];
+                        let sec_val = secondary_image
+                            [[x + dx + sec_offset[0] - k, y + dy + sec_offset[1] - k]];
                         acc += sec_val.conj() * ref_val;
                     }
                 }
