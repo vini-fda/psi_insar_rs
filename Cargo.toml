@@ -17,7 +17,7 @@ ndarray = { version = "0.16.1", features = ["rayon"] }
 ndarray-npy = "0.9.1"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
-quick-xml = { version = "0.37.2", features = ["serde", "serialize"] }
+quick-xml = { version = "0.38.0", features = ["serde", "serialize"] }
 rayon = "1.10.0"
 rustfft = "6.2.0"
 thread_local = "1.1.8"
