@@ -687,8 +687,8 @@ pub enum Error {
 /// # Examples
 ///
 /// ```
-/// # fn main() -> Result<(), egm2008::Error> {
-///     let difference = egm2008::geoid_height(0.0, 0.0)?;
+/// # fn main() -> Result<(), psi_insar_rs::egm_2008::Error> {
+///     let difference = psi_insar_rs::egm_2008::geoid_height(0.0, 0.0)?;
 ///     let message = format!("ground level is about {difference} meters above the WGS 84 ellipsoid");
 ///     assert_eq!(message, "ground level is about 17.225 meters above the WGS 84 ellipsoid");
 ///     Ok(())

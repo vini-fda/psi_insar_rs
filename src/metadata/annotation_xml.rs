@@ -1162,7 +1162,7 @@ pub struct GeometryDcPolynomial {
 /// # Examples
 ///
 /// ```
-/// # use crate::metadata::annotation_xml::Polynomial;
+/// # use psi_insar_rs::metadata::annotation_xml::Polynomial;
 /// // Create a polynomial p(x) = 3 + 2x - 5x²
 /// let poly = Polynomial { coefficients: vec![3.0, 2.0, -5.0] };
 /// assert_eq!(poly.evaluate(0.0), 3.0);

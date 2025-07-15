@@ -162,9 +162,7 @@ impl OrbitalStateHistory {
     /// Calculate the zero-Doppler state (time and distance to target) for a given ground target and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
-    /// is perpendicular to the vector pointing from the satellite to the ground target:
-    ///
-    ///     v(t) · (ground_target_pos - s(t)) = 0
+    /// is perpendicular to the vector pointing from the satellite to the ground target.
     ///
     /// This condition implies a dot product of zero between the velocity vector and
     /// the look vector, indicating orthogonality.
@@ -226,9 +224,7 @@ impl OrbitalStateHistory {
     /// Calculate the ground target position for a given zero-Doppler state (time and distance to target) and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
-    /// is perpendicular to the vector pointing from the satellite to the ground target:
-    ///
-    ///     v(t) · (ground_target_pos - s(t)) = 0
+    /// is perpendicular to the vector pointing from the satellite to the ground target.
     ///
     /// This condition implies a dot product of zero between the velocity vector and
     /// the look vector, indicating orthogonality.
@@ -514,9 +510,7 @@ impl ContinuousOrbitalStateHistory {
     /// Calculate the zero-Doppler state in Radar Coordinates (Azimuth index and slant range index) for a given ground target and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
-    /// is perpendicular to the vector pointing from the satellite to the ground target:
-    ///
-    ///     v(t) · (ground_target_pos - s(t)) = 0
+    /// is perpendicular to the vector pointing from the satellite to the ground target.
     ///
     /// This condition implies a dot product of zero between the velocity vector and
     /// the look vector, indicating orthogonality.
@@ -640,8 +634,11 @@ impl ContinuousOrbitalStateHistory {
     /// This is an alternative implementation to the bisection method that can converge
     /// faster but requires computing the derivative (using satellite acceleration).
     ///
-    /// The zero-Doppler time is the time `t` such that:
-    ///     v(t) · (ground_target_pos - s(t)) = 0
+    /// The zero-Doppler time is the time `t` such that the satellite velocity vector
+    /// is perpendicular to the vector pointing from the satellite to the ground target.
+    ///
+    /// This condition implies a dot product of zero between the velocity vector and
+    /// the look vector, indicating orthogonality.
     pub fn find_zero_doppler_state_newton_raphson(
         &self,
         ground_target_pos: Vector3<f64>,

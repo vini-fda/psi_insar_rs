@@ -27,7 +27,7 @@ const E2: f64 = F * (2.0 - F);
 ///
 /// ```rust
 /// use psi_insar_rs::geodesy::geodetic_to_ecef;
-/// let (x, y, z) = geodetic_to_ecef(52.5, 13.4, 140.2);
+/// let [x, y, z] = geodetic_to_ecef(52.5, 13.4, 140.2);
 /// println!("ECEF = ({:.3}, {:.3}, {:.3})", x, y, z);
 /// ```
 pub fn geodetic_to_ecef(lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
