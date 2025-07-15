@@ -902,7 +902,8 @@ mod tests {
     #[test]
     fn find_zero_doppler_from_orbit_list() {
         let annotation =
-            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml")
+                .expect("Failed to open test annotation file");
         // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;

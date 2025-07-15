@@ -2153,7 +2153,8 @@ mod tests {
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let annotation =
-            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml");
+            SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml")
+                .expect("Failed to open test annotation file");
         let orbit_list = &annotation.general_annotation.orbit_list;
         let orbital_history = OrbitalStateHistory::from(orbit_list).interp_n(4);
         let points = orbital_history

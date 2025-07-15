@@ -1574,13 +1574,52 @@ mod string_to_usize {
     }
 }
 
+/// Error type for ``SlcProductAnnotation`` operations
+#[derive(Debug)]
+pub enum AnnotationError {
+    /// IO error when reading the file
+    Io(std::io::Error),
+    /// XML deserialization error
+    Deserialization(String),
+}
+
+impl std::fmt::Display for AnnotationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "IO error: {err}"),
+            Self::Deserialization(err) => write!(f, "Deserialization error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for AnnotationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Deserialization(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for AnnotationError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
 impl SlcProductAnnotation {
-    pub fn open<P: AsRef<Path>>(path: P) -> Self {
-        let reader = std::fs::File::open(path).unwrap();
+    /// Open an annotation XML file and parse it into a ``SlcProductAnnotation``.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ``AnnotationError`` if:
+    /// - The file cannot be opened
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, AnnotationError> {
+        let reader = std::fs::File::open(path)?;
         let buf_reader = BufReader::new(reader);
         let xml_de = &mut quick_xml::de::Deserializer::from_reader(buf_reader);
         let result: Result<Self, _> = serde_path_to_error::deserialize(xml_de);
-        result.unwrap()
+        result.map_err(|err| AnnotationError::Deserialization(err.to_string()))
     }
 }
 
