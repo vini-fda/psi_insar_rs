@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::{
     constants::C_LIGHT,
     dem::DEM,
@@ -10,7 +8,7 @@ use crate::{
         unit_second_derivative_interval_cubic_hermite_spline_interpolation,
     },
     metadata::{
-        annotation_xml::{Orbit, OrbitList, SlcProductAnnotation},
+        annotation_xml::{OrbitList, SlcProductAnnotation},
         orbit_xml::{EarthExplorerFile, ListOfOsvs},
     },
 };
@@ -513,62 +511,6 @@ impl ContinuousOrbitalStateHistory {
         (pos_interp, vel_interp, acc_interp)
     }
 
-    pub fn find_zero_doppler_state_sat_pos(
-        &self,
-        ground_target_pos: Vector3<f64>,
-    ) -> (Vector3<f64>, f64) {
-        const NUM_BISECTION_ITER: usize = 32;
-        const TOLERANCE: f64 = 1e-9;
-        let time = self.time.as_slice();
-        assert!(time.len() >= 2);
-
-        let f = |t: f64| {
-            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
-            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
-            sat_vel.normalize().dot(&normalized_displacement)
-        };
-
-        // Step 1: Search for a sign change across time intervals
-        let mut distance_to_target = f64::NAN;
-        let mut delta_time_secs = f64::NAN;
-        'outer: for i in 0..time.len() - 1 {
-            let t0 = time[i];
-            let t1 = time[i + 1];
-            let f0 = f(t0);
-            let f1 = f(t1);
-
-            if f0 * f1 <= 0.0 {
-                // Step 2: Narrow down using bisection over time
-                let mut left = t0;
-                let mut right = t1;
-                for _ in 0..NUM_BISECTION_ITER {
-                    let mid = left + (right - left) / 2.0;
-                    let fm = f(mid);
-
-                    if fm.abs() < TOLERANCE {
-                        let sat_pos = self.interp_pos(mid);
-                        distance_to_target = (ground_target_pos - sat_pos).norm();
-                        delta_time_secs = mid;
-                        return (sat_pos, delta_time_secs);
-                        break 'outer;
-                    } else if f0 * fm < 0.0 {
-                        right = mid;
-                    } else {
-                        left = mid;
-                    }
-                }
-                let half = (right - left) / 2.0;
-                let mid = left + half;
-                let sat_pos = self.interp_pos(mid);
-                distance_to_target = (ground_target_pos - sat_pos).norm();
-                delta_time_secs = mid;
-                return (sat_pos, delta_time_secs);
-                break 'outer;
-            }
-        }
-        panic!("OHNOOO")
-    }
-
     /// Calculate the zero-Doppler state in Radar Coordinates (Azimuth index and slant range index) for a given ground target and satellite trajectory.
     ///
     /// The zero-Doppler time is the time `t` such that the satellite's velocity vector
@@ -643,6 +585,54 @@ impl ContinuousOrbitalStateHistory {
         let slant_range_index =
             (distance_to_target - self.near_edge_slant_range) / self.range_spacing;
         [azimuth_index, slant_range_index]
+    }
+
+    pub fn find_zero_doppler_state_sat_pos(
+        &self,
+        ground_target_pos: Vector3<f64>,
+    ) -> (Vector3<f64>, f64) {
+        const NUM_BISECTION_ITER: usize = 32;
+        const TOLERANCE: f64 = 1e-9;
+        let time = self.time.as_slice();
+        assert!(time.len() >= 2);
+
+        let f = |t: f64| {
+            let (sat_pos, sat_vel) = self.interp_pos_vel(t);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
+        // Step 1: Search for a sign change across time intervals
+        for i in 0..time.len() - 1 {
+            let t0 = time[i];
+            let t1 = time[i + 1];
+            let f0 = f(t0);
+            let f1 = f(t1);
+
+            if f0 * f1 <= 0.0 {
+                // Step 2: Narrow down using bisection over time
+                let mut left = t0;
+                let mut right = t1;
+                for _ in 0..NUM_BISECTION_ITER {
+                    let mid = left + (right - left) / 2.0;
+                    let fm = f(mid);
+
+                    if fm.abs() < TOLERANCE {
+                        let sat_pos = self.interp_pos(mid);
+                        return (sat_pos, mid);
+                    } else if f0 * fm < 0.0 {
+                        right = mid;
+                    } else {
+                        left = mid;
+                    }
+                }
+                let half = (right - left) / 2.0;
+                let mid = left + half;
+                let sat_pos = self.interp_pos(mid);
+                return (sat_pos, mid);
+            }
+        }
+        panic!("Zero-Doppler point not found in trajectory window");
     }
 
     /// Calculate the zero-Doppler state using Newton-Raphson method.
@@ -806,7 +796,7 @@ pub fn radar_coords_to_pixel_coords<T: Float>(
 ///
 /// # Panics
 /// Panics if either the azimuth index or the slant range index is out of bounds.
-#[inline(always)]
+#[must_use]
 pub fn pixel_coords_to_radar_coords(
     azimuth_index: f64,
     slant_range_index: f64,
@@ -838,7 +828,7 @@ pub fn pixel_coords_to_radar_coords(
     let zero_doppler_time = t_start + TimeDelta::nanoseconds(delta_time_nanos);
 
     // Reverse slant range index calculation to get distance
-    let distance_to_target = slant_range_index * range_spacing + near_edge_slant_range;
+    let distance_to_target = slant_range_index.mul_add(range_spacing, near_edge_slant_range);
 
     RadarCoords {
         time: zero_doppler_time,
@@ -846,6 +836,7 @@ pub fn pixel_coords_to_radar_coords(
     }
 }
 
+#[must_use]
 pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) -> DateTime<Utc> {
     let t_start = annotation
         .image_annotation
