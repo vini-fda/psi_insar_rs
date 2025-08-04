@@ -12,7 +12,7 @@ geotiff = { git = "https://github.com/vini-fda/geotiff", features = [
 chrono = { version = "0.4.41", features = ["serde"] }
 env_logger = "0.11.8"
 log = "0.4.27"
-nalgebra = "0.33.2"
+nalgebra = "0.34.0"
 ndarray = { version = "0.16.1", features = ["rayon"] }
 ndarray-npy = "0.9.1"
 num-complex = "0.4.6"
