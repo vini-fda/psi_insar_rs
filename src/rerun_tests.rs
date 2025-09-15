@@ -27,11 +27,11 @@ mod tests {
             ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
-        sentinel::Sentinel1SlcBurst,
+        sentinel::Sentinel1SlcProduct,
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
-    fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
+    fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcProduct) {
         let name = &burst.granule_id.raw_filename;
         let log_name = format!("slc_amplitude_{name}");
         let array = burst.data.array_f32();
@@ -90,11 +90,11 @@ mod tests {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         )
         .unwrap();
@@ -111,11 +111,11 @@ mod tests {
     #[ignore]
     fn compare_zero_doppler() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         )
         .unwrap();
@@ -189,7 +189,7 @@ mod tests {
             // "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcProduct::load_first_from_directory(name).unwrap())
         .collect::<Vec<_>>();
         for burst in bursts {
             let annotation = &burst.metadata;
@@ -248,11 +248,11 @@ mod tests {
     #[ignore]
     fn test_orbit_speed() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
@@ -327,7 +327,7 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -340,7 +340,7 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcProduct::load_first_from_directory(name).unwrap())
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     #[ignore]
     fn coarse_coregistration_stack() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -494,7 +494,7 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcProduct::load_first_from_directory(name).unwrap())
         .collect::<Vec<_>>();
         let rec = rerun::RecordingStreamBuilder::new("coarse_coregistration_stack")
             .connect_grpc()
@@ -580,11 +580,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resample_secondary_to_reference() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -801,11 +801,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_warp_function() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -827,7 +827,7 @@ mod tests {
     #[ignore]
     fn testfn_dem_radar_coords() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
@@ -920,7 +920,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
@@ -1021,11 +1021,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resampled_phase_difference() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -1093,7 +1093,7 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcProduct::load_first_from_directory(name).unwrap())
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -1271,7 +1271,7 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("topo_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -1284,7 +1284,7 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcProduct::load_first_from_directory(name).unwrap())
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -1498,11 +1498,11 @@ mod tests {
     fn warp_fn_offsets_histogram() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_histogram test.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
@@ -1560,11 +1560,11 @@ mod tests {
     fn orbital_path_coregistration() {
         env_logger::init();
         log::info!("Starting orbital_path_coregistration test.");
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
@@ -1749,11 +1749,11 @@ mod tests {
     fn warp_fn_offsets_mesh() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_mesh test.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
         )
         .unwrap();
@@ -1843,11 +1843,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -1890,11 +1890,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_interpolated_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -1943,11 +1943,11 @@ mod tests {
     #[ignore]
     fn test_interpolated_flat_earth_removal() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
@@ -1997,11 +1997,11 @@ mod tests {
     #[ignore]
     fn plot_warp_fn() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         )
         .unwrap();
@@ -2287,7 +2287,7 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("compare_poe_with_metadata")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -2379,5 +2379,28 @@ mod tests {
 
             t += dt;
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn plot_full_slc_images() {
+        //Records logged during cargo test will not be captured by the test harness by default.
+        // The Builder::is_test method can be used in unit tests to ensure logs will be captured
+        env_logger::init();
+        let primary = Sentinel1SlcProduct::load_first_from_directory(
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcProduct::load_first_from_directory(
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
+        )
+        .unwrap();
+
+        let rr = rerun::RecordingStreamBuilder::new("plot_full_slc_images")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+
+        plot_sar_amplitude(&rr, &primary);
+        plot_sar_amplitude(&rr, &secondary);
     }
 }

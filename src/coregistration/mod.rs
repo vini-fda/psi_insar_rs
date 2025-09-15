@@ -7,7 +7,7 @@ use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
-    sentinel::Sentinel1SlcBurst,
+    sentinel::Sentinel1SlcProduct,
 };
 
 pub mod coarse_coregistration;
@@ -20,8 +20,8 @@ pub mod warp_function;
 
 /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
 pub fn compute_warp_function(
-    reference: &Sentinel1SlcBurst,
-    secondary: &Sentinel1SlcBurst,
+    reference: &Sentinel1SlcProduct,
+    secondary: &Sentinel1SlcProduct,
     dem: &DEM,
 ) -> Array2<[u8; 4]> {
     let [slant_range_size, azimuth_size] = reference.data.raster_size();

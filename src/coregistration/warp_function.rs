@@ -22,7 +22,7 @@ use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
-    sentinel::Sentinel1SlcBurst,
+    sentinel::Sentinel1SlcProduct,
 };
 
 use super::{
@@ -71,7 +71,7 @@ impl HasPosition for ExactMapping {
 
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
+    pub fn new(reference: &Sentinel1SlcProduct, secondary: &Sentinel1SlcProduct, dem: &DEM) -> Self {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -174,8 +174,8 @@ impl WarpFunction for DelaunayWarpFunction {
 }
 
 pub fn resample_secondary_to_reference(
-    reference: &Sentinel1SlcBurst,
-    secondary: &Sentinel1SlcBurst,
+    reference: &Sentinel1SlcProduct,
+    secondary: &Sentinel1SlcProduct,
     dem: &DEM,
 ) -> Array2<Complex<f32>> {
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);

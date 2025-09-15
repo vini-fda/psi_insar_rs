@@ -103,7 +103,7 @@ use crate::{
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::GeolocationGrid,
     satellite_orbit::pixel_coords_to_radar_coords,
-    sentinel::Sentinel1SlcBurst,
+    sentinel::Sentinel1SlcProduct,
 };
 
 /// Calculate the perpendicular baseline between two satellite positions, using a ground point.
@@ -153,8 +153,8 @@ pub fn perp_baseline(s_1: &Vector3<f64>, s_2: &Vector3<f64>, p: &Vector3<f64>) -
 }
 
 pub fn perp_baseline_from_pixel_index(
-    primary_burst: &Sentinel1SlcBurst,
-    secondary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcProduct,
+    secondary_burst: &Sentinel1SlcProduct,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -174,7 +174,7 @@ pub fn perp_baseline_from_pixel_index(
 
 /// Calculates the incidence angle theta
 pub fn theta_from_pixel_index(
-    primary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcProduct,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -291,8 +291,8 @@ pub struct FlatEarthComponentsInterpolator {
 
 impl FlatEarthComponentsInterpolator {
     pub fn from_grid_params(
-        primary_burst: &Sentinel1SlcBurst,
-        secondary_burst: &Sentinel1SlcBurst,
+        primary_burst: &Sentinel1SlcProduct,
+        secondary_burst: &Sentinel1SlcProduct,
         dem: &DEM,
         azimuth_samples: usize,
         slant_range_samples: usize,
@@ -450,8 +450,8 @@ impl FlatEarthComponentsInterpolator {
     ///
     /// A vector of `[f64; 3]`, where each value contains the computed `theta`, `bperp` and `r` values.
     fn compute_components_precisely(
-        primary_burst: &Sentinel1SlcBurst,
-        secondary_burst: &Sentinel1SlcBurst,
+        primary_burst: &Sentinel1SlcProduct,
+        secondary_burst: &Sentinel1SlcProduct,
         azimuth_index: f64,
         slant_range_index: f64,
         dem: &DEM,
@@ -500,8 +500,8 @@ impl FlatEarthComponentsInterpolator {
 }
 
 pub fn flat_earth_dphi(
-    primary_burst: &Sentinel1SlcBurst,
-    secondary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcProduct,
+    secondary_burst: &Sentinel1SlcProduct,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -587,7 +587,7 @@ impl HasPosition for WarpFunctionExactMapping {
 
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
+    pub fn new(reference: &Sentinel1SlcProduct, secondary: &Sentinel1SlcProduct, dem: &DEM) -> Self {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.precise_orbital_state_history();
         let sec_osh = secondary.precise_orbital_state_history();
@@ -691,8 +691,8 @@ impl EnhancedDelaunayWarpFunction {
 }
 
 pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcBurst,
-    secondary: &Sentinel1SlcBurst,
+    reference: &Sentinel1SlcProduct,
+    secondary: &Sentinel1SlcProduct,
     dem: &DEM,
 ) -> Array2<f32> {
     log::info!("Computing warp function");
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     #[ignore = "Needs to download external data"]
     fn get_bounding_box_lat_lon() {
-        let burst = Sentinel1SlcBurst::load_first_from_directory(
+        let burst = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();

@@ -99,14 +99,14 @@ pub fn compute_spectrum(image: &Array2<Complex<f32>>, dim: usize) -> Array2<Comp
 
 #[cfg(test)]
 mod tests {
-    use crate::sentinel::Sentinel1SlcBurst;
+    use crate::sentinel::Sentinel1SlcProduct;
 
     use super::*;
 
     #[test]
     #[ignore = "Needs to open external files"]
     fn test_spectrum() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcProduct::load_first_from_directory(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();

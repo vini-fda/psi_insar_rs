@@ -1,6 +1,6 @@
 use crate::{
     metadata::annotation_xml::{Polynomial, Velocity},
-    sentinel::Sentinel1SlcBurst,
+    sentinel::Sentinel1SlcProduct,
 };
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -68,7 +68,7 @@ struct RelevantParameters {
 
 impl RelevantParameters {
     /// Extracts the relevant parameters for the deramping from the Sentinel1SlcBurst metadata
-    pub fn new(slc: &Sentinel1SlcBurst) -> Self {
+    pub fn new(slc: &Sentinel1SlcProduct) -> Self {
         // k_psi: Azimuth steering rate (radians/s)
         let k_psi = slc
             .metadata
@@ -226,15 +226,15 @@ impl DerampSlcBurst {
         self
     }
 
-    pub fn apply_forward(&self, slc: &Sentinel1SlcBurst) -> Array2<Complex<f32>> {
+    pub fn apply_forward(&self, slc: &Sentinel1SlcProduct) -> Array2<Complex<f32>> {
         self.apply(slc, Direction::Forward)
     }
 
-    pub fn apply_backward(&self, slc: &Sentinel1SlcBurst) -> Array2<Complex<f32>> {
+    pub fn apply_backward(&self, slc: &Sentinel1SlcProduct) -> Array2<Complex<f32>> {
         self.apply(slc, Direction::Backward)
     }
 
-    fn apply(&self, slc: &Sentinel1SlcBurst, direction: Direction) -> Array2<Complex<f32>> {
+    fn apply(&self, slc: &Sentinel1SlcProduct, direction: Direction) -> Array2<Complex<f32>> {
         let mode = self.mode;
 
         let RelevantParameters {

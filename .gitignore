@@ -1,5 +1,6 @@
 /target
 /download
+/download_full_slc
 /download_new
 /data
 /sar_env
@@ -14,3 +15,4 @@ Cargo.lock
 *.glb
 *.npy
 .env
+.DS_Store

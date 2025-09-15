@@ -144,7 +144,7 @@ pub struct Sentinel1SlcMetadata {
 /// Sources:
 /// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-pub struct Sentinel1SlcBurst {
+pub struct Sentinel1SlcProduct {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
@@ -152,7 +152,7 @@ pub struct Sentinel1SlcBurst {
     pub data: SlcImage,
 }
 
-impl Sentinel1SlcBurst {
+impl Sentinel1SlcProduct {
     /// Load the burst from a directory, choosing the first .tiff file in the measurement directory.
     pub fn load_first_from_directory(directory: impl AsRef<Path>) -> Result<Self, String> {
         let directory = directory.as_ref();
@@ -217,7 +217,7 @@ impl Sentinel1SlcBurst {
         let data = SlcImage::new(&measurement_path);
 
         // Create the SlcBurst instance
-        Ok(Sentinel1SlcBurst {
+        Ok(Sentinel1SlcProduct {
             calibration,
             noise,
             metadata,
@@ -453,6 +453,7 @@ mod tests {
         let root = PathBuf::from(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         );
-        let _ = Sentinel1SlcBurst::load_first_from_directory(&root).expect("Failed to load burst");
+        let _ =
+            Sentinel1SlcProduct::load_first_from_directory(&root).expect("Failed to load burst");
     }
 }
