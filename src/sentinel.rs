@@ -174,11 +174,11 @@ impl Sentinel1SlcBurst {
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
             let file_name = entry.file_name();
-            if let Some(file_name) = file_name.to_str() {
-                if file_name.ends_with(".tiff") || file_name.ends_with(".tif") {
-                    let removed_extension = file_name.split(".").next().unwrap();
-                    granule_str = Some(removed_extension.to_string());
-                }
+            if let Some(file_name) = file_name.to_str()
+                && (file_name.ends_with(".tiff") || file_name.ends_with(".tif"))
+            {
+                let removed_extension = file_name.split(".").next().unwrap();
+                granule_str = Some(removed_extension.to_string());
             }
         }
 
@@ -258,10 +258,10 @@ impl Sentinel1SlcBurst {
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
-            if let Some(file_name) = entry.file_name().to_str() {
-                if file_name == pattern {
-                    return Ok(entry.path());
-                }
+            if let Some(file_name) = entry.file_name().to_str()
+                && file_name == pattern
+            {
+                return Ok(entry.path());
             }
         }
 
@@ -305,10 +305,10 @@ impl Sentinel1SlcBurst {
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
-            if let Some(file_name) = entry.file_name().to_str() {
-                if file_name == pattern {
-                    return Ok(entry.path());
-                }
+            if let Some(file_name) = entry.file_name().to_str()
+                && file_name == pattern
+            {
+                return Ok(entry.path());
             }
         }
 
@@ -352,10 +352,10 @@ impl Sentinel1SlcBurst {
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
 
-            if let Some(file_name) = entry.file_name().to_str() {
-                if file_name == pattern {
-                    return Ok(entry.path());
-                }
+            if let Some(file_name) = entry.file_name().to_str()
+                && file_name == pattern
+            {
+                return Ok(entry.path());
             }
         }
 
