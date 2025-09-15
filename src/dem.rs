@@ -172,7 +172,7 @@ impl DEM {
     }
 
     /// Returns an iterator over the DEM's (lat, lon) elements, in memory order (i.e. row-major ascending order).
-    pub fn lat_lon_iter(&self) -> LatLonIter {
+    pub fn lat_lon_iter(&self) -> LatLonIter<'_> {
         LatLonIter {
             dem: self,
             i: 0,
@@ -183,7 +183,7 @@ impl DEM {
     }
 
     /// Returns an iterator over the DEM's (lat, lon, height) elements, in memory order (i.e. row-major ascending order).
-    pub fn lat_lon_height_iter(&self) -> LatLonHeightIter {
+    pub fn lat_lon_height_iter(&self) -> LatLonHeightIter<'_> {
         LatLonHeightIter {
             dem: self,
             i: 0,
@@ -194,7 +194,7 @@ impl DEM {
     }
 
     /// Returns an iterator over the DEM's (i, j, lat, lon, height) elements, in memory order (i.e. row-major ascending order).
-    pub fn indexed_lat_lon_height_iter(&self) -> IndexedLatLonHeightIter {
+    pub fn indexed_lat_lon_height_iter(&self) -> IndexedLatLonHeightIter<'_> {
         IndexedLatLonHeightIter {
             dem: self,
             i: 0,
