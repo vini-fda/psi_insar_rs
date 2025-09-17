@@ -31,13 +31,42 @@ mod tests {
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
+    fn plot_burst_amplitude(
+        rr: &RecordingStream,
+        product: &Sentinel1SlcProduct,
+        burst_index: usize,
+    ) {
+        let name = &product.granule_id.raw_filename;
+        let log_name = format!("slc_burst_amplitude_{name}");
+        let array = product.data.array_f32();
+        let (_, cols) = array.dim();
+        let bursts = product.metadata.swath_timing.burst_list.count;
+        assert!(burst_index < bursts as usize);
+        let lines_per_burst = product.metadata.swath_timing.lines_per_burst;
+        let mut amplitude = array
+            .slice(s![
+                (burst_index * lines_per_burst)..(burst_index + 1) * lines_per_burst,
+                0..cols / 2
+            ])
+            .map(|&v| v.abs())
+            .to_owned();
+        let max_amplitude = *amplitude
+            .iter()
+            .max_by(|&a, &b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        amplitude.map_inplace(|x| *x = (*x / max_amplitude).powf(0.33));
+        let img = Image::from_color_model_and_tensor(rerun::ColorModel::L, amplitude)
+            .expect("Could not load SLC data array into image");
+        rr.log(log_name, &img).expect("Could not log SLC Image");
+    }
+
     fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcProduct) {
         let name = &burst.granule_id.raw_filename;
         let log_name = format!("slc_amplitude_{name}");
         let array = burst.data.array_f32();
-        let (_, cols) = array.dim();
+        let (rows, cols) = array.dim();
         let mut amplitude = array
-            .slice(s![.., 0..cols / 2])
+            .slice(s![0..rows / 2, 0..cols / 2])
             .map(|&v| v.abs())
             .to_owned();
         let max_amplitude = *amplitude
@@ -1036,7 +1065,8 @@ mod tests {
             crate::coregistration::warp_function::resample_secondary_to_reference(
                 &reference, &secondary, &dem,
             );
-        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference);
+        let burst_index = 0;
+        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference, burst_index);
 
         // cut cols by half in both images
         let (rows, cols) = resampled_sec_data.dim();
@@ -1129,8 +1159,10 @@ mod tests {
 
             log::info!("Deramping reference and secondary images");
             let start_time = std::time::Instant::now();
-            let reference_img = deramp.apply_forward(&reference);
-            let secondary_img = deramp.apply_forward(secondary);
+            // TODO: remove burst_index
+            let burst_index = 0;
+            let reference_img = deramp.apply_forward(&reference, burst_index);
+            let secondary_img = deramp.apply_forward(secondary, burst_index);
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -2400,7 +2432,13 @@ mod tests {
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
 
-        plot_sar_amplitude(&rr, &primary);
-        plot_sar_amplitude(&rr, &secondary);
+        println!("Primary dim = {:?}", primary.data.raster_size());
+        println!("Secondary dim = {:?}", secondary.data.raster_size());
+
+        for i in 0..9 {
+            rr.set_time_sequence("burst_index", i as i64);
+            plot_burst_amplitude(&rr, &primary, i);
+            plot_burst_amplitude(&rr, &secondary, i);
+        }
     }
 }
