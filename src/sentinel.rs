@@ -1,5 +1,5 @@
 use crate::download_orbit::CDSEOrbitDownloader;
-use crate::granule_id::{IWSwath, Mode, Sentinel1GranuleId, Sentinel1TIFFFileName, Subswath};
+use crate::granule_id::{IWSwath, Sentinel1GranuleId, Sentinel1TIFFFileName};
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;

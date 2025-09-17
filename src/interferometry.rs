@@ -156,7 +156,7 @@ pub fn coregister_and_remove_flat_phase(
     }
 }
 
-/// Compute the bounding box of a stack of Sentinel1SlcBurst images,
+/// Compute the bounding box of a stack of Sentinel1SlcIWSwath images,
 /// with a small margin to account for the fact that the images are not
 /// exactly aligned.
 pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwath>>(

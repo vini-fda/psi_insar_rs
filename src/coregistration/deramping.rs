@@ -67,7 +67,7 @@ struct RelevantParameters {
 }
 
 impl RelevantParameters {
-    /// Extracts the relevant parameters for the deramping from the Sentinel1SlcBurst metadata
+    /// Extracts the relevant parameters for the deramping from the Sentinel1SlcIWSwath metadata
     // TODO: check if there's a better solution than burst_index
     pub fn new(slc: &Sentinel1SlcIWSwath, burst_index: usize) -> Self {
         let burst_count = slc.metadata.swath_timing.burst_list.bursts.len();
