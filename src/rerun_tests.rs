@@ -18,7 +18,7 @@ mod tests {
         download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
         granule_id::IWSwath,
-        interferometry::bounding_box_from_stack,
+        interferometry::{bounding_box_from_stack, bounding_box_from_stack_and_burst},
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
             EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
@@ -2477,5 +2477,130 @@ mod tests {
             plot_burst_amplitude(&rr, &primary, i);
             plot_burst_amplitude(&rr, &secondary, i);
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_full_slc_resample_secondary_to_reference() {
+        env_logger::init();
+        log::info!("Test started!");
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        log::info!("Loaded reference image");
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
+        )
+        .unwrap();
+        log::info!("Loaded secondary image");
+        let bounding_box = bounding_box_from_stack_and_burst([&reference, &secondary], 0);
+
+        log::info!("Downloading DEM {bounding_box:?}");
+        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        log::info!("Finished downloading DEM");
+
+        let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
+            &reference, &secondary, &dem,
+        );
+        // lets reduce the number of samples by 1/2 in the cols
+        let (rows, cols) = resampled_data.dim();
+        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
+
+        // Log amplitude for resampled data
+        let data_norm = resampled_data.map(|c| c.norm());
+        let max_val = data_norm.iter().fold(0.0f32, |a, &b| a.max(b));
+        let data_norm = data_norm.map(|c| (c / max_val).powf(0.3));
+        let img =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, data_norm).unwrap();
+        let rr =
+            rerun::RecordingStreamBuilder::new("test_full_slc_resample_secondary_to_reference")
+                .connect_grpc()
+                .expect("Could not connect to local Rerun instance.");
+        rr.log("resampled_amplitude", &img)
+            .expect("Could not log resampled_amplitude to Rerun");
+
+        // Log phase for resampled data
+        let vector = resampled_data.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("resampled_phase", &rr_image)
+            .expect("Could not log resampled_phase to Rerun");
+
+        // Log the reference image amplitude
+        let ref_array = reference.data.array_f32();
+        let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
+        let ref_array_norm = ref_array.map(|c| c.norm());
+        let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));
+        let ref_array_norm = ref_array_norm.map(|c| (c / max_val).powf(0.3));
+        let ref_img =
+            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_array_norm)
+                .unwrap();
+        rr.log("reference_amplitude", &ref_img)
+            .expect("Could not log reference_amplitude to Rerun");
+
+        // Log phase for reference data
+        let vector = ref_array.as_slice_memory_order().unwrap().to_vec();
+        let rgb_vector: Vec<u8> = vector
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let normalized_phase =
+                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+        let rr_image = rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32 / 2, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        );
+        rr.log("reference_phase", &rr_image)
+            .expect("Could not log reference_phase to Rerun");
+    }
+
+    #[test]
+    #[ignore]
+    fn log_full_gcps() {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let annotation = reference.metadata;
+        let gcps = &annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point;
+        // GCPs on the map
+        let gcps_lat_lon = gcps
+            .iter()
+            .map(|gcp| [gcp.latitude, gcp.longitude])
+            .collect::<Vec<_>>();
+        let rr = rerun::RecordingStreamBuilder::new("log_full_gcps")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        rr.log_static(
+            "GCPs Lat Lon",
+            &rerun::GeoPoints::from_lat_lon(&gcps_lat_lon),
+        )
+        .unwrap();
     }
 }

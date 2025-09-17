@@ -194,3 +194,54 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwat
         max_lon_final + OFFSET_LON,
     ]
 }
+
+/// Compute the bounding box of a stack of Sentinel1SlcIWSwath images,
+/// with a small margin to account for the fact that the images are not
+/// exactly aligned.
+pub fn bounding_box_from_stack_and_burst<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwath>>(
+    stack: I,
+    burst_index: usize,
+) -> [f64; 4] {
+    const OFFSET_LAT: f64 = 0.05;
+    const OFFSET_LON: f64 = 0.05;
+    let mut min_lat = f64::MAX;
+    let mut max_lat = f64::MIN;
+    let mut min_lon = f64::MAX;
+    let mut max_lon = f64::MIN;
+    for slc_iw_swath in stack {
+        let gcps_len = slc_iw_swath
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .count as usize;
+        let num_bursts = slc_iw_swath.metadata.swath_timing.burst_list.count as usize;
+        // Rows along azimuth, columns along range
+        let gcp_rows = num_bursts + 1;
+        assert!(gcps_len % gcp_rows == 0);
+        let gcp_columns = gcps_len / gcp_rows;
+        let start = burst_index * gcp_columns;
+        let end = (burst_index + 2) * gcp_columns;
+
+        for point in &slc_iw_swath
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point[start..end]
+        {
+            min_lat = min_lat.min(point.latitude);
+            max_lat = max_lat.max(point.latitude);
+            min_lon = min_lon.min(point.longitude);
+            max_lon = max_lon.max(point.longitude);
+        }
+    }
+    assert_ne!(min_lat, f64::MAX);
+    assert_ne!(max_lat, f64::MIN);
+    assert_ne!(min_lon, f64::MAX);
+    assert_ne!(max_lon, f64::MIN);
+    [
+        min_lat - OFFSET_LAT,
+        max_lat + OFFSET_LAT,
+        min_lon - OFFSET_LON,
+        max_lon + OFFSET_LON,
+    ]
+}
