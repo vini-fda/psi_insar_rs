@@ -1360,7 +1360,8 @@ pub struct BurstList {
     pub count: u32,
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    pub burst: Burst,
+    #[serde(rename = "burst")]
+    pub bursts: Vec<Burst>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
