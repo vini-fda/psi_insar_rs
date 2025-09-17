@@ -12,8 +12,8 @@ pub struct SlcImage {
 
 impl SlcImage {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
-        let file = std::fs::File::open(path).unwrap();
-        let geotiff_data = GeoTiff::read(file).unwrap();
+        let file = std::fs::File::open(path).expect("Unable to open SLC Image file");
+        let geotiff_data = GeoTiff::read(file).expect("Unable to read GeoTIFF data from SLC Image");
         let (azimuth_rows, slant_range_cols) =
             (geotiff_data.raster_height, geotiff_data.raster_width);
         let array = match geotiff_data.raster_data {
