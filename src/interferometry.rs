@@ -1,6 +1,6 @@
 use crate::{
     constants::SENTINEL_1_WAVELENGTH, dem::DEM, perp_baseline::EnhancedDelaunayWarpFunction,
-    satellite_orbit::zero_doppler_time, sentinel::Sentinel1SlcProduct,
+    satellite_orbit::zero_doppler_time, sentinel::Sentinel1SlcIWSwath,
 };
 use nalgebra::Vector3;
 use ndarray::{Array2, Axis};
@@ -8,8 +8,8 @@ use ndarray_npy::WriteNpyExt;
 use rayon::prelude::*;
 
 pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcProduct,
-    secondaries: &[Sentinel1SlcProduct],
+    reference: &Sentinel1SlcIWSwath,
+    secondaries: &[Sentinel1SlcIWSwath],
     dem: &DEM,
 ) {
     for secondary in secondaries {
@@ -159,7 +159,7 @@ pub fn coregister_and_remove_flat_phase(
 /// Compute the bounding box of a stack of Sentinel1SlcBurst images,
 /// with a small margin to account for the fact that the images are not
 /// exactly aligned.
-pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcProduct>>(
+pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwath>>(
     stack: I,
 ) -> [f64; 4] {
     const OFFSET_LAT: f64 = 0.05;

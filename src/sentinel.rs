@@ -1,5 +1,5 @@
 use crate::download_orbit::CDSEOrbitDownloader;
-use crate::granule_id::{Sentinel1GranuleId, Sentinel1TIFFFileName};
+use crate::granule_id::{IWSwath, Mode, Sentinel1GranuleId, Sentinel1TIFFFileName, Subswath};
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
@@ -136,7 +136,12 @@ pub struct Sentinel1SlcMetadata {
     pub bounding_box: GeoBoundingBox,
 }
 
-/// Represents a single burst of Sentinel-1 SLC data.
+/// Represents a single Interferometric Wide Swath (IW) of Sentinel-1 SLC data.
+///
+/// Data is acquired in 3 swaths using the
+/// Terrain Observation with Progressive Scanning SAR (TOPSAR) imaging
+/// technique. In IW mode bursts are synchronised from pass to pass to ensure
+/// the alignment of interferometric pairs.
 ///
 /// A burst is the basic acquisition unit in TOPS mode. Each burst contains SAR data acquired
 /// during a single sweep of the antenna beam from back to fore.
@@ -144,7 +149,8 @@ pub struct Sentinel1SlcMetadata {
 /// Sources:
 /// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
 /// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-pub struct Sentinel1SlcProduct {
+/// - https://sentiwiki.copernicus.eu/__attachments/1673968/S1-RS-MDA-52-7441%20-%20Sentinel-1%20Product%20Specification%202023%20-%203.14.1.pdf
+pub struct Sentinel1SlcIWSwath {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
@@ -152,9 +158,12 @@ pub struct Sentinel1SlcProduct {
     pub data: SlcImage,
 }
 
-impl Sentinel1SlcProduct {
-    /// Load the burst from a directory, choosing the first .tiff file in the measurement directory.
-    pub fn load_first_from_directory(directory: impl AsRef<Path>) -> Result<Self, String> {
+impl Sentinel1SlcIWSwath {
+    /// Load the IW swath from a directory, choosing the first .tiff file in the measurement directory.
+    pub fn load_swath_from_directory(
+        swath: IWSwath,
+        directory: impl AsRef<Path>,
+    ) -> Result<Self, String> {
         let directory = directory.as_ref();
         let measurement_dir = directory.join("measurement");
 
@@ -170,7 +179,7 @@ impl Sentinel1SlcProduct {
         let entries = std::fs::read_dir(&measurement_dir)
             .map_err(|e| format!("Failed to read measurement directory: {e}"))?;
 
-        let mut granule_str = None;
+        let mut granule_id = None;
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
             let file_name = entry.file_name();
@@ -178,18 +187,25 @@ impl Sentinel1SlcProduct {
                 && (file_name.ends_with(".tiff") || file_name.ends_with(".tif"))
             {
                 let removed_extension = file_name.split(".").next().unwrap();
-                granule_str = Some(removed_extension.to_string());
+                let local_granule_str = removed_extension.to_string();
+                match Sentinel1TIFFFileName::parse(&local_granule_str) {
+                    Ok(granule_id_candidate) => {
+                        let mode = granule_id_candidate.mode_subswath.mode;
+                        let subswath = granule_id_candidate.mode_subswath.subswath;
+                        if swath == (mode, subswath) {
+                            granule_id = Some(granule_id_candidate);
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
             }
         }
 
-        if granule_str.is_none() {
-            return Err("No TIFF file found in measurement directory".to_string());
-        }
-
-        let granule_str = granule_str.unwrap();
-
-        let granule_id =
-            Sentinel1TIFFFileName::parse(&granule_str).map_err(|e| format!("ERROR: {e}"))?;
+        let granule_id = granule_id.ok_or("No valid TIFF file found in measurement directory")?;
+        let granule_str = granule_id.raw_filename.clone().to_ascii_lowercase();
 
         // Construct paths to necessary files
         let calibration_path = Self::find_calibration_xml(directory, &granule_str)?;
@@ -217,7 +233,7 @@ impl Sentinel1SlcProduct {
         let data = SlcImage::new(&measurement_path);
 
         // Create the SlcBurst instance
-        Ok(Sentinel1SlcProduct {
+        Ok(Sentinel1SlcIWSwath {
             calibration,
             noise,
             metadata,
@@ -453,7 +469,7 @@ mod tests {
         let root = PathBuf::from(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         );
-        let _ =
-            Sentinel1SlcProduct::load_first_from_directory(&root).expect("Failed to load burst");
+        let _ = Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW1, &root)
+            .expect("Failed to load burst");
     }
 }

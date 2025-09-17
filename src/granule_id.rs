@@ -119,6 +119,24 @@ impl std::fmt::Display for IWSwath {
     }
 }
 
+impl PartialEq<(Mode, Subswath)> for IWSwath {
+    fn eq(&self, other: &(Mode, Subswath)) -> bool {
+        match other {
+            (Mode::IW, Subswath(1)) => matches!(self, IWSwath::IW1),
+            (Mode::IW, Subswath(2)) => matches!(self, IWSwath::IW2),
+            (Mode::IW, Subswath(3)) => matches!(self, IWSwath::IW3),
+            // Other modes do not correspond to IWSwath
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<IWSwath> for (Mode, Subswath) {
+    fn eq(&self, other: &IWSwath) -> bool {
+        other == self
+    }
+}
+
 /// Represents a Sentinel-1 product type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductType {
@@ -454,7 +472,7 @@ pub enum GranuleIdError {
     #[error("invalid mode: {0}")]
     InvalidMode(String),
     #[error("invalid subswath: {0}")]
-    InvalidSubswath(String),
+    InvalidSubswath(&'static str),
     #[error("invalid product type: {0}")]
     InvalidProductType(String),
     #[error("invalid resolution: {0}")]
@@ -665,11 +683,9 @@ impl Sentinel1TIFFFileName {
 pub struct Subswath(u8);
 
 impl Subswath {
-    pub fn new(value: u8) -> Result<Self, GranuleIdError> {
-        if !(1..=5).contains(&value) {
-            return Err(GranuleIdError::InvalidSubswath(format!(
-                "Invalid subswath: {value}"
-            )));
+    pub const fn new(value: u8) -> Result<Self, GranuleIdError> {
+        if value < 1 || value > 5 {
+            return Err(GranuleIdError::InvalidSubswath("Invalid subswath"));
         }
         Ok(Subswath(value))
     }
@@ -681,10 +697,7 @@ impl FromStr for Subswath {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s[..1].parse::<u8>() {
             Ok(c) => Subswath::new(c),
-            Err(_) => Err(GranuleIdError::InvalidSubswath(format!(
-                "Invalid subswath: {}",
-                &s[..1]
-            ))),
+            Err(_) => Err(GranuleIdError::InvalidSubswath("Invalid subswath")),
         }
     }
 }

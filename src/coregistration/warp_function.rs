@@ -22,7 +22,7 @@ use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
-    sentinel::Sentinel1SlcProduct,
+    sentinel::Sentinel1SlcIWSwath,
 };
 
 use super::{
@@ -71,7 +71,11 @@ impl HasPosition for ExactMapping {
 
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcProduct, secondary: &Sentinel1SlcProduct, dem: &DEM) -> Self {
+    pub fn new(
+        reference: &Sentinel1SlcIWSwath,
+        secondary: &Sentinel1SlcIWSwath,
+        dem: &DEM,
+    ) -> Self {
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
@@ -174,8 +178,8 @@ impl WarpFunction for DelaunayWarpFunction {
 }
 
 pub fn resample_secondary_to_reference(
-    reference: &Sentinel1SlcProduct,
-    secondary: &Sentinel1SlcProduct,
+    reference: &Sentinel1SlcIWSwath,
+    secondary: &Sentinel1SlcIWSwath,
     dem: &DEM,
 ) -> Array2<Complex<f32>> {
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);
@@ -191,7 +195,9 @@ pub fn resample_secondary_to_reference(
     let kernel = KnabSincKernel::default();
     let deramp = DerampSlcBurst::new();
 
-    let secondary_img = deramp.apply_forward(secondary);
+    // TODO: remove burst_index
+    let burst_index = 0;
+    let secondary_img = deramp.apply_forward(secondary, burst_index);
 
     warp_function
         .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))

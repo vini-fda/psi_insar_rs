@@ -1,6 +1,6 @@
 use crate::{
     metadata::annotation_xml::{Polynomial, Velocity},
-    sentinel::Sentinel1SlcProduct,
+    sentinel::Sentinel1SlcIWSwath,
 };
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -68,7 +68,10 @@ struct RelevantParameters {
 
 impl RelevantParameters {
     /// Extracts the relevant parameters for the deramping from the Sentinel1SlcBurst metadata
-    pub fn new(slc: &Sentinel1SlcProduct) -> Self {
+    // TODO: check if there's a better solution than burst_index
+    pub fn new(slc: &Sentinel1SlcIWSwath, burst_index: usize) -> Self {
+        let burst_count = slc.metadata.swath_timing.burst_list.bursts.len();
+        assert!(burst_index < burst_count);
         // k_psi: Azimuth steering rate (radians/s)
         let k_psi = slc
             .metadata
@@ -89,7 +92,7 @@ impl RelevantParameters {
             .azimuth_time_interval;
 
         // Current burst metadata for reference times
-        let current_burst_metadata = &slc.metadata.swath_timing.burst_list.burst;
+        let current_burst_metadata = &slc.metadata.swath_timing.burst_list.bursts[burst_index];
         let burst_start_anx_time = current_burst_metadata.azimuth_anx_time;
         let ref_burst_utc_time = current_burst_metadata.azimuth_time; // DateTime<Utc>
         let ref_burst_anx_time = current_burst_metadata.azimuth_anx_time; // f64
@@ -226,15 +229,31 @@ impl DerampSlcBurst {
         self
     }
 
-    pub fn apply_forward(&self, slc: &Sentinel1SlcProduct) -> Array2<Complex<f32>> {
-        self.apply(slc, Direction::Forward)
+    pub fn apply_forward(
+        &self,
+        slc: &Sentinel1SlcIWSwath,
+        burst_index: usize,
+    ) -> Array2<Complex<f32>> {
+        // TODO: remove burst_index
+        self.apply(slc, Direction::Forward, burst_index)
     }
 
-    pub fn apply_backward(&self, slc: &Sentinel1SlcProduct) -> Array2<Complex<f32>> {
-        self.apply(slc, Direction::Backward)
+    pub fn apply_backward(
+        &self,
+        slc: &Sentinel1SlcIWSwath,
+        burst_index: usize,
+    ) -> Array2<Complex<f32>> {
+        // TODO: remove burst_index
+        self.apply(slc, Direction::Backward, burst_index)
     }
 
-    fn apply(&self, slc: &Sentinel1SlcProduct, direction: Direction) -> Array2<Complex<f32>> {
+    // TODO: remove burst_index
+    fn apply(
+        &self,
+        slc: &Sentinel1SlcIWSwath,
+        direction: Direction,
+        burst_index: usize,
+    ) -> Array2<Complex<f32>> {
         let mode = self.mode;
 
         let RelevantParameters {
@@ -250,7 +269,7 @@ impl DerampSlcBurst {
             ns_swath,
             delta_tau_s,
             tau_0,
-        } = RelevantParameters::new(slc);
+        } = RelevantParameters::new(slc, burst_index); // TODO: remove burst_index
         // Calculate k_s (Doppler rate introduced by antenna steering)
         // k_s = (2 * v_s * f_c * k_psi) / c
         let c = 299792458.0; // speed of light in m/s

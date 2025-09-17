@@ -1,4 +1,6 @@
-use crate::{dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcProduct};
+use crate::{
+    dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::Sentinel1SlcIWSwath,
+};
 
 /// Checks for layover in the radar image by comparing vertex ordering in geographic and radar coordinates.
 /// Layover occurs when the relative ordering of points in geographic space is inverted in radar coordinates.
@@ -10,7 +12,7 @@ use crate::{dem::DEM, satellite_orbit::radar_coords_to_pixel_coords, sentinel::S
 ///
 /// # Returns
 /// * `bool` - True if layover is detected in either dimension, false otherwise
-pub fn check_for_layover(burst: &Sentinel1SlcProduct, dem: &DEM) -> bool {
+pub fn check_for_layover(burst: &Sentinel1SlcIWSwath, dem: &DEM) -> bool {
     let osh = burst.orbital_state_history();
 
     // State machine states for each dimension
@@ -288,17 +290,21 @@ pub fn check_for_layover(burst: &Sentinel1SlcProduct, dem: &DEM) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::granule_id::IWSwath;
+
     use super::*;
 
     #[test]
     #[ignore = "Needs to open external files"]
     fn test_check_layover() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcProduct::load_first_from_directory(
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcProduct::load_first_from_directory(
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
         )
         .unwrap();
