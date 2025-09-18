@@ -28,36 +28,16 @@ mod tests {
             ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
-        sentinel::Sentinel1SlcIWSwath,
+        sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
-    fn plot_burst_amplitude(
-        rr: &RecordingStream,
-        product: &Sentinel1SlcIWSwath,
-        burst_index: usize,
-    ) {
-        let name = &product.granule_id.raw_filename;
+    fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
+        let name = &burst.granule_id.raw_filename;
         let log_name = format!("slc_burst_amplitude_{name}");
-        let array = product.data.array_f32();
+        let array = &burst.burst_data.array;
         let (_, cols) = array.dim();
-        let bursts = product.metadata.swath_timing.burst_list.count;
-        assert!(burst_index < bursts as usize);
-        let lines_per_burst = product.metadata.swath_timing.lines_per_burst;
-        let mut amplitude = array
-            .slice(s![
-                (burst_index * lines_per_burst)..(burst_index + 1) * lines_per_burst,
-                0..cols / 2
-            ])
-            .map(|&v| v.abs())
-            .to_owned();
-        let max_amplitude = *amplitude
-            .iter()
-            .max_by(|&a, &b| a.partial_cmp(b).unwrap())
-            .unwrap();
-        amplitude.map_inplace(|x| *x = (*x / max_amplitude).powf(0.33));
-        let img = Image::from_color_model_and_tensor(rerun::ColorModel::L, amplitude)
-            .expect("Could not load SLC data array into image");
+        let img = rr_gamma_corrected_amplitude(&array.slice(s![.., 0..cols / 2]));
         rr.log(log_name, &img).expect("Could not log SLC Image");
     }
 
@@ -2523,10 +2503,10 @@ mod tests {
         println!("Primary dim = {:?}", primary.data.raster_size());
         println!("Secondary dim = {:?}", secondary.data.raster_size());
 
-        for i in 0..9 {
-            rr.set_time_sequence("burst_index", i as i64);
-            plot_burst_amplitude(&rr, &primary, i);
-            plot_burst_amplitude(&rr, &secondary, i);
+        for burst_index in 0..9 {
+            rr.set_time_sequence("burst_index", burst_index as i64);
+            plot_burst_amplitude(&rr, &primary.burst(burst_index));
+            plot_burst_amplitude(&rr, &secondary.burst(burst_index));
         }
     }
 
