@@ -1,6 +1,6 @@
 use crate::{
-    metadata::annotation_xml::{Polynomial, Velocity},
-    sentinel::Sentinel1SlcIWSwath,
+    metadata::annotation_xml::{Polynomial, SlcProductAnnotation, Velocity},
+    sentinel::Sentinel1SlcIWBurst,
 };
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -69,30 +69,28 @@ struct RelevantParameters {
 impl RelevantParameters {
     /// Extracts the relevant parameters for the deramping from the Sentinel1SlcIWSwath metadata
     // TODO: check if there's a better solution than burst_index
-    pub fn new(slc: &Sentinel1SlcIWSwath, burst_index: usize) -> Self {
-        let burst_count = slc.metadata.swath_timing.burst_list.bursts.len();
+    pub fn new(slc_metadata: &SlcProductAnnotation, burst_index: usize) -> Self {
+        let burst_count = slc_metadata.swath_timing.burst_list.bursts.len();
         assert!(burst_index < burst_count);
         // k_psi: Azimuth steering rate (radians/s)
-        let k_psi = slc
-            .metadata
+        let k_psi = slc_metadata
             .general_annotation
             .product_information
             .azimuth_steering_rate
             .to_radians();
 
         // Nl_burst: Number of lines per burst
-        let nl_burst_usize = slc.metadata.swath_timing.lines_per_burst;
+        let nl_burst_usize = slc_metadata.swath_timing.lines_per_burst;
         let nl_burst_f64 = nl_burst_usize as f64;
 
         // Δt_s: Azimuth time interval
-        let delta_t_s_val = slc
-            .metadata
+        let delta_t_s_val = slc_metadata
             .image_annotation
             .image_information
             .azimuth_time_interval;
 
         // Current burst metadata for reference times
-        let current_burst_metadata = &slc.metadata.swath_timing.burst_list.bursts[burst_index];
+        let current_burst_metadata = &slc_metadata.swath_timing.burst_list.bursts[burst_index];
         let burst_start_anx_time = current_burst_metadata.azimuth_anx_time;
         let ref_burst_utc_time = current_burst_metadata.azimuth_time; // DateTime<Utc>
         let ref_burst_anx_time = current_burst_metadata.azimuth_anx_time; // f64
@@ -101,7 +99,7 @@ impl RelevantParameters {
 
         // f_eta_c: Doppler centroid frequency polynomial
         // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
-        let dc_estimate_list = &slc.metadata.doppler_centroid.dc_estimate_list.dc_estimate;
+        let dc_estimate_list = &slc_metadata.doppler_centroid.dc_estimate_list.dc_estimate;
 
         if dc_estimate_list.is_empty() {
             panic!("Doppler centroid estimate list is empty. Cannot select f_eta_c polynomial.");
@@ -129,8 +127,7 @@ impl RelevantParameters {
 
         // k_a: Azimuth FM rate polynomial
         // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
-        let azimuth_fm_rate_list = &slc
-            .metadata
+        let azimuth_fm_rate_list = &slc_metadata
             .general_annotation
             .azimuth_fm_rate_list
             .azimuth_fm_rate;
@@ -163,33 +160,29 @@ impl RelevantParameters {
         let k_a_t0_val = selected_azimuth_fm_rate_item.t0;
 
         // f_c: Radar frequency
-        let f_c = slc
-            .metadata
+        let f_c = slc_metadata
             .general_annotation
             .product_information
             .radar_frequency;
 
         // V_S: Satellite velocity vector [x,y,z]
-        let v_s = slc.metadata.general_annotation.orbit_list.orbit[0].velocity;
+        let v_s = slc_metadata.general_annotation.orbit_list.orbit[0].velocity;
 
         // NS_swath: Number of samples in swath
-        let ns_swath = slc
-            .metadata
+        let ns_swath = slc_metadata
             .image_annotation
             .image_information
             .number_of_samples;
 
         // Δτ_s: Range sampling interval (inverse of range sampling rate)
         let delta_tau_s = 1.0
-            / slc
-                .metadata
+            / slc_metadata
                 .general_annotation
                 .product_information
                 .range_sampling_rate;
 
         // τ(0): Slant range time
-        let tau_0 = slc
-            .metadata
+        let tau_0 = slc_metadata
             .image_annotation
             .image_information
             .slant_range_time;
@@ -229,31 +222,15 @@ impl DerampSlcBurst {
         self
     }
 
-    pub fn apply_forward(
-        &self,
-        slc: &Sentinel1SlcIWSwath,
-        burst_index: usize,
-    ) -> Array2<Complex<f32>> {
-        // TODO: remove burst_index
-        self.apply(slc, Direction::Forward, burst_index)
+    pub fn apply_forward(&self, slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
+        self.apply(slc, Direction::Forward)
     }
 
-    pub fn apply_backward(
-        &self,
-        slc: &Sentinel1SlcIWSwath,
-        burst_index: usize,
-    ) -> Array2<Complex<f32>> {
-        // TODO: remove burst_index
-        self.apply(slc, Direction::Backward, burst_index)
+    pub fn apply_backward(&self, slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
+        self.apply(slc, Direction::Backward)
     }
 
-    // TODO: remove burst_index
-    fn apply(
-        &self,
-        slc: &Sentinel1SlcIWSwath,
-        direction: Direction,
-        burst_index: usize,
-    ) -> Array2<Complex<f32>> {
+    fn apply(&self, slc: &Sentinel1SlcIWBurst, direction: Direction) -> Array2<Complex<f32>> {
         let mode = self.mode;
 
         let RelevantParameters {
@@ -269,7 +246,7 @@ impl DerampSlcBurst {
             ns_swath,
             delta_tau_s,
             tau_0,
-        } = RelevantParameters::new(slc, burst_index); // TODO: remove burst_index
+        } = RelevantParameters::new(&slc.metadata, slc.burst_index);
         // Calculate k_s (Doppler rate introduced by antenna steering)
         // k_s = (2 * v_s * f_c * k_psi) / c
         let c = 299792458.0; // speed of light in m/s
@@ -374,7 +351,7 @@ impl DerampSlcBurst {
         let tau: Array1<f64> =
             Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
 
-        let buffer = &slc.data.array;
+        let buffer = &slc.burst_data.array;
         let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
         for (i, &eta_val) in eta.iter().enumerate() {
             for (j, &tau_val) in tau.iter().enumerate() {

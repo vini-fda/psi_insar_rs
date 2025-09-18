@@ -103,7 +103,7 @@ use crate::{
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::GeolocationGrid,
     satellite_orbit::pixel_coords_to_radar_coords,
-    sentinel::Sentinel1SlcIWSwath,
+    sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 
 /// Calculate the perpendicular baseline between two satellite positions, using a ground point.
@@ -588,11 +588,11 @@ impl HasPosition for WarpFunctionExactMapping {
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
     pub fn new(
-        reference: &Sentinel1SlcIWSwath,
-        secondary: &Sentinel1SlcIWSwath,
+        reference: &Sentinel1SlcIWBurst,
+        secondary: &Sentinel1SlcIWBurst,
         dem: &DEM,
     ) -> Self {
-        let [slant_range_size, azimuth_size] = reference.data.raster_size();
+        let [slant_range_size, azimuth_size] = reference.burst_data.raster_size();
         let ref_osh = reference.precise_orbital_state_history();
         let sec_osh = secondary.precise_orbital_state_history();
         let mut triangulation = WarpTriangulation::new();
@@ -695,8 +695,8 @@ impl EnhancedDelaunayWarpFunction {
 }
 
 pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcIWSwath,
-    secondary: &Sentinel1SlcIWSwath,
+    reference: &Sentinel1SlcIWBurst,
+    secondary: &Sentinel1SlcIWBurst,
     dem: &DEM,
 ) -> Array2<f32> {
     log::info!("Computing warp function");
@@ -705,7 +705,7 @@ pub fn coregister_and_remove_flat_phase(
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
-    let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
     let kernel = KnabSincKernel::default();
@@ -713,10 +713,8 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    // TODO: remove burst_index
-    let burst_index = 0;
-    let reference_img = deramp.apply_forward(reference, burst_index);
-    let secondary_img = deramp.apply_forward(secondary, burst_index);
+    let reference_img = deramp.apply_forward(reference);
+    let secondary_img = deramp.apply_forward(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 

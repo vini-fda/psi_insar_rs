@@ -18,7 +18,7 @@ mod tests {
         download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
         granule_id::IWSwath,
-        interferometry::{bounding_box_from_stack, bounding_box_from_stack_and_burst},
+        interferometry::{bounding_box_from_burst_stack, bounding_box_from_stack},
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
             EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
@@ -91,6 +91,28 @@ mod tests {
         let corrected = abs.mapv_into(|x| (x / max).powf(GAMMA));
         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, corrected)
             .expect("Unable to create Rerun image")
+    }
+
+    fn rr_phase_from_complex(complex: &Array2<Complex<f32>>) -> rerun::Image {
+        let (rows, cols) = complex.dim();
+        let rgb_vector: Vec<u8> = complex
+            .as_slice_memory_order()
+            .unwrap()
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let remainder = phase.rem_euclid(std::f32::consts::TAU);
+                let normalized_phase = remainder / (std::f32::consts::TAU);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+
+        rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        )
     }
 
     fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
@@ -420,7 +442,12 @@ mod tests {
             )
             .unwrap();
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::new(
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -630,8 +657,11 @@ mod tests {
         .unwrap();
         let dem = DEM::open_file("dem.tif");
 
+        let burst_index = 0;
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
-            &reference, &secondary, &dem,
+            &reference.burst(burst_index),
+            &secondary.burst(burst_index),
+            &dem,
         );
         // lets reduce the number of samples by 1/2 in the cols
         let (rows, cols) = resampled_data.dim();
@@ -1079,12 +1109,14 @@ mod tests {
         let dem = DEM::open_file("dem.tif");
 
         // Secondary resampled to reference (also deramped)
+        let burst_index = 0;
         let resampled_sec_data =
             crate::coregistration::warp_function::resample_secondary_to_reference(
-                &reference, &secondary, &dem,
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
             );
-        let burst_index = 0;
-        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference, burst_index);
+        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference.burst(burst_index));
 
         // cut cols by half in both images
         let (rows, cols) = resampled_sec_data.dim();
@@ -1162,7 +1194,12 @@ mod tests {
 
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::new(
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -1180,8 +1217,8 @@ mod tests {
             let start_time = std::time::Instant::now();
             // TODO: remove burst_index
             let burst_index = 0;
-            let reference_img = deramp.apply_forward(&reference, burst_index);
-            let secondary_img = deramp.apply_forward(secondary, burst_index);
+            let reference_img = deramp.apply_forward(&reference.burst(burst_index));
+            let secondary_img = deramp.apply_forward(&secondary.burst(burst_index));
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -1356,7 +1393,12 @@ mod tests {
 
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::new(
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -2035,9 +2077,13 @@ mod tests {
         let wrap_phase = |phase: f32| {
             phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
         };
-        let phase =
-            crate::perp_baseline::coregister_and_remove_flat_phase(&primary, &secondary, &dem)
-                .map(|phase| wrap_phase(*phase));
+        let burst_index = 0;
+        let phase = crate::perp_baseline::coregister_and_remove_flat_phase(
+            &primary.burst(burst_index),
+            &secondary.burst(burst_index),
+            &dem,
+        )
+        .map(|phase| wrap_phase(*phase));
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();
@@ -2085,7 +2131,12 @@ mod tests {
             max_lon + offset_lon,
         ];
         let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
-        let warp_fn = EnhancedDelaunayWarpFunction::new(&primary, &secondary, &dem);
+        let burst_index = 0;
+        let warp_fn = EnhancedDelaunayWarpFunction::new(
+            &primary.burst(burst_index),
+            &secondary.burst(burst_index),
+            &dem,
+        );
         let [ref_slant_range_dim, ref_azimuth_dim] = primary.data.raster_size();
         let mut offsets = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
         const CHUNK_SIZE: usize = 256;
@@ -2496,7 +2547,11 @@ mod tests {
         )
         .unwrap();
         log::info!("Loaded secondary image");
-        let bounding_box = bounding_box_from_stack_and_burst([&reference, &secondary], 0);
+        // -- Choose burst --
+        let burst_index = 0;
+        let reference = reference.burst(burst_index);
+        let secondary = secondary.burst(burst_index);
+        let bounding_box = bounding_box_from_burst_stack([&reference, &secondary]);
 
         log::info!("Downloading DEM {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
@@ -2505,73 +2560,37 @@ mod tests {
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
             &reference, &secondary, &dem,
         );
-        // lets reduce the number of samples by 1/2 in the cols
-        let (rows, cols) = resampled_data.dim();
-        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
 
-        // Log amplitude for resampled data
-        let data_norm = resampled_data.map(|c| c.norm());
-        let max_val = data_norm.iter().fold(0.0f32, |a, &b| a.max(b));
-        let data_norm = data_norm.map(|c| (c / max_val).powf(0.3));
-        let img =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, data_norm).unwrap();
+        // -- Rerun logger --
         let rr =
             rerun::RecordingStreamBuilder::new("test_full_slc_resample_secondary_to_reference")
                 .connect_grpc()
                 .expect("Could not connect to local Rerun instance.");
-        rr.log("resampled_amplitude", &img)
+        // -- Let's reduce the number of samples --
+        let (rows, cols) = resampled_data.dim();
+        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
+        // Log amplitude for resampled data
+        let rr_resampled_amplitude = rr_gamma_corrected_amplitude(&resampled_data.view());
+        rr.log("resampled_amplitude", &rr_resampled_amplitude)
             .expect("Could not log resampled_amplitude to Rerun");
 
         // Log phase for resampled data
-        let vector = resampled_data.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [cols as u32 / 2, rows as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
-        );
-        rr.log("resampled_phase", &rr_image)
+        let rr_resampled_phase = rr_phase_from_complex(&resampled_data);
+        rr.log("resampled_phase", &rr_resampled_phase)
             .expect("Could not log resampled_phase to Rerun");
 
-        // Log the reference image amplitude
-        let ref_array = reference.data.array_f32();
+        // -- Let's reduce the number of samples --
+        let ref_array = reference.burst_data.array;
+        let (rows, cols) = ref_array.dim();
         let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
-        let ref_array_norm = ref_array.map(|c| c.norm());
-        let max_val = ref_array_norm.iter().fold(0.0f32, |a, &b| a.max(b));
-        let ref_array_norm = ref_array_norm.map(|c| (c / max_val).powf(0.3));
-        let ref_img =
-            rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, ref_array_norm)
-                .unwrap();
-        rr.log("reference_amplitude", &ref_img)
+        // Log the reference image amplitude
+        let rr_ref_amplitude = rr_gamma_corrected_amplitude(&ref_array.view());
+        rr.log("reference_amplitude", &rr_ref_amplitude)
             .expect("Could not log reference_amplitude to Rerun");
 
         // Log phase for reference data
-        let vector = ref_array.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
-        let rr_image = rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [cols as u32 / 2, rows as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
-        );
-        rr.log("reference_phase", &rr_image)
+        let rr_ref_phase = rr_phase_from_complex(&ref_array);
+        rr.log("reference_phase", &rr_ref_phase)
             .expect("Could not log reference_phase to Rerun");
     }
 

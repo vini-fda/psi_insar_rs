@@ -4,7 +4,7 @@ use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::{ContinuousOrbitalStateHistory, OrbitalStateHistory};
-use crate::slc_image::SlcImage;
+use crate::slc_image::{SlcBurst, SlcImage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -229,8 +229,11 @@ impl Sentinel1SlcIWSwath {
         let metadata: SlcProductAnnotation = quick_xml::de::from_str(&annotation_xml_content)
             .expect("Failed to parse annotation XML");
 
+        let bursts = metadata.swath_timing.burst_list.count as usize;
+        let lines_per_burst = metadata.swath_timing.lines_per_burst;
+
         // Load data from GeoTiff
-        let data = SlcImage::new(&measurement_path);
+        let data = SlcImage::new(&measurement_path, bursts, lines_per_burst);
 
         // Create the SlcBurst instance
         Ok(Sentinel1SlcIWSwath {
@@ -432,6 +435,53 @@ impl Sentinel1SlcIWSwath {
         ))
     }
 
+    pub fn orbital_state_history(&self) -> OrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        OrbitalStateHistory::from(orbit_list)
+    }
+
+    pub fn continuous_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        let osh = OrbitalStateHistory::from(orbit_list);
+        let t_start = self
+            .metadata
+            .image_annotation
+            .image_information
+            .product_first_line_utc_time;
+        ContinuousOrbitalStateHistory::from_osh(&osh, t_start, &self.metadata)
+    }
+
+    pub fn precise_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let mission = self.metadata.ads_header.mission_id;
+        let start = self.metadata.ads_header.start_time;
+        let end = self.metadata.ads_header.stop_time;
+        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+
+        ContinuousOrbitalStateHistory::from_poe_timeframe(poe_orbit, start, end, &self.metadata)
+    }
+
+    pub fn burst(&self, burst_index: usize) -> Sentinel1SlcIWBurst {
+        Sentinel1SlcIWBurst {
+            burst_index,
+            metadata: self.metadata.clone(),
+            calibration: self.calibration.clone(),
+            noise: self.noise.clone(),
+            granule_id: self.granule_id.clone(),
+            burst_data: self.data.burst(burst_index),
+        }
+    }
+}
+
+pub struct Sentinel1SlcIWBurst {
+    pub burst_index: usize,
+    pub metadata: SlcProductAnnotation,
+    pub calibration: Calibration,
+    pub noise: Noise,
+    pub granule_id: Sentinel1TIFFFileName,
+    pub burst_data: SlcBurst,
+}
+
+impl Sentinel1SlcIWBurst {
     pub fn orbital_state_history(&self) -> OrbitalStateHistory {
         let orbit_list = &self.metadata.general_annotation.orbit_list;
         OrbitalStateHistory::from(orbit_list)

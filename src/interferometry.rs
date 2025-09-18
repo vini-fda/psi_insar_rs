@@ -1,6 +1,9 @@
 use crate::{
-    constants::SENTINEL_1_WAVELENGTH, dem::DEM, perp_baseline::EnhancedDelaunayWarpFunction,
-    satellite_orbit::zero_doppler_time, sentinel::Sentinel1SlcIWSwath,
+    constants::SENTINEL_1_WAVELENGTH,
+    dem::DEM,
+    perp_baseline::EnhancedDelaunayWarpFunction,
+    satellite_orbit::zero_doppler_time,
+    sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 use nalgebra::Vector3;
 use ndarray::{Array2, Axis};
@@ -8,8 +11,8 @@ use ndarray_npy::WriteNpyExt;
 use rayon::prelude::*;
 
 pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcIWSwath,
-    secondaries: &[Sentinel1SlcIWSwath],
+    reference: &Sentinel1SlcIWBurst,
+    secondaries: &[Sentinel1SlcIWBurst],
     dem: &DEM,
 ) {
     for secondary in secondaries {
@@ -19,7 +22,7 @@ pub fn coregister_and_remove_flat_phase(
         let end_time = std::time::Instant::now();
         log::info!("Time taken: {:?}", end_time - start_time);
 
-        let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+        let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
         // let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
         // let kernel = KnabSincKernel::default();
@@ -198,9 +201,8 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwat
 /// Compute the bounding box of a stack of Sentinel1SlcIWSwath images,
 /// with a small margin to account for the fact that the images are not
 /// exactly aligned.
-pub fn bounding_box_from_stack_and_burst<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwath>>(
+pub fn bounding_box_from_burst_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWBurst>>(
     stack: I,
-    burst_index: usize,
 ) -> [f64; 4] {
     const OFFSET_LAT: f64 = 0.05;
     const OFFSET_LON: f64 = 0.05;
@@ -208,13 +210,14 @@ pub fn bounding_box_from_stack_and_burst<'a, I: IntoIterator<Item = &'a Sentinel
     let mut max_lat = f64::MIN;
     let mut min_lon = f64::MAX;
     let mut max_lon = f64::MIN;
-    for slc_iw_swath in stack {
-        let gcps_len = slc_iw_swath
+    for burst in stack {
+        let burst_index = burst.burst_index;
+        let gcps_len = burst
             .metadata
             .geolocation_grid
             .geolocation_grid_point_list
             .count as usize;
-        let num_bursts = slc_iw_swath.metadata.swath_timing.burst_list.count as usize;
+        let num_bursts = burst.metadata.swath_timing.burst_list.count as usize;
         // Rows along azimuth, columns along range
         let gcp_rows = num_bursts + 1;
         assert!(gcps_len % gcp_rows == 0);
@@ -222,7 +225,7 @@ pub fn bounding_box_from_stack_and_burst<'a, I: IntoIterator<Item = &'a Sentinel
         let start = burst_index * gcp_columns;
         let end = (burst_index + 2) * gcp_columns;
 
-        for point in &slc_iw_swath
+        for point in &burst
             .metadata
             .geolocation_grid
             .geolocation_grid_point_list
