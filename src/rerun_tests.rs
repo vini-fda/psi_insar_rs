@@ -2547,7 +2547,7 @@ mod tests {
                 .connect_grpc()
                 .expect("Could not connect to local Rerun instance.");
         // -- Let's reduce the number of samples --
-        let (rows, cols) = resampled_data.dim();
+        let (_, cols) = resampled_data.dim();
         let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
         // Log amplitude for resampled data
         let rr_resampled_amplitude = rr_gamma_corrected_amplitude(&resampled_data.view());
@@ -2561,7 +2561,7 @@ mod tests {
 
         // -- Let's reduce the number of samples --
         let ref_array = reference.burst_data.array;
-        let (rows, cols) = ref_array.dim();
+        let (_, cols) = ref_array.dim();
         let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
         // Log the reference image amplitude
         let rr_ref_amplitude = rr_gamma_corrected_amplitude(&ref_array.view());
