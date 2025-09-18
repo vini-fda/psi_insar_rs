@@ -55,10 +55,22 @@ impl OrbitalStateHistory {
         let mut position = Vec::with_capacity(n);
         let mut velocity = Vec::with_capacity(n);
 
-        for osv in &osvs[first_index..=last_index] {
+        for (i, osv) in osvs[first_index..=last_index].iter().enumerate() {
             time.push(osv.utc);
             position.push([osv.x, osv.y, osv.z].into());
             velocity.push([osv.vx, osv.vy, osv.vz].into());
+            if osv.x.is_nan() || osv.y.is_nan() || osv.z.is_nan() {
+                panic!(
+                    "NaN position value(s) encountered at index {i}: {:?}",
+                    [osv.x, osv.y, osv.z]
+                );
+            }
+            if osv.vx.is_nan() || osv.vy.is_nan() || osv.vz.is_nan() {
+                panic!(
+                    "NaN velocity value(s) encountered at index {i}: {:?}",
+                    [osv.vx, osv.vy, osv.vz]
+                );
+            }
         }
         Self {
             time,
@@ -565,8 +577,12 @@ impl ContinuousOrbitalStateHistory {
             }
         }
 
-        if distance_to_target.is_nan() || delta_time_secs.is_nan() {
-            panic!("NaN found in bisection");
+        if distance_to_target.is_nan() {
+            panic!("NaN found in bisection: distance to target is NaN");
+        }
+
+        if delta_time_secs.is_nan() {
+            panic!("NaN found in bisection: delta time (seconds) is NaN");
         }
 
         // Calculation using azimuth_time_interval (similar to linear interp)
