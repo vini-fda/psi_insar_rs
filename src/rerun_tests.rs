@@ -627,12 +627,12 @@ mod tests {
     fn test_resample_secondary_to_reference() {
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -853,12 +853,12 @@ mod tests {
     fn test_warp_function() {
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -881,7 +881,7 @@ mod tests {
         let dem = DEM::open_file("dem.tif");
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
@@ -975,7 +975,7 @@ mod tests {
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
 
@@ -1042,7 +1042,7 @@ mod tests {
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
 
@@ -1078,12 +1078,12 @@ mod tests {
     fn test_resampled_phase_difference() {
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -1925,12 +1925,12 @@ mod tests {
     fn test_flat_earth_dphi() {
         let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -1974,12 +1974,12 @@ mod tests {
     fn test_interpolated_flat_earth_dphi() {
         let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -2029,12 +2029,12 @@ mod tests {
         env_logger::init();
         let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let [min_lat, max_lat, min_lon, max_lon] = &primary

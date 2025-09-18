@@ -203,8 +203,14 @@ mod tests {
         }
 
         let downloader = AsfBurstDownloader::new_with_env_auth().unwrap();
-        for (name, url) in VALUES {
-            let output_filename = format!("test_download_{name}");
+        for (_, url) in VALUES {
+            // Split by '/' and collect into parts
+            let parts: Vec<&str> = url.split('/').collect();
+
+            // The part we want is right after the domain, so last occurrence before "IW3"
+            // Here, it's simply the 3rd element after "https://sentinel1-burst.asf.alaska.edu"
+            let name = parts.get(3).expect("Unable to find file name");
+            let output_filename = format!("{name}.SAFE");
             let output_path = Path::new(&output_filename);
 
             println!(

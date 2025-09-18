@@ -90,7 +90,7 @@ impl CDSEOrbitDownloader {
 
             extract_id(&parsed).unwrap()
         } else {
-            panic!("Error");
+            panic!("Error: status code {status_code}");
         }
     }
 
