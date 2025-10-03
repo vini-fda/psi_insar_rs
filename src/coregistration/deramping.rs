@@ -246,7 +246,7 @@ impl DerampSlcBurst {
         let final_phase = match mode {
             DerampingMode::Standard => phase_deramp_only,
             DerampingMode::FullDemodulation => {
-                phase_deramp_only - 2.0 * PI * self.eta_c(tau) * eta_diff
+                phase_deramp_only - 2.0 * PI * self.f_eta_c(tau) * eta_diff
             }
         };
 
