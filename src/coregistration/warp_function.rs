@@ -193,9 +193,10 @@ pub fn resample_secondary_to_reference(
     let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
 
     let kernel = KnabSincKernel::default();
-    let deramp = DerampSlcBurst::new();
+    let burst_index = 0;
+    let deramp = DerampSlcBurst::new(&secondary.metadata, burst_index);
 
-    let secondary_img = deramp.apply_forward(secondary);
+    let secondary_img = deramp.apply(secondary.burst_data.array.view());
 
     warp_function
         .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))

@@ -54,6 +54,13 @@ impl SlcImage {
     pub fn burst_view_at_i16<'a>(&'a self, burst_index: usize) -> ArrayView2<'a, Complex<i16>> {
         let start = burst_index * self.lines_per_burst;
         let end = start + self.lines_per_burst;
+        log::debug!("Dim = {:?}", self.array.dim());
+        log::debug!(
+            "start = {}, end = {}, burst_index = {}",
+            start,
+            end,
+            burst_index
+        );
         self.array.slice(s![start..end, ..])
     }
 

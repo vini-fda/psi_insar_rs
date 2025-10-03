@@ -593,8 +593,8 @@ impl EnhancedDelaunayWarpFunction {
         dem: &DEM,
     ) -> Self {
         let [slant_range_size, azimuth_size] = reference.burst_data.raster_size();
-        let ref_osh = reference.precise_orbital_state_history();
-        let sec_osh = secondary.precise_orbital_state_history();
+        let ref_osh = reference.continuous_orbital_state_history();
+        let sec_osh = secondary.continuous_orbital_state_history();
         let mut triangulation = WarpTriangulation::new();
         let mappings: Vec<_> = dem
             .lat_lon_iter()
@@ -694,6 +694,86 @@ impl EnhancedDelaunayWarpFunction {
     }
 }
 
+pub fn coregister_and_calculate_phase_diff(
+    reference: &Sentinel1SlcIWBurst,
+    secondary: &Sentinel1SlcIWBurst,
+    dem: &DEM,
+) -> Array2<f32> {
+    log::info!("Computing warp function");
+    let start_time = std::time::Instant::now();
+    let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
+    let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+
+    let kernel = KnabSincKernel::default();
+
+    log::info!("Deramping reference and secondary images");
+    let start_time = std::time::Instant::now();
+    let reference_img = DerampSlcBurst::process(reference);
+    let secondary_img = DerampSlcBurst::process(secondary);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    log::info!("Resampling secondary image to reference image via warp function");
+    let start_time = std::time::Instant::now();
+    const CHUNK_SIZE: usize = 256;
+    coregistered_secondary_img
+        .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+        .into_par_iter()
+        .enumerate()
+        .for_each_init(
+            || warp_function.triangulation.natural_neighbor(),
+            |nn, (chunk_idx, mut chunk)| {
+                let az_offset = chunk_idx * CHUNK_SIZE;
+
+                for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                    let ref_az = az_offset + i;
+
+                    for (ref_rg, value) in row.iter_mut().enumerate() {
+                        let ref_coords = [ref_az as f64, ref_rg as f64];
+                        let compute_mapped_coord = |dimension: usize| {
+                            nn.interpolate(
+                                |v| v.data().secondary_coords[dimension],
+                                ref_coords.into(),
+                            )
+                        };
+                        if let (Some(sec_az), Some(sec_rg)) =
+                            (compute_mapped_coord(0), compute_mapped_coord(1))
+                        {
+                            let v = interpolate_2d(
+                                secondary_img.view(),
+                                sec_az as f32,
+                                sec_rg as f32,
+                                &kernel,
+                            );
+                            *value = v;
+                        }
+                    }
+                }
+            },
+        );
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    log::info!("Calculating phase difference");
+    let start_time = std::time::Instant::now();
+    let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+    for i in 0..ref_azimuth_dim {
+        for j in 0..ref_slant_range_dim {
+            let s1 = reference_img[[i, j]];
+            let s2 = coregistered_secondary_img[[i, j]];
+            phase_diff[[i, j]] = (s1 * s2.conj()).arg();
+        }
+    }
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    phase_diff
+}
+
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcIWBurst,
     secondary: &Sentinel1SlcIWBurst,
@@ -709,12 +789,11 @@ pub fn coregister_and_remove_flat_phase(
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
     let kernel = KnabSincKernel::default();
-    let deramp = DerampSlcBurst::new();
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    let reference_img = deramp.apply_forward(reference);
-    let secondary_img = deramp.apply_forward(secondary);
+    let reference_img = DerampSlcBurst::process(reference);
+    let secondary_img = DerampSlcBurst::process(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 

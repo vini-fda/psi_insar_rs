@@ -1,8 +1,9 @@
 use crate::{
+    constants::C_LIGHT,
     metadata::annotation_xml::{Polynomial, SlcProductAnnotation, Velocity},
     sentinel::Sentinel1SlcIWBurst,
 };
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView2};
 use num_complex::Complex;
 use std::f64::consts::PI;
 
@@ -22,12 +23,15 @@ impl Default for DerampingMode {
 
 pub struct DerampSlcBurst {
     mode: DerampingMode,
+    params: RelevantParameters,
+    direction: Direction,
 }
 
 /// - Forward, or *Deramping*, is the removal of the linear frequency modulation introduced by antenna steering
 /// - Backward, or *Reramping*, is the inverse of deramping, i.e. it adds back the linear frequency modulation introduced by antenna steering
 ///
 /// By default, we want to deramp the SLC data, then reramp it back to the original data.
+#[derive(Copy, Clone)]
 pub enum Direction {
     Forward,
     Backward,
@@ -39,6 +43,7 @@ impl Default for Direction {
     }
 }
 
+#[derive(Clone)]
 struct RelevantParameters {
     /// Azimuth steering rate (radians/s)
     k_psi: f64,
@@ -204,17 +209,25 @@ impl RelevantParameters {
     }
 }
 
-impl Default for DerampSlcBurst {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl DerampSlcBurst {
-    pub fn new() -> Self {
+    /// Applies the Debursting operator in the default Forward mode to the SLC Burst.
+    pub fn process(slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
+        let burst_index = slc.burst_index;
+        DerampSlcBurst::new(&slc.metadata, burst_index).apply(slc.burst_data.array.view())
+    }
+
+    pub fn new(metadata: &SlcProductAnnotation, burst_index: usize) -> Self {
+        let params = RelevantParameters::new(metadata, burst_index);
         Self {
             mode: DerampingMode::default(),
+            params,
+            direction: Direction::Forward,
         }
+    }
+
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
     }
 
     pub fn set_mode(mut self, mode: DerampingMode) -> Self {
@@ -222,150 +235,125 @@ impl DerampSlcBurst {
         self
     }
 
-    pub fn apply_forward(&self, slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
-        self.apply(slc, Direction::Forward)
-    }
-
-    pub fn apply_backward(&self, slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
-        self.apply(slc, Direction::Backward)
-    }
-
-    fn apply(&self, slc: &Sentinel1SlcIWBurst, direction: Direction) -> Array2<Complex<f32>> {
+    /// phi(eta, tau)
+    pub fn phi(&self, eta: f64, tau: f64) -> f64 {
         let mode = self.mode;
+        let direction = self.direction;
 
+        let eta_diff = eta - self.eta_ref(tau);
+        let phase_deramp_only = -PI * self.k_t(tau) * eta_diff * eta_diff;
+
+        let final_phase = match mode {
+            DerampingMode::Standard => phase_deramp_only,
+            DerampingMode::FullDemodulation => {
+                phase_deramp_only - 2.0 * PI * self.eta_c(tau) * eta_diff
+            }
+        };
+
+        match direction {
+            Direction::Forward => final_phase,
+            Direction::Backward => -final_phase,
+        }
+    }
+
+    /// Doppler centroid rate in the focused TOPS SLC data [Hz/s].
+    ///
+    /// k_t is obtained by scaling the RAW time rate (ks) with the conversion factor (α) between
+    /// focused and raw time such that α = 1 - (k_s/k_a(tau))
+    pub fn k_t(&self, tau: f64) -> f64 {
+        let k_a = self.k_a(tau);
+        let k_s = self.k_s();
+        k_a * k_s / (k_a - k_s)
+    }
+
+    /// Doppler FM rate [Hz/s].
+    ///
+    /// This is the classical azimuth FM rate which is always negative. The azimuth FM rate is
+    /// provided as a sequence of range polynomial regularly updated with azimuth time 𝜂. For
+    /// deramping the i-th burst, it is recommended to use closest polynomial to 𝜂𝑚𝑖𝑑 of the i-th burst.
+    pub fn k_a(&self, tau: f64) -> f64 {
+        let RelevantParameters { k_a, k_a_t0, .. } = &self.params;
+        let tau_diff = tau - k_a_t0;
+        k_a.evaluate(tau_diff)
+    }
+
+    /// Doppler Centroid rate introduced by the scanning of the antenna 𝑘_𝜓 [Hz/s]. This rate is applicable to the RAW data,
+    /// and needs to be converted to k_t before applying to the SLC data.
+    pub fn k_s(&self) -> f64 {
         let RelevantParameters {
-            k_psi,
+            k_psi, f_c, v_s, ..
+        } = self.params;
+        let v_s_magnitude = (v_s.x * v_s.x + v_s.y * v_s.y + v_s.z * v_s.z).sqrt();
+        (2.0 * v_s_magnitude * f_c * k_psi) / C_LIGHT
+    }
+
+    /// Reference zero-Doppler Azimuth Time
+    pub fn eta_ref(&self, tau: f64) -> f64 {
+        let RelevantParameters {
+            ns_swath,
+            delta_tau_s,
+            tau_0,
+            ..
+        } = self.params;
+        let tau_mid = tau_0 + (ns_swath / 2) as f64 * delta_tau_s;
+        self.eta_c(tau) - self.eta_c(tau_mid)
+    }
+
+    /// Beam centre crossing time [s]
+    pub fn eta_c(&self, tau: f64) -> f64 {
+        -(self.f_eta_c(tau) / self.k_a(tau))
+    }
+
+    /// Doppler Centroid frequency [Hz].
+    ///
+    /// This is provided as a sequence of range polynomial
+    /// regularly updated with azimuth time 𝜂. For deramping the i-th burst, it is recommended to
+    /// use closest polynomial to 𝜂_𝑚𝑖𝑑 of the i-th burst.
+    pub fn f_eta_c(&self, tau: f64) -> f64 {
+        let RelevantParameters {
             f_eta_c,
             f_eta_c_t0,
-            k_a,
-            k_a_t0,
-            f_c,
-            v_s,
+            ..
+        } = &self.params;
+        let tau_diff = tau - f_eta_c_t0;
+        f_eta_c.evaluate(tau_diff)
+    }
+
+    pub fn apply(&self, array: ArrayView2<Complex<f32>>) -> Array2<Complex<f32>> {
+        let RelevantParameters {
             nl_burst,
             delta_t_s,
             ns_swath,
             delta_tau_s,
             tau_0,
-        } = RelevantParameters::new(&slc.metadata, slc.burst_index);
-        // Calculate k_s (Doppler rate introduced by antenna steering)
-        // k_s = (2 * v_s * f_c * k_psi) / c
-        let c = 299792458.0; // speed of light in m/s
-        let v_s_magnitude = (v_s.x * v_s.x + v_s.y * v_s.y + v_s.z * v_s.z).sqrt();
-        let k_s = (2.0 * v_s_magnitude * f_c * k_psi) / c;
-
-        // Helper function to calculate k_a at a given range time tau
-        let k_a_at_tau = |tau: f64| -> f64 {
-            let tau_diff = tau - k_a_t0;
-            k_a.evaluate(tau_diff)
-        };
-
-        // Helper function to calculate f_eta_c at a given range time tau
-        let f_eta_c_at_tau = |tau: f64| -> f64 {
-            let tau_diff = tau - f_eta_c_t0;
-            f_eta_c.evaluate(tau_diff)
-        };
-
-        // Helper function to calculate eta_c at a given range time tau
-        // eta_c(tau) = -f_eta_c(tau) / k_a(tau)
-        let calculate_eta_c = |tau_val_for_eta_c: f64| -> f64 {
-            let f_eta_c_val = f_eta_c_at_tau(tau_val_for_eta_c);
-            let k_a_val = k_a_at_tau(tau_val_for_eta_c);
-            if k_a_val.abs() < 1e-9 {
-                // Avoid division by zero or near-zero
-                // This case needs careful consideration based on SAR physics.
-                // Returning 0.0 implies eta_c = 0 if k_a is effectively zero.
-                // The markdown states k_a is always negative, so it shouldn't be zero.
-                // If it can be zero due to data issues, a panic or error might be more appropriate.
-                // For now, retaining a default to avoid panic during processing of potentially valid edge cases.
-                0.0
-            } else {
-                -f_eta_c_val / k_a_val
-            }
-        };
-
-        // Calculate eta_c at mid-swath range time, to be used in eta_ref calculation
-        // tau_mid_swath = tau(0) + (NS_swath / 2) * Δτ_s. NS_swath/2 is integer division for sample index.
-        let mid_swath_sample_index = ns_swath / 2; // Integer division gives the floor for odd ns_swath
-        let tau_mid_swath = tau_0 + mid_swath_sample_index as f64 * delta_tau_s;
-        let eta_c_at_mid_swath = calculate_eta_c(tau_mid_swath);
-
-        // Helper function to calculate k_t at a given range time tau
-        // k_t = (k_a * k_s) / (k_a - k_s)
-        let k_t_at_tau = |tau: f64| -> f64 {
-            let k_a_val = k_a_at_tau(tau);
-            // Add protection for k_a_val - k_s being zero if necessary,
-            // though the document doesn't specify handling for k_a = k_s.
-            if (k_a_val - k_s).abs() < 1e-9 {
-                // Handle singularity: e.g., return a very large number or a representative value.
-                // Or, if k_s is also very small, k_t might be considered 0.
-                // This case implies alpha (Equ.3) is near zero.
-                // k_t = k_s / alpha. If alpha is 0, k_t is infinite.
-                // For now, let's return a large representative value or a flag.
-                // This often indicates an issue or an extreme edge case in parameters.
-                // Returning k_a_val as a fallback, though not physically robust without more context.
-                // A proper handling might involve looking at limits or specific ESA guidance for this case.
-                // For TOPSAR, k_a should generally be different from k_s.
-                if k_s.abs() < 1e-9 {
-                    return 0.0;
-                } // if k_s is zero, k_t is zero unless k_a is also zero.
-                return 1e12; // Placeholder for a very large k_t
-            }
-            (k_a_val * k_s) / (k_a_val - k_s)
-        };
-
-        // The deramping phase function phi(eta, tau)
-        // For deramping only: phi = -π * k_t(τ) * (η - η_ref(τ))²
-        // where η_ref(τ) = η_c(τ) - η_c_at_mid_swath
-        // For deramping + demodulation: phi = -π * k_t(τ) * (η - η_ref(τ))² - 2π * f_eta_c(τ) * (η - η_ref(τ))
-        let phi = |eta: f64, tau: f64| -> f64 {
-            let k_t_val = k_t_at_tau(tau);
-
-            let current_eta_c = calculate_eta_c(tau);
-            let eta_ref_val = current_eta_c - eta_c_at_mid_swath;
-
-            let eta_diff = eta - eta_ref_val;
-            let phase_deramp_only = -PI * k_t_val * eta_diff * eta_diff;
-
-            let final_phase = match mode {
-                DerampingMode::Standard => phase_deramp_only,
-                DerampingMode::FullDemodulation => {
-                    let f_eta_c_val_at_tau = f_eta_c_at_tau(tau);
-                    phase_deramp_only - 2.0 * PI * f_eta_c_val_at_tau * eta_diff
-                }
-            };
-
-            match direction {
-                Direction::Forward => final_phase,
-                Direction::Backward => -final_phase,
-            }
-        };
-
+            ..
+        } = self.params;
         // Calculate eta vector (azimuth times centered in middle of burst)
         // eta = [-Nl_burst/2 * Δt_s, Nl_burst/2 * Δt_s]
-        let eta: Array1<f64> = Array1::from_iter(
-            (-(nl_burst as i32 / 2)..(nl_burst as i32 / 2)).map(|i| i as f64 * delta_t_s),
-        );
+        let half_nl_burst = nl_burst as i32 / 2;
+        let eta: Array1<f64> =
+            Array1::from_iter((-(half_nl_burst)..half_nl_burst).map(|i| i as f64 * delta_t_s));
 
         // Calculate tau vector (range times for each sample)
         // tau(i) = tau(0) + i * Δτ_s
         let tau: Array1<f64> =
             Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
 
-        let buffer = &slc.burst_data.array;
+        // let buffer = &slc.burst_data.array;
         let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
         for (i, &eta_val) in eta.iter().enumerate() {
             for (j, &tau_val) in tau.iter().enumerate() {
                 // Read the complex value
-                let x = buffer[(i, j)];
+                let x = array[(i, j)];
                 let x = Complex::new(x.re as f64, x.im as f64);
 
                 // Calculate and apply phase
-                let phase = phi(eta_val, tau_val);
+                let phase = self.phi(eta_val, tau_val);
                 let phase_cos = phase.cos();
                 let phase_sin = phase.sin();
                 let x = x * Complex::new(phase_cos, phase_sin);
 
-                // Convert back to Complex<i16> and write
+                // Convert back to Complex<f32> and write
                 let x = Complex::<f32>::new(x.re as f32, x.im as f32);
                 deramped[[i, j]] = x;
             }
