@@ -1096,7 +1096,7 @@ mod tests {
                 &secondary.burst(burst_index),
                 &dem,
             );
-        let ref_deramp = DerampSlcBurst::process(&reference.burst(burst_index));
+        let ref_deramp = DerampSlcBurst::process_burst(&reference.burst(burst_index));
 
         // cut cols by half in both images
         let (rows, cols) = resampled_sec_data.dim();
@@ -1196,8 +1196,8 @@ mod tests {
             let start_time = std::time::Instant::now();
             // TODO: remove burst_index
             let burst_index = 0;
-            let reference_img = DerampSlcBurst::process(&reference.burst(burst_index));
-            let secondary_img = DerampSlcBurst::process(&secondary.burst(burst_index));
+            let reference_img = DerampSlcBurst::process_burst(&reference.burst(burst_index));
+            let secondary_img = DerampSlcBurst::process_burst(&secondary.burst(burst_index));
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 

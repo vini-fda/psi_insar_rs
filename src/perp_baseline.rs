@@ -712,8 +712,8 @@ pub fn coregister_and_calculate_phase_diff(
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    let reference_img = DerampSlcBurst::process(reference);
-    let secondary_img = DerampSlcBurst::process(secondary);
+    let reference_img = DerampSlcBurst::process_burst(reference);
+    let secondary_img = DerampSlcBurst::process_burst(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -792,8 +792,8 @@ pub fn coregister_and_remove_flat_phase(
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    let reference_img = DerampSlcBurst::process(reference);
-    let secondary_img = DerampSlcBurst::process(secondary);
+    let reference_img = DerampSlcBurst::process_burst(reference);
+    let secondary_img = DerampSlcBurst::process_burst(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 

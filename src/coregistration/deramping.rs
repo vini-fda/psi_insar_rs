@@ -211,7 +211,7 @@ impl RelevantParameters {
 
 impl DerampSlcBurst {
     /// Applies the Debursting operator in the default Forward mode to the SLC Burst.
-    pub fn process(slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
+    pub fn process_burst(slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
         let burst_index = slc.burst_index;
         DerampSlcBurst::new(&slc.metadata, burst_index).apply(slc.burst_data.array.view())
     }
