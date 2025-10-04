@@ -2050,12 +2050,9 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let wrap_phase = |phase: f32| {
-            phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
-        };
+
         let phase =
-            crate::perp_baseline::coregister_and_calculate_phase_diff(&primary, &secondary, &dem)
-                .map(|phase| wrap_phase(*phase));
+            crate::perp_baseline::coregister_and_calculate_phase_diff(&primary, &secondary, &dem);
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();

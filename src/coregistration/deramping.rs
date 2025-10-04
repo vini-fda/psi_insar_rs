@@ -1,5 +1,6 @@
 use crate::{
     constants::C_LIGHT,
+    coregistration::bilinear_polynomial::BilinearPolynomial,
     metadata::annotation_xml::{Polynomial, SlcProductAnnotation, Velocity},
     sentinel::Sentinel1SlcIWBurst,
 };
@@ -43,7 +44,7 @@ impl Default for Direction {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct RelevantParameters {
     /// Azimuth steering rate (radians/s)
     k_psi: f64,
@@ -69,6 +70,10 @@ struct RelevantParameters {
     delta_tau_s: f64,
     /// Slant range time
     tau_0: f64,
+    /// Azimuth FM Rate
+    azimuth_fm_rate_polynomial: BilinearPolynomial,
+    /// DC Estimate
+    dc_estimate_polynomial: BilinearPolynomial,
 }
 
 impl RelevantParameters {
@@ -96,11 +101,13 @@ impl RelevantParameters {
 
         // Current burst metadata for reference times
         let current_burst_metadata = &slc_metadata.swath_timing.burst_list.bursts[burst_index];
-        let burst_start_anx_time = current_burst_metadata.azimuth_anx_time;
-        let ref_burst_utc_time = current_burst_metadata.azimuth_time; // DateTime<Utc>
-        let ref_burst_anx_time = current_burst_metadata.azimuth_anx_time; // f64
+        // ANX time is useful only for  matching with Orbital information
+        // TODO: pick velocity at middle of the azimuth time in the burst
+        //let burst_start_anx_time = current_burst_metadata.azimuth_anx_time;
+        let first_line_azimuth_time = current_burst_metadata.azimuth_time; // DateTime<Utc>
 
-        let eta_mid_anx_time = burst_start_anx_time + (nl_burst_f64 / 2.0) * delta_t_s_val;
+        // Duration, in seconds, from the middle of the burst compared to the first azimuth line
+        let eta_mid_time = (nl_burst_f64 / 2.0) * delta_t_s_val;
 
         // f_eta_c: Doppler centroid frequency polynomial
         // Select the polynomial whose azimuth time is closest to eta_mid_anx_time.
@@ -110,24 +117,43 @@ impl RelevantParameters {
             panic!("Doppler centroid estimate list is empty. Cannot select f_eta_c polynomial.");
         }
 
+        // Bilinear polynomial f(eta, tau)
+        let dc_estimate_polynomial = BilinearPolynomial::new(
+            dc_estimate_list
+                .iter()
+                .map(|dc_estimate| {
+                    let duration = dc_estimate
+                        .azimuth_time
+                        .signed_duration_since(first_line_azimuth_time);
+                    let azimuth_time =
+                        duration.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+                    (
+                        azimuth_time,
+                        dc_estimate.data_dc_polynomial.polynomial.clone(),
+                    )
+                })
+                .collect(),
+        );
+
         let selected_dc_estimate = dc_estimate_list
             .iter()
             .min_by(|a, b| {
-                // Convert DcEstimate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
-                let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_a_anx_equivalent = ref_burst_anx_time +
+                // Convert DcEstimate's azimuth_time (DateTime<Utc>) to an f64 time interval
+                // since the first azimuth line
+                let duration_a = a.azimuth_time.signed_duration_since(first_line_azimuth_time);
+                let item_a_secs =
                     duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
-                let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_b_anx_equivalent = ref_burst_anx_time +
+                let duration_b = b.azimuth_time.signed_duration_since(first_line_azimuth_time);
+                let item_b_secs =
                     duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
 
-                let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
-                let diff_b = (item_b_anx_equivalent - eta_mid_anx_time).abs();
+                let diff_a = (item_a_secs - eta_mid_time).abs();
+                let diff_b = (item_b_secs - eta_mid_time).abs();
                 diff_a.partial_cmp(&diff_b).unwrap_or(std::cmp::Ordering::Equal)
             })
             .expect("dc_estimate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
 
-        let f_eta_c_poly_container = selected_dc_estimate.data_dc_polynomial.clone();
+        let f_eta_c = selected_dc_estimate.data_dc_polynomial.polynomial.clone();
         let f_eta_c_t0_val = selected_dc_estimate.t0;
 
         // k_a: Azimuth FM rate polynomial
@@ -141,19 +167,40 @@ impl RelevantParameters {
             panic!("Azimuth FM rate list is empty. Cannot select k_a polynomial.");
         }
 
+        // Bilinear polynomial f(eta, tau)
+        let azimuth_fm_rate_polynomial = BilinearPolynomial::new(
+            azimuth_fm_rate_list
+                .iter()
+                .map(|azimuth_fm_rate| {
+                    let duration = azimuth_fm_rate
+                        .azimuth_time
+                        .signed_duration_since(first_line_azimuth_time);
+                    let azimuth_time =
+                        duration.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
+                    (
+                        azimuth_time,
+                        azimuth_fm_rate
+                            .azimuth_fm_rate_polynomial
+                            .coefficients
+                            .clone(),
+                    )
+                })
+                .collect(),
+        );
+
         let selected_azimuth_fm_rate_item = azimuth_fm_rate_list
             .iter()
             .min_by(|a, b| {
                 // Convert AzimuthFmRate's azimuth_time (DateTime<Utc>) to an f64 ANX-equivalent time
-                let duration_a = a.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_a_anx_equivalent = ref_burst_anx_time +
+                let duration_a = a.azimuth_time.signed_duration_since(first_line_azimuth_time);
+                let item_a_anx_equivalent =
                     duration_a.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
-                let duration_b = b.azimuth_time.signed_duration_since(ref_burst_utc_time);
-                let item_b_anx_equivalent = ref_burst_anx_time +
+                let duration_b = b.azimuth_time.signed_duration_since(first_line_azimuth_time);
+                let item_b_anx_equivalent =
                     duration_b.num_microseconds().unwrap_or(0) as f64 / 1_000_000.0;
 
-                let diff_a = (item_a_anx_equivalent - eta_mid_anx_time).abs();
-                let diff_b = (item_b_anx_equivalent - eta_mid_anx_time).abs();
+                let diff_a = (item_a_anx_equivalent - eta_mid_time).abs();
+                let diff_b = (item_b_anx_equivalent - eta_mid_time).abs();
                 diff_a.partial_cmp(&diff_b).unwrap_or(std::cmp::Ordering::Equal)
             })
             .expect("azimuth_fm_rate_list was checked not to be empty but min_by found no minimum. This indicates a data issue or NaN times.");
@@ -194,7 +241,7 @@ impl RelevantParameters {
 
         Self {
             k_psi,
-            f_eta_c: f_eta_c_poly_container.polynomial,
+            f_eta_c,
             f_eta_c_t0: f_eta_c_t0_val,
             k_a: k_a_poly,
             k_a_t0: k_a_t0_val,
@@ -205,6 +252,8 @@ impl RelevantParameters {
             ns_swath,
             delta_tau_s,
             tau_0,
+            dc_estimate_polynomial,
+            azimuth_fm_rate_polynomial,
         }
     }
 }
@@ -218,6 +267,7 @@ impl DerampSlcBurst {
 
     pub fn new(metadata: &SlcProductAnnotation, burst_index: usize) -> Self {
         let params = RelevantParameters::new(metadata, burst_index);
+        log::info!("Relevant Deramp Parameters = {params:?}");
         Self {
             mode: DerampingMode::default(),
             params,
@@ -237,16 +287,22 @@ impl DerampSlcBurst {
 
     /// phi(eta, tau)
     pub fn phi(&self, eta: f64, tau: f64) -> f64 {
+        let &RelevantParameters {
+            nl_burst,
+            delta_t_s,
+            ..
+        } = &self.params;
         let mode = self.mode;
         let direction = self.direction;
 
-        let eta_diff = eta - self.eta_ref(tau);
+        let offset = (nl_burst as f64) * delta_t_s / 2.0;
+        let eta_diff = eta - offset - self.eta_ref(tau);
         let phase_deramp_only = -PI * self.k_t(tau) * eta_diff * eta_diff;
 
         let final_phase = match mode {
             DerampingMode::Standard => phase_deramp_only,
             DerampingMode::FullDemodulation => {
-                phase_deramp_only - 2.0 * PI * self.f_eta_c(tau) * eta_diff
+                phase_deramp_only - 2.0 * PI * self.f_eta_c(tau) * eta
             }
         };
 
@@ -270,7 +326,7 @@ impl DerampSlcBurst {
     ///
     /// This is the classical azimuth FM rate which is always negative. The azimuth FM rate is
     /// provided as a sequence of range polynomial regularly updated with azimuth time 𝜂. For
-    /// deramping the i-th burst, it is recommended to use closest polynomial to 𝜂𝑚𝑖𝑑 of the i-th burst.
+    /// deramping the i-th burst, it is recommended to use closest polynomial to 𝜂_𝑚𝑖𝑑 of the i-th burst.
     pub fn k_a(&self, tau: f64) -> f64 {
         let RelevantParameters { k_a, k_a_t0, .. } = &self.params;
         let tau_diff = tau - k_a_t0;
@@ -319,20 +375,94 @@ impl DerampSlcBurst {
         f_eta_c.evaluate(tau_diff)
     }
 
-    pub fn apply(&self, array: ArrayView2<Complex<f32>>) -> Array2<Complex<f32>> {
+    // ----- TODO -------
+    pub fn k_a_(&self, eta: f64) -> Polynomial {
         let RelevantParameters {
-            nl_burst,
-            delta_t_s,
+            azimuth_fm_rate_polynomial,
+            ..
+        } = &self.params;
+        // let tau_diff = tau - k_a_t0;
+        azimuth_fm_rate_polynomial.interpolate(eta)
+    }
+
+    pub fn f_eta_c_(&self, eta: f64) -> Polynomial {
+        let RelevantParameters {
+            dc_estimate_polynomial,
+            ..
+        } = &self.params;
+        // let tau_diff = tau - f_eta_c_t0;
+        dc_estimate_polynomial.interpolate(eta)
+    }
+
+    pub fn eta_c_(&self, k_a: &Polynomial, f_eta_c: &Polynomial, tau: f64) -> f64 {
+        let RelevantParameters {
+            f_eta_c_t0, k_a_t0, ..
+        } = &self.params;
+        -(f_eta_c.evaluate(tau - f_eta_c_t0) / k_a.evaluate(tau - k_a_t0))
+    }
+
+    pub fn eta_ref_(&self, k_a: &Polynomial, f_eta_c: &Polynomial, tau: f64) -> f64 {
+        let RelevantParameters {
             ns_swath,
             delta_tau_s,
             tau_0,
             ..
         } = self.params;
-        // Calculate eta vector (azimuth times centered in middle of burst)
-        // eta = [-Nl_burst/2 * Δt_s, Nl_burst/2 * Δt_s]
-        let half_nl_burst = nl_burst as i32 / 2;
-        let eta: Array1<f64> =
-            Array1::from_iter((-(half_nl_burst)..half_nl_burst).map(|i| i as f64 * delta_t_s));
+        // TODO: understand why SNAP uses firstValidPixel in tmp2, and not tau_mid
+        // https://github.com/senbox-org/microwave-toolbox/blob/master/sar-commons/src/main/java/eu/esa/sar/commons/Sentinel1Utils.java#L594
+        let tau_mid = tau_0 + (ns_swath / 2) as f64 * delta_tau_s;
+
+        self.eta_c_(k_a, f_eta_c, tau) - self.eta_c_(k_a, f_eta_c, tau_mid)
+    }
+
+    pub fn k_t_(&self, k_a: &Polynomial, tau: f64) -> f64 {
+        let RelevantParameters { k_a_t0, .. } = &self.params;
+        let k_a = k_a.evaluate(tau - k_a_t0);
+        let k_s = self.k_s();
+        k_a * k_s / (k_a - k_s)
+    }
+
+    pub fn phi_(&self, eta: f64, tau: f64, k_a: &Polynomial, f_eta_c: &Polynomial) -> f64 {
+        let &RelevantParameters {
+            f_eta_c_t0,
+            nl_burst,
+            delta_t_s,
+            ..
+        } = &self.params;
+        let mode = self.mode;
+        let direction = self.direction;
+
+        let offset = (nl_burst as f64) * delta_t_s / 2.0;
+        let eta_diff = eta - offset - self.eta_ref_(k_a, f_eta_c, tau);
+        let phase_deramp_only = -PI * self.k_t_(k_a, tau) * eta_diff * eta_diff;
+
+        let final_phase = match mode {
+            DerampingMode::Standard => phase_deramp_only,
+            DerampingMode::FullDemodulation => {
+                phase_deramp_only - 2.0 * PI * f_eta_c.evaluate(tau - f_eta_c_t0) * eta
+            }
+        };
+
+        match direction {
+            Direction::Forward => final_phase,
+            Direction::Backward => -final_phase,
+        }
+    }
+    // --- END ----
+
+    pub fn apply(&self, array: ArrayView2<Complex<f32>>) -> Array2<Complex<f32>> {
+        let &RelevantParameters {
+            nl_burst,
+            delta_t_s,
+            ns_swath,
+            delta_tau_s,
+            tau_0,
+            ref azimuth_fm_rate_polynomial,
+            ref dc_estimate_polynomial,
+            ..
+        } = &self.params;
+        // Calculate eta vector (azimuth times)
+        let eta: Array1<f64> = Array1::from_iter((0..nl_burst).map(|i| i as f64 * delta_t_s));
 
         // Calculate tau vector (range times for each sample)
         // tau(i) = tau(0) + i * Δτ_s
@@ -342,13 +472,17 @@ impl DerampSlcBurst {
         // let buffer = &slc.burst_data.array;
         let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
         for (i, &eta_val) in eta.iter().enumerate() {
+            // TODO: READ THIS: https://github.com/senbox-org/microwave-toolbox/blob/254aa8f5de2cfe65138a8b7edf9d596eb3ba03c1/sar-commons/src/main/java/eu/esa/sar/commons/Sentinel1Utils.java#L719
+            let k_a = azimuth_fm_rate_polynomial.interpolate(eta_val);
+            let f_eta_c = dc_estimate_polynomial.interpolate(eta_val);
             for (j, &tau_val) in tau.iter().enumerate() {
                 // Read the complex value
                 let x = array[(i, j)];
                 let x = Complex::new(x.re as f64, x.im as f64);
 
                 // Calculate and apply phase
-                let phase = self.phi(eta_val, tau_val);
+                let phase = self.phi_(eta_val, tau_val, &k_a, &f_eta_c);
+                // let phase = self.phi(eta_val, tau_val);
                 let phase_cos = phase.cos();
                 let phase_sin = phase.sin();
                 let x = x * Complex::new(phase_cos, phase_sin);

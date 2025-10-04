@@ -10,6 +10,7 @@ use crate::{
     sentinel::Sentinel1SlcIWSwath,
 };
 
+pub mod bilinear_polynomial;
 pub mod coarse_coregistration;
 pub mod dem_assisted_coregistration;
 pub mod deramping;

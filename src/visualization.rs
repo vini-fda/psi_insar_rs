@@ -106,8 +106,8 @@ pub fn cubehelix_colormap(x: f32) -> [f32; 3] {
         [100.0 / 255.0, 70.0 / 255.0, 190.0 / 255.0], // color7
     ];
 
-    // Clamp input to [0, 1]
-    let x = x.clamp(0.0, 1.0);
+    // Wrap input to [0, 1]
+    let x = x.rem_euclid(1.0);
 
     // Scale x to [0, 7] to match our 8 color points
     let x_scaled = x * 7.0;
