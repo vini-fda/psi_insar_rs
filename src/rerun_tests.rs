@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::PI;
+
     use nalgebra::{Matrix3, Unit, Vector3};
-    use ndarray::{Array1, Array2, ArrayView2, Axis, s};
+    use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2, Axis, s};
     use ndarray_npy::WriteNpyExt;
     use num_complex::{Complex, ComplexFloat};
     use rayon::prelude::*;
@@ -124,12 +126,12 @@ mod tests {
         env_logger::init();
         let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
         )
         .unwrap();
 
@@ -970,6 +972,178 @@ mod tests {
         )
         .expect("Could not log wireframe to Rerun");
     }
+
+    use rustfft::FftPlanner;
+    /// Compute a 1D magnitude spectrogram (short-time Fourier transform).
+    ///
+    /// # Arguments
+    /// - `x`: Input complex signal as a 1D view. If your signal is real, pass it as
+    ///        complex with `imag=0`.
+    /// - `win_len`: Window length (in samples).
+    /// - `hop`: Hop size (in samples) between successive frames.
+    /// - `nfft`: FFT size (>= `win_len`). Zero-padding is applied if `nfft > win_len`.
+    ///
+    /// # Returns
+    /// A 2D array of shape `(nfft/2 + 1, num_frames)` where:
+    /// - The first dimension is frequency bins from DC to Nyquist (inclusive).
+    /// - The second dimension is time frames.
+    ///
+    /// Magnitudes are **not** normalized by window power or `nfft`; adjust as needed
+    /// for your application (e.g., divide by `win_len` or convert to dB).
+    ///
+    /// # Panics
+    /// Panics if:
+    /// - `win_len == 0`
+    /// - `hop == 0`
+    /// - `nfft == 0`
+    /// - `win_len > nfft`
+    /// - `x.len() < win_len`
+    ///
+    /// # Example
+    /// ```ignore
+    /// let spec = spectrogram_1d(x.view(), 128, 32, 1024);
+    /// // spec.dim() == (513, num_frames)
+    /// ```
+    pub fn spectrogram_1d(
+        x: ArrayView1<Complex<f32>>,
+        win_len: usize,
+        hop: usize,
+        nfft: usize,
+    ) -> Array2<f32> {
+        assert!(win_len > 0, "win_len must be > 0");
+        assert!(hop > 0, "hop must be > 0");
+        assert!(nfft > 0, "nfft must be > 0");
+        assert!(win_len <= nfft, "win_len must be <= nfft");
+        assert!(
+            x.len() >= win_len,
+            "input length ({}) must be >= win_len ({})",
+            x.len(),
+            win_len
+        );
+
+        let n = x.len();
+
+        // Plan FFT once
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(nfft);
+
+        // Number of frames with last fully covered window
+        let num_frames = (n - win_len) / hop + 1;
+
+        // Hann (Hanning) window
+        let window = hanning(win_len);
+
+        // Output: (freq bins x time frames)
+        let mut spec = Array2::<f32>::zeros((nfft / 2 + 1, num_frames));
+
+        // Reusable FFT buffer
+        let mut buf = vec![Complex::new(0.0, 0.0); nfft];
+
+        for frame in 0..num_frames {
+            let start = frame * hop;
+
+            // Apply window to the current frame into the FFT buffer
+            for i in 0..win_len {
+                buf[i] = x[start + i] * window[i];
+            }
+            // Zero-pad the rest of the buffer if nfft > win_len
+            for i in win_len..nfft {
+                buf[i] = Complex::new(0.0, 0.0);
+            }
+
+            // In-place FFT
+            fft.process(&mut buf);
+
+            // Magnitude for positive frequencies (including Nyquist)
+            for k in 0..=nfft / 2 {
+                // |X[k]|
+                let mag = buf[k].norm();
+                spec[[k, frame]] = mag;
+            }
+        }
+
+        spec
+    }
+
+    pub fn hanning(win_len: usize) -> Vec<f32> {
+        (0..win_len)
+            .map(|i| {
+                (std::f32::consts::PI * i as f32 / (win_len as f32 - 1.0))
+                    .sin()
+                    .powi(2)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore]
+    fn test_chirp_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+
+        let n = 17916;
+
+        let fs = 1024.0; // Sampling frequency (Hz)
+        let f0 = 10.0; // Start frequency (Hz)
+        let f1 = 512.0; // End frequency (Hz)
+
+        // Create a linear chirp: frequency increases linearly from f0 to f1
+        let x = Array1::<Complex<f32>>::from_shape_fn(n, |i| {
+            let t = i as f32 / fs;
+            let k = (f1 - f0) / (n as f32 / fs); // Chirp rate
+            let phase = 2.0 * PI * (f0 * t + 0.5 * k * t * t);
+            Complex::<f32>::new(phase.cos(), phase.sin())
+        });
+        log::info!("n = {n}");
+        let rr = rerun::RecordingStreamBuilder::new("stft_chirp_spectrum_visualization")
+            .connect_grpc()?;
+        let win_len = 64;
+        let hop = 16;
+        let nfft = 1024;
+        let amplitude_spectrum = spectrogram_1d(x.view(), win_len, hop, nfft);
+        let tensor = rerun::Tensor::try_from(amplitude_spectrum)
+            .expect("Could not open as tensor")
+            .with_dim_names(["Azimuth Frequency Bin", "Azimuth time"]);
+        rr.log("amplitude_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_2d_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+
+        let image = reference.data.array_f32(); //reference.burst(0).burst_data.array;
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let win_len = 128;
+        let hop = 16;
+        let nfft = 1024;
+        let n = rows;
+        let num_frames = (n - win_len) / hop + 1;
+        let step = 128;
+        let freq_bins = nfft / 2 + 1;
+        let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((cols - 1) / step) + 1));
+        for (out_idx, col) in (0..cols).step_by(step).enumerate() {
+            let view = image.index_axis(Axis(1), col);
+            // (freq_bins x num_frames)
+            let result = spectrogram_1d(view, win_len, hop, nfft);
+
+            array_3d.index_axis_mut(Axis(2), out_idx).assign(&result);
+        }
+        let rr =
+            rerun::RecordingStreamBuilder::new("stft_3d_spectrum_visualization").connect_grpc()?;
+        let tensor = rerun::Tensor::try_from(array_3d)
+            .expect("Could not open as tensor")
+            .with_dim_names(["Azimuth Frequency Bin", "Azimuth Time", "Range Index"]);
+        rr.log("amplitude_spectrum", &tensor)?;
+        Ok(())
+    }
+
     #[test]
     #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
@@ -2052,7 +2226,7 @@ mod tests {
             .expect("Could not connect to local Rerun instance.");
 
         let phase =
-            crate::perp_baseline::coregister_and_calculate_phase_diff(&primary, &secondary, &dem);
+            crate::perp_baseline::coregister_and_remove_flat_phase(&primary, &secondary, &dem);
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();
