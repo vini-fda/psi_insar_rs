@@ -1256,7 +1256,7 @@ mod tests {
         let image = reference.data.array_f32();
         let (rows, cols) = image.dim();
         log::info!("rows = {rows}, cols = {cols}");
-        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_deramping_visualization")
+        let rr = rerun::RecordingStreamBuilder::new("slc_swath_spectrum_deramping_visualization")
             .connect_grpc()?;
         let tensor = rr_stft_3d_tensor(image.view())?;
         rr.log("original_spectrum", &tensor)?;
