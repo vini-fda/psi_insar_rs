@@ -128,11 +128,11 @@ mod tests {
         let n = az_dim;
         let num_frames = (n - win_len) / hop + 1;
         let step = 128;
-        let freq_bins = nfft / 2 + 1;
+        let freq_bins = nfft;
         let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((rg_dim - 1) / step) + 1));
         for (out_idx, range_idx) in (0..rg_dim).step_by(step).enumerate() {
             let view = x.index_axis(Axis(1), range_idx);
-            let result = spectrogram_1d(view, win_len, hop, nfft);
+            let result = signed_spectrogram(view, win_len, hop, nfft);
 
             array_3d.index_axis_mut(Axis(2), out_idx).assign(&result);
         }
@@ -1090,6 +1090,74 @@ mod tests {
         spec
     }
 
+    /// STFT including negative frequencies
+    pub fn signed_spectrogram(
+        x: ArrayView1<Complex<f32>>,
+        win_len: usize,
+        hop: usize,
+        nfft: usize,
+    ) -> Array2<f32> {
+        assert!(win_len > 0, "win_len must be > 0");
+        assert!(hop > 0, "hop must be > 0");
+        assert!(nfft > 0, "nfft must be > 0");
+        assert!(win_len <= nfft, "win_len must be <= nfft");
+        assert!(
+            x.len() >= win_len,
+            "input length ({}) must be >= win_len ({})",
+            x.len(),
+            win_len
+        );
+
+        let n = x.len();
+
+        // Plan FFT once
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(nfft);
+
+        // Number of frames with last fully covered window
+        let num_frames = (n - win_len) / hop + 1;
+
+        // Hann (Hanning) window
+        let window = hanning(win_len);
+
+        // Output: (freq bins x time frames)
+        let mut spec = Array2::<f32>::zeros((nfft, num_frames));
+
+        // Reusable FFT buffer
+        let mut buf = vec![Complex::new(0.0, 0.0); nfft];
+
+        let positive_freqs = nfft / 2 + 1;
+        let negative_freqs = nfft - positive_freqs;
+        for frame in 0..num_frames {
+            let start = frame * hop;
+
+            // Apply window to the current frame into the FFT buffer
+            for i in 0..win_len {
+                buf[i] = x[start + i] * window[i];
+            }
+            // Zero-pad the rest of the buffer if nfft > win_len
+            for i in win_len..nfft {
+                buf[i] = Complex::new(0.0, 0.0);
+            }
+
+            // In-place FFT
+            fft.process(&mut buf);
+
+            // Magnitude for positive frequencies (including Nyquist)
+            for k in 0..positive_freqs {
+                // |X[k]| positive
+                spec[[k + negative_freqs, frame]] = buf[k].norm();
+            }
+            // Magnitude for negative frequencies
+            for k in 0..negative_freqs {
+                // |X[k]| negative
+                spec[[k, frame]] = buf[k + positive_freqs].norm();
+            }
+        }
+
+        spec
+    }
+
     pub fn hanning(win_len: usize) -> Vec<f32> {
         (0..win_len)
             .map(|i| {
@@ -1155,7 +1223,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn test_slc_burst_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_slc_burst_spectrum_deramping_visualization() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW1,
@@ -1166,7 +1234,7 @@ mod tests {
         let image = reference.burst(burst_index).burst_data.array; //reference.data.array_f32();
         let (rows, cols) = image.dim();
         log::info!("rows = {rows}, cols = {cols}");
-        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_visualization")
+        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_deramping_visualization")
             .connect_grpc()?;
         let tensor = rr_stft_3d_tensor(image.view())?;
         rr.log("original_spectrum", &tensor)?;
