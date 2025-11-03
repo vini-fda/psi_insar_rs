@@ -118,6 +118,31 @@ mod tests {
         )
     }
 
+    fn rr_stft_3d_tensor(
+        x: ArrayView2<Complex<f32>>,
+    ) -> Result<rerun::Tensor, Box<dyn std::error::Error>> {
+        let (az_dim, rg_dim) = x.dim();
+        let win_len = 64;
+        let hop = 4;
+        let nfft = 1024;
+        let n = az_dim;
+        let num_frames = (n - win_len) / hop + 1;
+        let step = 128;
+        let freq_bins = nfft / 2 + 1;
+        let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((rg_dim - 1) / step) + 1));
+        for (out_idx, range_idx) in (0..rg_dim).step_by(step).enumerate() {
+            let view = x.index_axis(Axis(1), range_idx);
+            let result = spectrogram_1d(view, win_len, hop, nfft);
+
+            array_3d.index_axis_mut(Axis(2), out_idx).assign(&result);
+        }
+        let tensor = rerun::Tensor::try_from(array_3d)
+            .expect("Could not open as tensor")
+            .with_dim_names(["Azimuth Frequency Bin", "Azimuth Time", "Range Index"]);
+
+        Ok(tensor)
+    }
+
     #[test]
     #[ignore]
     fn plot_slc_images() {
@@ -1109,7 +1134,28 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn test_2d_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_deramp_function_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let metadata = &reference.metadata;
+        let deramp = DerampSlcBurst::new(metadata, 0);
+        let image = deramp.debug_array();
+        // ---------------------------------------------------
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let rr = rerun::RecordingStreamBuilder::new("stft_deramp_visualization").connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
+        rr.log("amplitude_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_slc_burst_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW1,
@@ -1117,29 +1163,12 @@ mod tests {
         )
         .unwrap();
 
-        let image = reference.data.array_f32(); //reference.burst(0).burst_data.array;
+        let image = reference.burst(0).burst_data.array; //reference.data.array_f32();
         let (rows, cols) = image.dim();
         log::info!("rows = {rows}, cols = {cols}");
-        let win_len = 128;
-        let hop = 16;
-        let nfft = 1024;
-        let n = rows;
-        let num_frames = (n - win_len) / hop + 1;
-        let step = 128;
-        let freq_bins = nfft / 2 + 1;
-        let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((cols - 1) / step) + 1));
-        for (out_idx, col) in (0..cols).step_by(step).enumerate() {
-            let view = image.index_axis(Axis(1), col);
-            // (freq_bins x num_frames)
-            let result = spectrogram_1d(view, win_len, hop, nfft);
-
-            array_3d.index_axis_mut(Axis(2), out_idx).assign(&result);
-        }
-        let rr =
-            rerun::RecordingStreamBuilder::new("stft_3d_spectrum_visualization").connect_grpc()?;
-        let tensor = rerun::Tensor::try_from(array_3d)
-            .expect("Could not open as tensor")
-            .with_dim_names(["Azimuth Frequency Bin", "Azimuth Time", "Range Index"]);
+        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_visualization")
+            .connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
         rr.log("amplitude_spectrum", &tensor)?;
         Ok(())
     }

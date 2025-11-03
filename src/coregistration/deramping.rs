@@ -495,4 +495,46 @@ impl DerampSlcBurst {
 
         deramped
     }
+
+    pub fn debug_array(&self) -> Array2<Complex<f32>> {
+        let &RelevantParameters {
+            nl_burst,
+            delta_t_s,
+            ns_swath,
+            delta_tau_s,
+            tau_0,
+            ref azimuth_fm_rate_polynomial,
+            ref dc_estimate_polynomial,
+            ..
+        } = &self.params;
+        // Calculate eta vector (azimuth times)
+        let eta: Array1<f64> = Array1::from_iter((0..nl_burst).map(|i| i as f64 * delta_t_s));
+
+        // Calculate tau vector (range times for each sample)
+        // tau(i) = tau(0) + i * Δτ_s
+        let tau: Array1<f64> =
+            Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
+
+        // let buffer = &slc.burst_data.array;
+        let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
+        for (i, &eta_val) in eta.iter().enumerate() {
+            // TODO: READ THIS: https://github.com/senbox-org/microwave-toolbox/blob/254aa8f5de2cfe65138a8b7edf9d596eb3ba03c1/sar-commons/src/main/java/eu/esa/sar/commons/Sentinel1Utils.java#L719
+            let k_a = azimuth_fm_rate_polynomial.interpolate(eta_val);
+            let f_eta_c = dc_estimate_polynomial.interpolate(eta_val);
+            for (j, &tau_val) in tau.iter().enumerate() {
+                // Calculate and apply phase
+                let phase = -self.phi_(eta_val, tau_val, &k_a, &f_eta_c);
+                // let phase = self.phi(eta_val, tau_val);
+                let phase_cos = phase.cos();
+                let phase_sin = phase.sin();
+                let x = Complex::new(phase_cos, phase_sin);
+
+                // Convert back to Complex<f32> and write
+                let x = Complex::<f32>::new(x.re as f32, x.im as f32);
+                deramped[[i, j]] = x;
+            }
+        }
+
+        deramped
+    }
 }
