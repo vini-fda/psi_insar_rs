@@ -2,9 +2,9 @@ use crate::{
     constants::C_LIGHT,
     coregistration::bilinear_polynomial::BilinearPolynomial,
     metadata::annotation_xml::{Polynomial, SlcProductAnnotation, Velocity},
-    sentinel::Sentinel1SlcIWBurst,
+    sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView2, ArrayViewMut2, s};
 use num_complex::Complex;
 use std::f64::consts::PI;
 
@@ -259,6 +259,32 @@ impl RelevantParameters {
 }
 
 impl DerampSlcBurst {
+    pub fn process_swath(slc: &Sentinel1SlcIWSwath) -> Array2<Complex<f32>> {
+        let burst_count = slc.metadata.swath_timing.burst_list.bursts.len();
+        let nl_burst = slc.metadata.swath_timing.lines_per_burst;
+        let nl_swath = slc
+            .metadata
+            .image_annotation
+            .image_information
+            .number_of_lines;
+        let ns_swath = slc
+            .metadata
+            .image_annotation
+            .image_information
+            .number_of_samples;
+        let mut deramped = Array2::<Complex<f32>>::zeros((nl_swath, ns_swath));
+        for burst_index in 0..(burst_count - 1) {
+            let deramp = DerampSlcBurst::new(&slc.metadata, burst_index);
+            let mut output_view =
+                deramped.slice_mut(s![burst_index * nl_burst..(burst_index + 1) * nl_burst, ..]);
+            deramp.buffer_apply(
+                &mut output_view,
+                slc.burst(burst_index).burst_data.array.view(),
+            );
+        }
+        deramped
+    }
+
     /// Applies the Debursting operator in the default Forward mode to the SLC Burst.
     pub fn process_burst(slc: &Sentinel1SlcIWBurst) -> Array2<Complex<f32>> {
         let burst_index = slc.burst_index;
@@ -267,7 +293,7 @@ impl DerampSlcBurst {
 
     pub fn new(metadata: &SlcProductAnnotation, burst_index: usize) -> Self {
         let params = RelevantParameters::new(metadata, burst_index);
-        log::info!("Relevant Deramp Parameters = {params:?}");
+        // log::info!("Relevant Deramp Parameters = {params:?}");
         Self {
             mode: DerampingMode::default(),
             params,
@@ -449,6 +475,53 @@ impl DerampSlcBurst {
         }
     }
     // --- END ----
+    pub fn buffer_apply(
+        &self,
+        output_buf: &mut ArrayViewMut2<Complex<f32>>,
+        array: ArrayView2<Complex<f32>>,
+    ) {
+        let &RelevantParameters {
+            nl_burst,
+            delta_t_s,
+            ns_swath,
+            delta_tau_s,
+            tau_0,
+            ref azimuth_fm_rate_polynomial,
+            ref dc_estimate_polynomial,
+            ..
+        } = &self.params;
+        // Calculate eta vector (azimuth times)
+        let eta: Array1<f64> = Array1::from_iter((0..nl_burst).map(|i| i as f64 * delta_t_s));
+
+        // Calculate tau vector (range times for each sample)
+        // tau(i) = tau(0) + i * Δτ_s
+        let tau: Array1<f64> =
+            Array1::from_iter((0..ns_swath).map(|i| tau_0 + i as f64 * delta_tau_s));
+
+        // let buffer = &slc.burst_data.array;
+        //let mut deramped = Array2::<Complex<f32>>::zeros((nl_burst, ns_swath));
+        for (i, &eta_val) in eta.iter().enumerate() {
+            // TODO: READ THIS: https://github.com/senbox-org/microwave-toolbox/blob/254aa8f5de2cfe65138a8b7edf9d596eb3ba03c1/sar-commons/src/main/java/eu/esa/sar/commons/Sentinel1Utils.java#L719
+            let k_a = azimuth_fm_rate_polynomial.interpolate(eta_val);
+            let f_eta_c = dc_estimate_polynomial.interpolate(eta_val);
+            for (j, &tau_val) in tau.iter().enumerate() {
+                // Read the complex value
+                let x = array[(i, j)];
+                let x = Complex::new(x.re as f64, x.im as f64);
+
+                // Calculate and apply phase
+                let phase = self.phi_(eta_val, tau_val, &k_a, &f_eta_c);
+                // let phase = self.phi(eta_val, tau_val);
+                let phase_cos = phase.cos();
+                let phase_sin = phase.sin();
+                let x = x * Complex::new(phase_cos, phase_sin);
+
+                // Convert back to Complex<f32> and write
+                let x = Complex::<f32>::new(x.re as f32, x.im as f32);
+                output_buf[[i, j]] = x;
+            }
+        }
+    }
 
     pub fn apply(&self, array: ArrayView2<Complex<f32>>) -> Array2<Complex<f32>> {
         let &RelevantParameters {

@@ -123,11 +123,11 @@ mod tests {
     ) -> Result<rerun::Tensor, Box<dyn std::error::Error>> {
         let (az_dim, rg_dim) = x.dim();
         let win_len = 64;
-        let hop = 4;
+        let hop = 32;
         let nfft = 1024;
         let n = az_dim;
         let num_frames = (n - win_len) / hop + 1;
-        let step = 128;
+        let step = 256;
         let freq_bins = nfft;
         let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((rg_dim - 1) / step) + 1));
         for (out_idx, range_idx) in (0..rg_dim).step_by(step).enumerate() {
@@ -1239,6 +1239,28 @@ mod tests {
         let tensor = rr_stft_3d_tensor(image.view())?;
         rr.log("original_spectrum", &tensor)?;
         let deramped = DerampSlcBurst::process_burst(&reference.burst(burst_index));
+        let tensor = rr_stft_3d_tensor(deramped.view())?;
+        rr.log("deramped_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_slc_swath_spectrum_deramping_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let image = reference.data.array_f32();
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_deramping_visualization")
+            .connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
+        rr.log("original_spectrum", &tensor)?;
+        let deramped = DerampSlcBurst::process_swath(&reference);
         let tensor = rr_stft_3d_tensor(deramped.view())?;
         rr.log("deramped_spectrum", &tensor)?;
         Ok(())
