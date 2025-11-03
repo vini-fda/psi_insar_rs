@@ -273,7 +273,7 @@ impl DerampSlcBurst {
             .image_information
             .number_of_samples;
         let mut deramped = Array2::<Complex<f32>>::zeros((nl_swath, ns_swath));
-        for burst_index in 0..(burst_count - 1) {
+        for burst_index in 0..burst_count {
             let deramp = DerampSlcBurst::new(&slc.metadata, burst_index);
             let mut output_view =
                 deramped.slice_mut(s![burst_index * nl_burst..(burst_index + 1) * nl_burst, ..]);
