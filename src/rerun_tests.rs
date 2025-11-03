@@ -1162,14 +1162,17 @@ mod tests {
             "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
         )
         .unwrap();
-
-        let image = reference.burst(0).burst_data.array; //reference.data.array_f32();
+        let burst_index = 0;
+        let image = reference.burst(burst_index).burst_data.array; //reference.data.array_f32();
         let (rows, cols) = image.dim();
         log::info!("rows = {rows}, cols = {cols}");
         let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_visualization")
             .connect_grpc()?;
         let tensor = rr_stft_3d_tensor(image.view())?;
-        rr.log("amplitude_spectrum", &tensor)?;
+        rr.log("original_spectrum", &tensor)?;
+        let deramped = DerampSlcBurst::process_burst(&reference.burst(burst_index));
+        let tensor = rr_stft_3d_tensor(deramped.view())?;
+        rr.log("deramped_spectrum", &tensor)?;
         Ok(())
     }
 
