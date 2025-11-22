@@ -63,6 +63,17 @@ mod tests {
             .expect("Could not log SLC Image");
     }
 
+    fn plot_sar_phase(rr: &RecordingStream, burst: &Sentinel1SlcIWSwath) {
+        let name = &burst.granule_id.raw_filename;
+        let log_name = format!("slc_phase_{name}");
+        let array = burst.data.array_f32();
+        let (rows, cols) = array.dim();
+        let complex = array.slice(s![0..rows / 2, 0..cols / 2]).to_owned();
+        let img = rr_phase_from_complex(&complex);
+        rr.log_static(log_name, &img)
+            .expect("Could not log SLC Image Phase");
+    }
+
     fn rr_gamma_corrected_amplitude(slc_data: &ArrayView2<Complex<f32>>) -> rerun::Image {
         const GAMMA: f32 = 0.3;
         let abs = slc_data.map(|x| x.abs());
@@ -166,6 +177,7 @@ mod tests {
 
         plot_sar_amplitude(&rr, &primary);
         plot_sar_amplitude(&rr, &secondary);
+        plot_sar_phase(&rr, &primary);
     }
 
     #[test]
@@ -1438,16 +1450,16 @@ mod tests {
             .expect("Could not connect to local Rerun instance.");
         let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
             IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondaries = [
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302.SAFE",
+            "download/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
         ]
         .iter()
         .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
