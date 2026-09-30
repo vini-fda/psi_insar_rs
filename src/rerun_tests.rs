@@ -13,7 +13,7 @@ mod tests {
         constants::SENTINEL_1_WAVELENGTH,
         coregistration::{
             coarse_coregistration::{CoarseCoregistration, CoregistrationResult},
-            deramping::DerampSlcBurst,
+            deramping::{DerampSlcBurst, Direction},
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         dem::{CopernicusDemType, DEM},
@@ -1500,12 +1500,19 @@ mod tests {
 
             let kernel = KnabSincKernel::default();
 
-            log::info!("Deramping reference and secondary images");
+            log::info!("Deramping secondary image");
             let start_time = std::time::Instant::now();
             // TODO: remove burst_index
             let burst_index = 0;
-            let reference_img = DerampSlcBurst::process_burst(&reference.burst(burst_index));
+            // Only the secondary is resampled, so only the secondary is deramped. After resampling,
+            // it is reramped at the secondary coordinates, which exactly undoes the deramp phase
+            // (standard SNAP/ISCE/GAMMA workflow). The reference stays raw.
+            // NOTE: warp coordinates are relative to the first line of the product, which only
+            // coincides with the burst's first line for burst 0.
+            let reference_img = reference.burst(burst_index).burst_data.array;
             let secondary_img = DerampSlcBurst::process_burst(&secondary.burst(burst_index));
+            let secondary_reramp = DerampSlcBurst::new(&secondary.metadata, burst_index)
+                .direction(Direction::Backward);
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -1541,7 +1548,13 @@ mod tests {
                                         sec_rg as f32,
                                         &kernel,
                                     );
-                                    *value = v;
+                                    let reramp_phase =
+                                        secondary_reramp.phi_at_pixel(sec_az, sec_rg);
+                                    let reramp = Complex::new(
+                                        reramp_phase.cos() as f32,
+                                        reramp_phase.sin() as f32,
+                                    );
+                                    *value = v * reramp;
                                 }
                             }
                         }

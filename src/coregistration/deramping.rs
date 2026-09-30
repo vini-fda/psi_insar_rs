@@ -354,6 +354,21 @@ impl DerampSlcBurst {
         }
     }
 
+    /// phi evaluated at a (possibly fractional) pixel position of the burst, using the same
+    /// azimuth/range time grid as [`Self::buffer_apply`]. Used to reramp resampled data.
+    pub fn phi_at_pixel(&self, azimuth_idx: f64, slant_range_idx: f64) -> f64 {
+        let &RelevantParameters {
+            delta_t_s,
+            delta_tau_s,
+            tau_0,
+            ..
+        } = &self.params;
+        self.phi(
+            azimuth_idx * delta_t_s,
+            tau_0 + slant_range_idx * delta_tau_s,
+        )
+    }
+
     /// Doppler centroid rate in the focused TOPS SLC data [Hz/s].
     ///
     /// k_t is obtained by scaling the RAW time rate (ks) with the conversion factor (α) between
