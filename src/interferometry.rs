@@ -225,7 +225,7 @@ pub fn bounding_box_from_burst_stack<'a, I: IntoIterator<Item = &'a Sentinel1Slc
         let num_bursts = burst.metadata.swath_timing.burst_list.count as usize;
         // Rows along azimuth, columns along range
         let gcp_rows = num_bursts + 1;
-        assert!(gcps_len % gcp_rows == 0);
+        assert!(gcps_len.is_multiple_of(gcp_rows));
         let gcp_columns = gcps_len / gcp_rows;
         let start = burst_index * gcp_columns;
         let end = (burst_index + 2) * gcp_columns;

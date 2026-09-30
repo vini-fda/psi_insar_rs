@@ -1015,7 +1015,7 @@ mod tests {
     ///
     /// # Arguments
     /// - `x`: Input complex signal as a 1D view. If your signal is real, pass it as
-    ///        complex with `imag=0`.
+    ///   complex with `imag=0`.
     /// - `win_len`: Window length (in samples).
     /// - `hop`: Hop size (in samples) between successive frames.
     /// - `nfft`: FFT size (>= `win_len`). Zero-padding is applied if `nfft > win_len`.
@@ -1084,9 +1084,7 @@ mod tests {
                 buf[i] = x[start + i] * window[i];
             }
             // Zero-pad the rest of the buffer if nfft > win_len
-            for i in win_len..nfft {
-                buf[i] = Complex::new(0.0, 0.0);
-            }
+            buf[win_len..nfft].fill(Complex::new(0.0, 0.0));
 
             // In-place FFT
             fft.process(&mut buf);
@@ -1148,9 +1146,7 @@ mod tests {
                 buf[i] = x[start + i] * window[i];
             }
             // Zero-pad the rest of the buffer if nfft > win_len
-            for i in win_len..nfft {
-                buf[i] = Complex::new(0.0, 0.0);
-            }
+            buf[win_len..nfft].fill(Complex::new(0.0, 0.0));
 
             // In-place FFT
             fft.process(&mut buf);

@@ -8,18 +8,13 @@ use ndarray::{Array1, Array2, ArrayView2, ArrayViewMut2, s};
 use num_complex::Complex;
 use std::f64::consts::PI;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum DerampingMode {
     /// Only perform deramping (centers spectra at Doppler centroid frequency)
     Standard,
     /// Perform both deramping and demodulation (centers spectra at 0Hz)
+    #[default]
     FullDemodulation,
-}
-
-impl Default for DerampingMode {
-    fn default() -> Self {
-        Self::FullDemodulation
-    }
 }
 
 pub struct DerampSlcBurst {
@@ -32,16 +27,11 @@ pub struct DerampSlcBurst {
 /// - Backward, or *Reramping*, is the inverse of deramping, i.e. it adds back the linear frequency modulation introduced by antenna steering
 ///
 /// By default, we want to deramp the SLC data, then reramp it back to the original data.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Direction {
+    #[default]
     Forward,
     Backward,
-}
-
-impl Default for Direction {
-    fn default() -> Self {
-        Self::Forward
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -517,8 +507,6 @@ impl DerampSlcBurst {
             ns_swath,
             delta_tau_s,
             tau_0,
-            ref azimuth_fm_rate_polynomial,
-            ref dc_estimate_polynomial,
             ..
         } = &self.params;
         // Calculate eta vector (azimuth times)
