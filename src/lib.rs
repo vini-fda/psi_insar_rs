@@ -8,6 +8,7 @@ pub mod geodesy;
 pub mod granule_id;
 pub mod interferometry;
 pub mod interpolation;
+pub mod io;
 pub mod metadata;
 pub mod perp_baseline;
 mod rerun_tests;
