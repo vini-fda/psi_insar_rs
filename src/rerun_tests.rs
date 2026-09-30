@@ -1469,6 +1469,9 @@ mod tests {
         println!("Bounding box: {bounding_box:?}");
         let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
+        // Precise orbits are used both for the warp function and for the geometric phase, so both
+        // steps share the same trajectories and time reference.
+        let osh_1 = reference.precise_orbital_state_history();
 
         for (id, secondary) in secondaries.iter().enumerate() {
             rr.set_time_sequence("secondary_id", id as i64);
@@ -1480,12 +1483,15 @@ mod tests {
                 delta_time.num_days()
             );
 
+            let osh_2 = secondary.precise_orbital_state_history();
+
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
             let burst_index = 0;
-            let warp_function = EnhancedDelaunayWarpFunction::new(
+            let warp_function = EnhancedDelaunayWarpFunction::with_orbits(
                 &reference.burst(burst_index),
-                &secondary.burst(burst_index),
+                &osh_1,
+                &osh_2,
                 &dem,
             );
             let end_time = std::time::Instant::now();
@@ -1563,10 +1569,6 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            let osh_1 = reference.precise_orbital_state_history();
-            let annotation_1 = &reference.metadata;
-            let osh_2 = secondary.precise_orbital_state_history();
-            let annotation_2 = &secondary.metadata;
             let mut phase_diff =
                 Array2::from_shape_fn((ref_azimuth_dim, ref_slant_range_dim / 2), |(i, j)| {
                     let s1 = reference_img[[i, j]];
@@ -1579,14 +1581,6 @@ mod tests {
 
             log::info!("Removing topographic phase");
             let start_time = std::time::Instant::now();
-            let azimuth_time_interval_1 = annotation_1
-                .image_annotation
-                .image_information
-                .azimuth_time_interval;
-            let azimuth_time_interval_2 = annotation_2
-                .image_annotation
-                .image_information
-                .azimuth_time_interval;
             phase_diff
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
@@ -1605,6 +1599,10 @@ mod tests {
                                     |v| v.data().secondary_coords[0],
                                     ref_coords.into(),
                                 );
+                                let sec_rg = nn.interpolate(
+                                    |v| v.data().secondary_coords[1],
+                                    ref_coords.into(),
+                                );
 
                                 // Now compute the ground target position
                                 let ground_target_lat =
@@ -1614,12 +1612,14 @@ mod tests {
 
                                 // if any are None, skip
                                 if sec_az.is_none()
+                                    || sec_rg.is_none()
                                     || ground_target_lat.is_none()
                                     || ground_target_lon.is_none()
                                 {
                                     continue;
                                 }
                                 let sec_az = sec_az.unwrap();
+                                let sec_rg = sec_rg.unwrap();
                                 let ground_target_lat = ground_target_lat.unwrap();
                                 let ground_target_lon = ground_target_lon.unwrap();
 
@@ -1627,8 +1627,10 @@ mod tests {
                                     dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                                 );
 
-                                let zero_doppler_1 = ref_az as f64 * azimuth_time_interval_1;
-                                let zero_doppler_2 = sec_az * azimuth_time_interval_2;
+                                let zero_doppler_1 =
+                                    osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                                let zero_doppler_2 =
+                                    osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 

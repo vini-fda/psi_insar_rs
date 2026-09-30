@@ -102,7 +102,7 @@ use crate::{
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::GeolocationGrid,
-    satellite_orbit::pixel_coords_to_radar_coords,
+    satellite_orbit::{ContinuousOrbitalStateHistory, pixel_coords_to_radar_coords},
     sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 
@@ -592,9 +592,23 @@ impl EnhancedDelaunayWarpFunction {
         secondary: &Sentinel1SlcIWBurst,
         dem: &DEM,
     ) -> Self {
+        Self::with_orbits(
+            reference,
+            &reference.continuous_orbital_state_history(),
+            &secondary.continuous_orbital_state_history(),
+            dem,
+        )
+    }
+
+    /// Same as [`Self::new`], but with caller-provided orbits (e.g. precise POE orbits), so that the
+    /// warp function and any later geometric phase computation use the same trajectories.
+    pub fn with_orbits(
+        reference: &Sentinel1SlcIWBurst,
+        ref_osh: &ContinuousOrbitalStateHistory,
+        sec_osh: &ContinuousOrbitalStateHistory,
+        dem: &DEM,
+    ) -> Self {
         let [slant_range_size, azimuth_size] = reference.burst_data.raster_size();
-        let ref_osh = reference.continuous_orbital_state_history();
-        let sec_osh = secondary.continuous_orbital_state_history();
         let mut triangulation = WarpTriangulation::new();
         let mappings: Vec<_> = dem
             .lat_lon_iter()

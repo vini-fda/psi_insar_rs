@@ -401,8 +401,20 @@ impl ContinuousOrbitalStateHistory {
         end_time: DateTime<Utc>,
         annotation: &SlcProductAnnotation,
     ) -> Self {
-        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
+        // Keep a margin of state vectors around the acquisition, so that zero-Doppler searches for
+        // DEM points outside the product's time span still bracket a solution.
+        let margin = TimeDelta::seconds(60);
+        let osh =
+            OrbitalStateHistory::from_poe_timeframe(eef, start_time - margin, end_time + margin);
         Self::from_osh(&osh, start_time, annotation)
+    }
+
+    /// Inverse of the pixel mapping in [`Self::find_zero_doppler_state`]: returns the zero-Doppler
+    /// time (seconds since start) of a pixel, removing the bistatic shift (R/c) that is baked
+    /// into the azimuth index.
+    pub fn pixel_to_zero_doppler_time(&self, azimuth_index: f64, slant_range_index: f64) -> f64 {
+        let slant_range = self.near_edge_slant_range + slant_range_index * self.range_spacing;
+        azimuth_index * self.azimuth_time_interval - slant_range / C_LIGHT
     }
 
     /// Calculate p(t) and v(t) at t = time[i]
