@@ -150,10 +150,19 @@ impl DEM {
         self.get_value_at_index(index)
     }
 
-    /// Gets the height value at the coordinates (lat, lon)
+    /// Gets the height value at the coordinates (lat, lon), bilinearly interpolated between the
+    /// four surrounding DEM posts (clamped at the raster edges).
     pub fn get_height_at_lat_lon(&self, lat: f64, lon: f64) -> f32 {
-        let [row, col] = self.get_pixel_at_lat_lon(lat, lon);
-        self.get_value_at_pixel(row, col)
+        let igt = self.inv_geo_transform;
+        let col = (lon * igt[0] + igt[1]).clamp(0.0, (self.cols - 1) as f64);
+        let row = (lat * igt[2] + igt[3]).clamp(0.0, (self.rows - 1) as f64);
+        let (r0, c0) = (row.floor() as usize, col.floor() as usize);
+        let (r1, c1) = ((r0 + 1).min(self.rows - 1), (c0 + 1).min(self.cols - 1));
+        let (fr, fc) = (row - r0 as f64, col - c0 as f64);
+        let h = |r, c| self.get_value_at_pixel(r, c) as f64;
+        let top = h(r0, c0) * (1.0 - fc) + h(r0, c1) * fc;
+        let bottom = h(r1, c0) * (1.0 - fc) + h(r1, c1) * fc;
+        (top * (1.0 - fr) + bottom * fr) as f32
     }
 
     /// Gets the Earth-Centered Earth-Fixed (ECEF) cartesian coordinates of the pixel (row, col)
@@ -402,6 +411,27 @@ impl Iterator for IndexedLatLonHeightIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn height_is_bilinearly_interpolated() {
+        // lon = col, lat = -row
+        let dem = DEM {
+            geo_transform: [1.0, 0.0, -1.0, 0.0],
+            inv_geo_transform: [1.0, 0.0, -1.0, 0.0],
+            rows: 2,
+            cols: 2,
+            height: vec![0.0, 10.0, 20.0, 30.0],
+        };
+        // Grid posts are returned exactly
+        assert_eq!(dem.get_height_at_lat_lon(0.0, 1.0), 10.0);
+        assert_eq!(dem.get_height_at_lat_lon(-1.0, 0.0), 20.0);
+        // In-between values are interpolated
+        assert_eq!(dem.get_height_at_lat_lon(0.0, 0.5), 5.0);
+        assert_eq!(dem.get_height_at_lat_lon(-0.5, 0.5), 15.0);
+        // Outside the raster, values are clamped to the edge
+        assert_eq!(dem.get_height_at_lat_lon(1.0, 5.0), 10.0);
+    }
+
     #[test]
     #[ignore = "Needs to download external data"]
     fn simple_test() {
