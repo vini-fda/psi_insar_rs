@@ -2,7 +2,6 @@ use crate::{
     constants::SENTINEL_1_WAVELENGTH,
     dem::DEM,
     perp_baseline::EnhancedDelaunayWarpFunction,
-    satellite_orbit::zero_doppler_time,
     sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 use nalgebra::Vector3;
@@ -18,7 +17,11 @@ pub fn coregister_and_remove_flat_phase(
     for secondary in secondaries {
         log::info!("Computing warp function");
         let start_time = std::time::Instant::now();
-        let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+        // The same orbits are used for the warp function and for the geometric phase
+        let osh_1 = reference.continuous_orbital_state_history();
+        let osh_2 = secondary.continuous_orbital_state_history();
+        let warp_function =
+            EnhancedDelaunayWarpFunction::with_orbits(reference, &osh_1, &osh_2, dem);
         let end_time = std::time::Instant::now();
         log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -76,14 +79,10 @@ pub fn coregister_and_remove_flat_phase(
         // let end_time = std::time::Instant::now();
         // log::info!("Time taken: {:?}", end_time - start_time);
 
-        let osh_1 = reference.orbital_state_history();
-        let annotation_1 = &reference.metadata;
-        // let s = annotation_1
+        // let s = reference.metadata
         //     .image_annotation
         //     .image_information
         //     .range_pixel_spacing;
-        let osh_2 = secondary.orbital_state_history();
-        let annotation_2 = &secondary.metadata;
         let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
         // for i in 0..ref_azimuth_dim {
         //     for j in 0..ref_slant_range_dim {
@@ -111,6 +110,8 @@ pub fn coregister_and_remove_flat_phase(
                             let ref_coords = [ref_az as f64, ref_rg as f64];
                             let sec_az =
                                 nn.interpolate(|v| v.data().secondary_coords[0], ref_coords.into());
+                            let sec_rg =
+                                nn.interpolate(|v| v.data().secondary_coords[1], ref_coords.into());
 
                             // Now compute the ground target position
                             let ground_target_lat =
@@ -120,12 +121,14 @@ pub fn coregister_and_remove_flat_phase(
 
                             // if any are None, skip
                             if sec_az.is_none()
+                                || sec_rg.is_none()
                                 || ground_target_lat.is_none()
                                 || ground_target_lon.is_none()
                             {
                                 continue;
                             }
                             let sec_az = sec_az.unwrap();
+                            let sec_rg = sec_rg.unwrap();
                             let ground_target_lat = ground_target_lat.unwrap();
                             let ground_target_lon = ground_target_lon.unwrap();
 
@@ -133,10 +136,12 @@ pub fn coregister_and_remove_flat_phase(
                                 dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                             );
 
-                            let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                            let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
-                            let (s_1, _) = osh_1.interp_pos_vel(zero_doppler_1);
-                            let (s_2, _) = osh_2.interp_pos_vel(zero_doppler_2);
+                            // Pixel coordinates include the R/c bistatic shift; undo it
+                            let zero_doppler_1 =
+                                osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                            let zero_doppler_2 = osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
+                            let s_1 = osh_1.interp_pos(zero_doppler_1);
+                            let s_2 = osh_2.interp_pos(zero_doppler_2);
 
                             let r1 = (s_1 - ground_target_pos).norm();
                             let r2 = (s_2 - ground_target_pos).norm();
