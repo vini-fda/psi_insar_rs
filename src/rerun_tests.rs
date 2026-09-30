@@ -1640,7 +1640,8 @@ mod tests {
                                 let delta_phi =
                                     4.0 * std::f64::consts::PI * (r1 - r2) / SENTINEL_1_WAVELENGTH;
 
-                                *phase += delta_phi as f32;
+                                // Wrap in f64 first: delta_phi can be ~1e4 rad, where f32 loses precision.
+                                *phase += delta_phi.rem_euclid(std::f64::consts::TAU) as f32;
                             }
                         }
                     },
