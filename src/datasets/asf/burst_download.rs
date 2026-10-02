@@ -190,21 +190,10 @@ impl From<zip_extract::ZipExtractError> for AsfDownloadError {
     }
 }
 
-/// The default cache directory: `{user cache dir}/psi_insar_rs/asf_bursts`.
-///
-/// The user cache directory comes from [`dirs::cache_dir`]: `~/Library/Caches` on macOS,
-/// `$XDG_CACHE_HOME` or `~/.cache` on Linux, and `%LOCALAPPDATA%` on Windows. If the platform
-/// has none (e.g. `$HOME` is unset), the system temporary directory is used instead.
+/// The default cache directory: `asf_bursts` under [`cache_root`](crate::datasets::cache_root),
+/// i.e. `{user cache dir}/psi_insar_rs/asf_bursts`.
 pub fn default_cache_dir() -> PathBuf {
-    let base = dirs::cache_dir().unwrap_or_else(|| {
-        let temp_dir = env::temp_dir();
-        warn!(
-            "No user cache directory found, caching ASF bursts under {}",
-            temp_dir.display()
-        );
-        temp_dir
-    });
-    base.join("psi_insar_rs").join("asf_bursts")
+    crate::datasets::cache_root().join("asf_bursts")
 }
 
 /// Polarization of a single burst.
@@ -813,76 +802,8 @@ fn body_snippet(resp: &mut Response<Body>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
-
-    /// A canned HTTP response for the mock server.
-    struct MockResponse {
-        status: u16,
-        headers: Vec<(&'static str, String)>,
-        body: Vec<u8>,
-    }
-
-    impl MockResponse {
-        fn json(status: u16, message: &str) -> Self {
-            MockResponse {
-                status,
-                headers: vec![("Content-Type", "application/json".into())],
-                body: format!("{{\"message\":\"{message}\"}}").into_bytes(),
-            }
-        }
-
-        fn redirect(location: String) -> Self {
-            MockResponse {
-                status: 307,
-                headers: vec![("Location", location)],
-                body: Vec::new(),
-            }
-        }
-
-        fn zip(body: Vec<u8>) -> Self {
-            MockResponse {
-                status: 200,
-                headers: vec![("Content-Type", "application/zip".into())],
-                body,
-            }
-        }
-    }
-
-    /// Serves `responses` in order, one per connection, and records the requested paths.
-    fn mock_server(responses: Vec<MockResponse>) -> (String, Arc<Mutex<Vec<String>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let paths = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&paths);
-        thread::spawn(move || {
-            for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).unwrap();
-                let path = request_line.split_whitespace().nth(1).unwrap().to_string();
-                recorded.lock().unwrap().push(path);
-                let mut line = String::new();
-                while reader.read_line(&mut line).unwrap() > 2 {
-                    line.clear();
-                }
-                let mut head = format!(
-                    "HTTP/1.1 {} Mock\r\nContent-Length: {}\r\nConnection: close\r\n",
-                    response.status,
-                    response.body.len()
-                );
-                for (name, value) in &response.headers {
-                    head.push_str(&format!("{name}: {value}\r\n"));
-                }
-                head.push_str("\r\n");
-                stream.write_all(head.as_bytes()).unwrap();
-                stream.write_all(&response.body).unwrap();
-            }
-        });
-        (base, paths)
-    }
+    use crate::datasets::mock_server::{MockResponse, mock_server};
+    use std::io::Write;
 
     /// A zip laid out like the ones served by ASF: a single top-level SAFE directory.
     fn safe_zip() -> Vec<u8> {
@@ -948,11 +869,11 @@ mod tests {
 
     #[test]
     fn polls_while_burst_is_being_extracted() {
-        let (base, paths) = mock_server(vec![
+        let (base, requests) = mock_server(vec![
             MockResponse::json(202, "Accepted"),
             MockResponse::json(202, "Accepted"),
             MockResponse::redirect("/bucket/burst.zip".into()),
-            MockResponse::zip(safe_zip()),
+            MockResponse::bytes("application/zip", safe_zip()),
         ]);
         let output = output_dir("polls");
         test_downloader(fast_policy())
@@ -960,7 +881,7 @@ mod tests {
             .unwrap();
         assert!(is_complete_safe(&output));
         assert_eq!(
-            *paths.lock().unwrap(),
+            requests.paths(),
             [
                 "/G/IW3/VV/2.zip",
                 "/G/IW3/VV/2.zip",
@@ -998,7 +919,7 @@ mod tests {
         let (base, _) = mock_server(vec![
             MockResponse::json(500, "Internal server error"),
             MockResponse::json(503, "Service Unavailable"),
-            MockResponse::zip(safe_zip()),
+            MockResponse::bytes("application/zip", safe_zip()),
         ]);
         let output = output_dir("transient");
         test_downloader(fast_policy())
@@ -1012,23 +933,23 @@ mod tests {
         let responses = (0..3)
             .map(|_| MockResponse::json(500, "Internal server error"))
             .collect();
-        let (base, paths) = mock_server(responses);
+        let (base, requests) = mock_server(responses);
         let output = output_dir("gives_up");
         let result = test_downloader(fast_policy())
             .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output);
         assert!(matches!(result, Err(AsfDownloadError::DownloadFailed(_))));
-        assert_eq!(paths.lock().unwrap().len(), 3);
+        assert_eq!(requests.len(), 3);
         assert!(!output.exists());
     }
 
     #[test]
     fn not_found_is_not_retried() {
-        let (base, paths) = mock_server(vec![MockResponse::json(404, "Not Found")]);
+        let (base, requests) = mock_server(vec![MockResponse::json(404, "Not Found")]);
         let output = output_dir("not_found");
         let result = test_downloader(fast_policy())
             .download_file(&format!("{base}/G/IW9/VV/2.zip"), &output);
         assert!(matches!(result, Err(AsfDownloadError::NotFound(_))));
-        assert_eq!(paths.lock().unwrap().len(), 1);
+        assert_eq!(requests.len(), 1);
         assert!(!output.exists());
     }
 
@@ -1044,20 +965,21 @@ mod tests {
 
     #[test]
     fn forbidden_logs_in_again_once() {
-        let (base, paths) = mock_server(vec![
+        let (base, requests) = mock_server(vec![
             MockResponse::json(403, "Invalid token"),
-            MockResponse::zip(safe_zip()),
+            MockResponse::bytes("application/zip", safe_zip()),
         ]);
         let output = output_dir("forbidden");
         test_downloader(fast_policy())
             .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output)
             .unwrap();
-        assert_eq!(paths.lock().unwrap().len(), 2);
+        assert_eq!(requests.len(), 2);
     }
 
     #[test]
     fn replaces_empty_output_and_skips_complete_output() {
-        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let (base, requests) =
+            mock_server(vec![MockResponse::bytes("application/zip", safe_zip())]);
         let output = output_dir("existing");
         fs::create_dir(&output).unwrap();
         let downloader = test_downloader(fast_policy());
@@ -1066,7 +988,7 @@ mod tests {
         // The second call must not hit the server (which only serves one response).
         downloader.download_file(&url, &output).unwrap();
         assert!(is_complete_safe(&output));
-        assert_eq!(paths.lock().unwrap().len(), 1);
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
@@ -1083,7 +1005,8 @@ mod tests {
 
     #[test]
     fn fetch_burst_uses_cache_layout_and_reuses_cached_bursts() {
-        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let (base, requests) =
+            mock_server(vec![MockResponse::bytes("application/zip", safe_zip())]);
         let downloader = test_builder("fetch_cached", fast_policy())
             .base_url(base)
             .build();
@@ -1093,14 +1016,14 @@ mod tests {
         assert!(is_complete_safe(&path));
         // The second call must not hit the server (which only serves one response).
         assert_eq!(downloader.fetch_burst(&burst).unwrap(), path);
-        assert_eq!(*paths.lock().unwrap(), ["/G/IW3/VV/2.zip"]);
+        assert_eq!(requests.paths(), ["/G/IW3/VV/2.zip"]);
     }
 
     #[test]
     fn disabled_cache_downloads_again_and_replaces_cached_burst() {
-        let (base, paths) = mock_server(vec![
-            MockResponse::zip(safe_zip()),
-            MockResponse::zip(safe_zip()),
+        let (base, requests) = mock_server(vec![
+            MockResponse::bytes("application/zip", safe_zip()),
+            MockResponse::bytes("application/zip", safe_zip()),
         ]);
         let downloader = test_builder("fetch_uncached", fast_policy())
             .base_url(base)
@@ -1115,12 +1038,13 @@ mod tests {
             !path.join("stale-marker").exists(),
             "cached copy must be replaced"
         );
-        assert_eq!(paths.lock().unwrap().len(), 2);
+        assert_eq!(requests.len(), 2);
     }
 
     #[test]
     fn cached_bursts_need_no_credentials() {
-        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let (base, requests) =
+            mock_server(vec![MockResponse::bytes("application/zip", safe_zip())]);
         let builder = test_builder("no_credentials", fast_policy()).base_url(base);
         let cache_dir = builder.cache_dir.clone();
         let burst = test_burst();
@@ -1140,7 +1064,7 @@ mod tests {
             Err(AsfDownloadError::MissingCredentials(_))
         ));
         assert!(!downloader.cached_path(&uncached).exists());
-        assert_eq!(paths.lock().unwrap().len(), 1);
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
