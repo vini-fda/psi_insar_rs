@@ -18,7 +18,7 @@ mod tests {
         },
         datasets::{
             asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
-            cdse::orbit_download::CDSEOrbitDownloader,
+            cdse::orbit_download::CdseOrbitDownloader,
         },
         dem::{CopernicusDemType, DEM},
         geodesy::{geodetic_to_ecef, local_normal},
@@ -2730,7 +2730,14 @@ mod tests {
         let mission = primary.metadata.ads_header.mission_id;
         let start = primary.metadata.ads_header.start_time;
         let end = primary.metadata.ads_header.stop_time;
-        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        let poe_orbit = CdseOrbitDownloader::builder()
+            .build()
+            .fetch_poe_orbit(mission, start, end)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Could not fetch the precise orbit of {mission} from {start} to {end}: {err}"
+                )
+            });
         // save poe_orbit to file
         let poe_orbit_path = format!("poe_orbit_{mission}.xml");
         let poe_orbit_xml = quick_xml::se::to_string(&poe_orbit).unwrap();

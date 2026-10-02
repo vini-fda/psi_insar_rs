@@ -46,8 +46,11 @@ impl MockResponse {
 /// A request received by the mock server.
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
+    pub method: String,
     /// Path and query string.
     pub target: String,
+    pub authorization: Option<String>,
+    pub body: String,
 }
 
 impl RecordedRequest {
@@ -88,22 +91,33 @@ pub fn mock_server(responses: Vec<MockResponse>) -> (String, MockRequests) {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut request_line = String::new();
             reader.read_line(&mut request_line).unwrap();
-            let target = request_line.split_whitespace().nth(1).unwrap().to_string();
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap().to_string();
+            let target = parts.next().unwrap().to_string();
 
+            let mut authorization = None;
             let mut content_length = 0;
             let mut line = String::new();
             while reader.read_line(&mut line).unwrap() > 2 {
-                if let Some((name, value)) = line.trim_end().split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    content_length = value.trim().parse().unwrap();
+                if let Some((name, value)) = line.trim_end().split_once(':') {
+                    let value = value.trim();
+                    if name.eq_ignore_ascii_case("authorization") {
+                        authorization = Some(value.to_string());
+                    } else if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.parse().unwrap();
+                    }
                 }
                 line.clear();
             }
             // Read the body, so that closing the socket does not reset the connection.
             let mut body = vec![0; content_length];
             reader.read_exact(&mut body).unwrap();
-            recorded.0.lock().unwrap().push(RecordedRequest { target });
+            recorded.0.lock().unwrap().push(RecordedRequest {
+                method,
+                target,
+                authorization,
+                body: String::from_utf8_lossy(&body).into_owned(),
+            });
 
             let mut head = format!(
                 "HTTP/1.1 {} Mock\r\nContent-Length: {}\r\nConnection: close\r\n",
