@@ -19,7 +19,7 @@ mod tests {
         datasets::{
             asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
             cdse::orbit_download::CdseOrbitDownloader,
-            opentopography::dem_download::{CopernicusDemType, download_dem},
+            opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
         },
         dem::DEM,
         geodesy::{geodetic_to_ecef, local_normal},
@@ -37,6 +37,17 @@ mod tests {
         sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
+
+    /// The Copernicus DEM covering `bounds`, downloaded from OpenTopography on the first run
+    /// (requires OPENTOPOGRAPHY_API_KEY) and read from the cache afterwards.
+    fn fetch_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> DEM {
+        OpenTopographyDemDownloader::builder()
+            .build()
+            .fetch_dem(bounds, dem_type)
+            .unwrap_or_else(|err| {
+                panic!("Could not fetch the {dem_type} DEM for {bounds:?}: {err}")
+            })
+    }
 
     fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
         let name = &burst.granule_id.raw_filename;
@@ -427,7 +438,7 @@ mod tests {
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
         // Log reference sat position
@@ -1493,7 +1504,7 @@ mod tests {
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
         // Precise orbits are used both for the warp function and for the geometric phase, so both
         // steps share the same trajectories and time reference.
@@ -1707,7 +1718,7 @@ mod tests {
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
         for (id, secondary) in secondaries.iter().enumerate() {
@@ -1933,7 +1944,7 @@ mod tests {
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram
@@ -1997,7 +2008,7 @@ mod tests {
         .unwrap();
         let bounding_box = bounding_box_from_stack([&primary, &secondary]);
         log::info!("Downloading DEM");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
         let ref_osh = &primary.continuous_orbital_state_history();
@@ -2188,7 +2199,7 @@ mod tests {
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram
@@ -2396,7 +2407,7 @@ mod tests {
         let primary = primary.burst(burst_index);
         let secondary = secondary.burst(burst_index);
         let bounds = bounding_box_from_burst_stack([&primary, &secondary]);
-        let dem = download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounds, CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2449,7 +2460,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounds, CopernicusDemType::Cop30);
         let burst_index = 0;
         let warp_fn = EnhancedDelaunayWarpFunction::new(
             &primary.burst(burst_index),
@@ -2880,7 +2891,7 @@ mod tests {
         let bounding_box = bounding_box_from_burst_stack([&reference, &secondary]);
 
         log::info!("Downloading DEM {bounding_box:?}");
-        let dem = download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("Finished downloading DEM");
 
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
