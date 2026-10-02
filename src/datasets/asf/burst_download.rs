@@ -158,7 +158,7 @@ pub enum AsfDownloadError {
     /// HTML parsing error
     HtmlParsingError(String),
     /// Zip extraction error
-    ZipExtractError(zip_extract::ZipExtractError),
+    ZipError(zip::result::ZipError),
 }
 
 impl From<ureq::Error> for AsfDownloadError {
@@ -185,9 +185,9 @@ impl From<url::ParseError> for AsfDownloadError {
     }
 }
 
-impl From<zip_extract::ZipExtractError> for AsfDownloadError {
-    fn from(err: zip_extract::ZipExtractError) -> Self {
-        AsfDownloadError::ZipExtractError(err)
+impl From<zip::result::ZipError> for AsfDownloadError {
+    fn from(err: zip::result::ZipError) -> Self {
+        AsfDownloadError::ZipError(err)
     }
 }
 
@@ -674,7 +674,11 @@ impl AsfBurstDownloader {
         if extract_dir.0.exists() {
             fs::remove_dir_all(&extract_dir.0)?;
         }
-        zip_extract::extract(File::open(&zip_path.0)?, &extract_dir.0, true)
+        zip::ZipArchive::new(File::open(&zip_path.0)?)
+            .and_then(|mut archive| {
+                archive
+                    .extract_unwrapped_root_dir(&extract_dir.0, zip::read::root_dir_common_filter)
+            })
             .map_err(|err| AttemptError::Transient(err.into()))?;
         if !is_complete_safe(&extract_dir.0) {
             return Err(AttemptError::Fatal(AsfDownloadError::InvalidArchive(
