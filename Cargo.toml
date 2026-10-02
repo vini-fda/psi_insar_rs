@@ -34,3 +34,4 @@ urlencoding = "2.1.3"
 [dev-dependencies]
 rerun = { version = "0.24.1", default-features = false, features = ["sdk"] }
 rand = "0.9.1"
+zip = { version = "3.0.0", default-features = false }

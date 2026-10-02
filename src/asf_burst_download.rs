@@ -1,14 +1,32 @@
 //! ASF Burst Download
 //!
-//! Downloads Sentinel-1 bursts from ASF, as specified in a CSV file.
-//! It uses credentials from a .env file for authentication.
+//! Downloads Sentinel-1 bursts from the ASF burst extractor service.
+//! It uses NASA Earthdata Login (EDL) credentials for authentication.
 //! https://sentinel1-burst-documentation.asf.alaska.edu/#api-specification
+//!
+//! The extractor API responds to `GET /{granule}/{subswath}/{pol}/{burst}.zip` with:
+//!
+//! * `307` and a `Location` to the extracted product when it is ready,
+//! * `202` when an extraction job was just triggered (the client must retry later),
+//! * `403` when the `asf-urs` cookie is invalid or expired,
+//! * `404` when the path parameters are invalid,
+//! * `500` on unhandled server errors.
+//!
+//! Requests without a session cookie are redirected through Earthdata Login
+//! (`urs.earthdata.nasa.gov`), which sets the `asf-urs` cookie and redirects back.
+//! Like `curl -n`, credentials are only ever sent to the Earthdata Login host.
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
+use log::{info, warn};
 use std::env;
+use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::Path;
-use ureq::{self, ResponseExt};
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+use ureq::Body;
+use ureq::http::{Response, header};
+use url::Url;
 
 /// List of Sentinel-1 bursts to download.
 /// The first element is the granule name, the second is the URL.
@@ -44,6 +62,12 @@ const VALUES: [(&str, &str); 7] = [
     ),
 ];
 
+/// Earthdata Login host, the only host that receives the credentials.
+const URS_HOST: &str = "urs.earthdata.nasa.gov";
+/// The EDL login flow takes ~6 hops, plus one to the extracted product.
+const MAX_REDIRECTS: usize = 20;
+const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
+
 /// Error type for ASF download operations
 #[derive(Debug)]
 pub enum AsfDownloadError {
@@ -57,6 +81,14 @@ pub enum AsfDownloadError {
     AuthenticationError(String),
     /// Access forbidden (e.g., invalid/expired cookie, or insufficient permissions)
     Forbidden(String),
+    /// The burst does not exist, or the URL parameters are invalid (HTTP 404)
+    NotFound(String),
+    /// The server kept answering `202 Accepted` for longer than the configured timeout
+    ExtractionTimeout(String),
+    /// The downloaded file is not a valid burst SAFE archive
+    InvalidArchive(String),
+    /// The output path exists, is not empty and does not hold a complete SAFE product
+    OutputExists(PathBuf),
     /// Download failed
     DownloadFailed(String),
     /// URL parsing error
@@ -97,9 +129,86 @@ impl From<zip_extract::ZipExtractError> for AsfDownloadError {
     }
 }
 
+/// Controls how long and how often [`AsfBurstDownloader::download_file`] retries.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Number of retries after transient failures (network errors, 5xx, truncated or corrupt files).
+    pub max_retries: u32,
+    /// Backoff before the first retry; doubled after every transient failure.
+    pub initial_backoff: Duration,
+    /// Upper bound for the exponential backoff.
+    pub max_backoff: Duration,
+    /// Interval between polls while the server is extracting the burst (HTTP 202).
+    pub poll_interval: Duration,
+    /// Give up if the burst is still being extracted after this long.
+    pub extraction_timeout: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        RetryPolicy {
+            max_retries: 5,
+            initial_backoff: Duration::from_secs(2),
+            max_backoff: Duration::from_secs(60),
+            poll_interval: Duration::from_secs(5),
+            extraction_timeout: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
+/// Why a single download attempt did not produce the burst.
+enum AttemptError {
+    /// The server accepted the extraction job (HTTP 202); poll again later.
+    Pending,
+    /// The session cookie was rejected (HTTP 403); logging in again may help.
+    Forbidden(String),
+    /// A failure that may go away on retry.
+    Transient(AsfDownloadError),
+    /// A failure that will not go away on retry.
+    Fatal(AsfDownloadError),
+}
+
+impl From<io::Error> for AttemptError {
+    fn from(err: io::Error) -> Self {
+        AttemptError::Fatal(err.into())
+    }
+}
+
+impl From<ureq::Error> for AttemptError {
+    fn from(err: ureq::Error) -> Self {
+        let transient = matches!(
+            err,
+            ureq::Error::Io(_)
+                | ureq::Error::Timeout(_)
+                | ureq::Error::HostNotFound
+                | ureq::Error::ConnectionFailed
+                | ureq::Error::Protocol(_)
+        );
+        if transient {
+            AttemptError::Transient(err.into())
+        } else {
+            AttemptError::Fatal(err.into())
+        }
+    }
+}
+
+/// Removes a temporary file or directory when dropped.
+struct TempPath(PathBuf);
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = if self.0.is_dir() {
+            fs::remove_dir_all(&self.0)
+        } else {
+            fs::remove_file(&self.0)
+        };
+    }
+}
+
 pub struct AsfBurstDownloader {
     agent: ureq::Agent,
     auth_header: String,
+    retry_policy: RetryPolicy,
 }
 
 impl AsfBurstDownloader {
@@ -114,125 +223,572 @@ impl AsfBurstDownloader {
             "Basic {}",
             BASE64_STANDARD.encode(format!("{username}:{password}"))
         );
+        // Redirects are followed manually, so that the credentials are only sent to
+        // Earthdata Login and every intermediate status code can be inspected.
+        let config = ureq::Agent::config_builder()
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .user_agent(concat!("psi_insar_rs/", env!("CARGO_PKG_VERSION")))
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(120)))
+            .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
+            .build();
         AsfBurstDownloader {
-            agent: ureq::agent(),
+            agent: ureq::Agent::new_with_config(config),
             auth_header,
+            retry_policy: RetryPolicy::default(),
         }
     }
 
-    /// Download a single zip file from ASF after authenticating with Earthdata Login.
+    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
+        self
+    }
+
+    /// Download a single burst zip from ASF and extract it as a SAFE directory.
+    ///
+    /// Bursts that are not cached yet are extracted on demand by ASF (HTTP 202); this
+    /// function polls until the burst is ready, retries transient failures with
+    /// exponential backoff and logs in again if the session cookie expires.
+    ///
+    /// The archive is extracted into a temporary sibling directory that is only moved to
+    /// `output_path` once it holds a complete SAFE product, so `output_path` is never left
+    /// empty or half-written. If `output_path` already holds a complete SAFE product, the
+    /// download is skipped.
     ///
     /// # Arguments
     ///
     /// * `url` - The URL of the file to download
-    /// * `output_path` - The path where the downloaded file will be saved
+    /// * `output_path` - The SAFE directory where the burst will be extracted
     ///
     /// # Returns
     ///
     /// Result indicating success or the reason for failure
     pub fn download_file(&self, url: &str, output_path: &Path) -> Result<(), AsfDownloadError> {
-        // 1. Initial request to the target URL to see if we get redirected to login
-        println!("Attempting initial access to: {url}");
-        let initial_resp = self.agent.get(url).call()?;
-        let current_url = initial_resp.get_uri().to_string();
-        let status_code = initial_resp.status();
+        if output_path.exists() {
+            if is_complete_safe(output_path) {
+                info!(
+                    "{} already holds a complete SAFE product, skipping download",
+                    output_path.display()
+                );
+                return Ok(());
+            }
+            // An empty directory is what failed downloads used to leave behind.
+            if !is_empty_dir(output_path) {
+                return Err(AsfDownloadError::OutputExists(output_path.to_path_buf()));
+            }
+            fs::remove_dir(output_path)?;
+        }
 
-        // Check if we were redirected to a URS login page
-        // or if we received the file directly
-        let download_url = if current_url.contains("urs.earthdata.nasa.gov") {
-            println!("Redirected to Earthdata Login page: {current_url}");
+        let policy = &self.retry_policy;
+        let started = Instant::now();
+        let mut backoff = policy.initial_backoff;
+        let mut retries = 0;
+        let mut logged_in_again = false;
+        loop {
+            match self.try_download(url, output_path) {
+                Ok(()) => {
+                    info!("Downloaded {url} to {}", output_path.display());
+                    return Ok(());
+                }
+                Err(AttemptError::Pending) => {
+                    let elapsed = started.elapsed();
+                    if elapsed >= policy.extraction_timeout {
+                        return Err(AsfDownloadError::ExtractionTimeout(format!(
+                            "{url} was still being extracted after {elapsed:?}"
+                        )));
+                    }
+                    info!(
+                        "ASF is extracting {url} (HTTP 202), polling again in {:?}",
+                        policy.poll_interval
+                    );
+                    thread::sleep(policy.poll_interval);
+                }
+                Err(AttemptError::Forbidden(msg)) if !logged_in_again => {
+                    warn!("ASF rejected the session ({msg}), logging in again");
+                    self.agent.cookie_jar_lock().clear();
+                    logged_in_again = true;
+                }
+                Err(AttemptError::Forbidden(msg)) => {
+                    return Err(AsfDownloadError::Forbidden(msg));
+                }
+                Err(AttemptError::Transient(err)) if retries < policy.max_retries => {
+                    retries += 1;
+                    warn!(
+                        "Download of {url} failed ({err:?}), retry {retries}/{} in {backoff:?}",
+                        policy.max_retries
+                    );
+                    thread::sleep(backoff);
+                    backoff = (backoff * 2).min(policy.max_backoff);
+                }
+                Err(AttemptError::Transient(err) | AttemptError::Fatal(err)) => return Err(err),
+            }
+        }
+    }
 
-            let resp = self
-                .agent
-                .get(current_url)
-                .header("Authorization", self.auth_header.clone())
-                .call()?;
+    /// A single attempt: request the burst, then download, extract and validate it.
+    fn try_download(&self, url: &str, output_path: &Path) -> Result<(), AttemptError> {
+        let (final_url, mut resp) = self.get_following_redirects(url)?;
+        let status = resp.status().as_u16();
+        let is_urs = is_urs_url(&final_url);
+        match status {
+            200 if is_urs => {
+                // EDL showed a page instead of redirecting back, e.g. because the ASF
+                // application is not authorized for this account or a EULA is pending.
+                return Err(AttemptError::Fatal(AsfDownloadError::AuthenticationError(
+                    format!(
+                        "Earthdata Login did not redirect back to ASF ({final_url}). Log in at \
+                         https://{URS_HOST} and check that the ASF applications are authorized"
+                    ),
+                )));
+            }
+            200 => {}
+            202 => return Err(AttemptError::Pending),
+            401 if is_urs => {
+                return Err(AttemptError::Fatal(AsfDownloadError::AuthenticationError(
+                    format!(
+                        "Earthdata Login rejected the credentials: {}",
+                        body_snippet(&mut resp)
+                    ),
+                )));
+            }
+            403 => {
+                return Err(AttemptError::Forbidden(format!(
+                    "HTTP 403 from {final_url}: {}",
+                    body_snippet(&mut resp)
+                )));
+            }
+            404 => {
+                return Err(AttemptError::Fatal(AsfDownloadError::NotFound(format!(
+                    "{url}: {}",
+                    body_snippet(&mut resp)
+                ))));
+            }
+            408 | 429 | 500..=599 => {
+                return Err(AttemptError::Transient(AsfDownloadError::DownloadFailed(
+                    format!(
+                        "HTTP {status} from {final_url}: {}",
+                        body_snippet(&mut resp)
+                    ),
+                )));
+            }
+            _ => {
+                return Err(AttemptError::Fatal(AsfDownloadError::DownloadFailed(
+                    format!(
+                        "HTTP {status} from {final_url}: {}",
+                        body_snippet(&mut resp)
+                    ),
+                )));
+            }
+        }
 
-            resp.get_uri().to_string()
-        } else if status_code == 200 {
-            println!("Received file directly: {current_url}");
-            current_url
-        } else {
-            // This path means initial request was not to URS, and it wasn't recognized as a direct small response.
-            // It might be an HTML page from ASF that isn't the login page.
-            println!(
-                "Initial request to {url} did not redirect to URS and doesn't look like a direct file. It might be an unexpected page from ASF. Current URL: {current_url}"
-            );
-            println!("STATUS CODE: {status_code}");
-            // Potentially, this could be an error page from ASF itself.
-            // The download attempt later will clarify.
-            // The original `else` branch here would throw "Missing redirect_uri".
-            // This is kept to align with previous logic if the specific conditions above are not met.
-            // However, if `current_url` is not a URS URL, then `redirect_uri` wouldn't be expected here.
-            // This part of the logic might need refinement based on actual non-URS initial responses.
-            return Err(AsfDownloadError::AuthenticationError(format!(
-                "Initial request did not redirect to URS login, but was not recognized as a direct file/small error. Current URL: {current_url}. This path indicates an issue in the expected auth flow."
+        // Stream the archive to disk instead of buffering it in memory.
+        let zip_path = TempPath(path_with_suffix(output_path, ".zip.part"));
+        let expected_len = resp.body().content_length();
+        let mut file = File::create(&zip_path.0)?;
+        let written = io::copy(&mut resp.into_body().into_reader(), &mut file).map_err(|err| {
+            AttemptError::Transient(AsfDownloadError::DownloadFailed(format!(
+                "Error while receiving {url}: {err}"
+            )))
+        })?;
+        drop(file);
+        if let Some(expected_len) = expected_len
+            && written != expected_len
+        {
+            return Err(AttemptError::Transient(AsfDownloadError::DownloadFailed(
+                format!("Truncated download of {url}: got {written} of {expected_len} bytes"),
             )));
-        };
+        }
+        check_zip_magic(&zip_path.0)?;
 
-        // Proceed to download and extract the file and save it to the output path
-        let download_resp = self.agent.get(download_url).call()?;
-        let mut download_body = download_resp.into_body();
-        let mut reader = download_body.as_reader();
-        // Read the zip file into memory
-        let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
-        zip_extract::extract(std::io::Cursor::new(buffer), output_path, true)?;
-
+        let extract_dir = TempPath(path_with_suffix(output_path, ".part"));
+        if extract_dir.0.exists() {
+            fs::remove_dir_all(&extract_dir.0)?;
+        }
+        zip_extract::extract(File::open(&zip_path.0)?, &extract_dir.0, true)
+            .map_err(|err| AttemptError::Transient(err.into()))?;
+        if !is_complete_safe(&extract_dir.0) {
+            return Err(AttemptError::Fatal(AsfDownloadError::InvalidArchive(
+                format!("{url} does not contain manifest.safe and a measurement TIFF"),
+            )));
+        }
+        fs::rename(&extract_dir.0, output_path)?;
         Ok(())
     }
+
+    /// GET `url`, following redirects and sending the credentials only to Earthdata Login.
+    /// Returns the final URL and its (non-redirect) response.
+    fn get_following_redirects(&self, url: &str) -> Result<(Url, Response<Body>), AttemptError> {
+        let mut url = Url::parse(url).map_err(|err| AttemptError::Fatal(err.into()))?;
+        for _ in 0..=MAX_REDIRECTS {
+            let mut request = self.agent.get(url.as_str());
+            if is_urs_url(&url) {
+                request = request.header(header::AUTHORIZATION, &self.auth_header);
+            }
+            let resp = request.call()?;
+            if !resp.status().is_redirection() {
+                return Ok((url, resp));
+            }
+            let location = resp
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| {
+                    AttemptError::Transient(AsfDownloadError::DownloadFailed(format!(
+                        "HTTP {} from {url} without a Location header",
+                        resp.status()
+                    )))
+                })?;
+            url = url
+                .join(location)
+                .map_err(|err| AttemptError::Fatal(err.into()))?;
+        }
+        Err(AttemptError::Fatal(AsfDownloadError::AuthenticationError(
+            format!(
+                "More than {MAX_REDIRECTS} redirects, the Earthdata Login flow is probably looping (last URL: {url})"
+            ),
+        )))
+    }
+}
+
+fn is_urs_url(url: &Url) -> bool {
+    url.scheme() == "https" && url.host_str() == Some(URS_HOST)
+}
+
+/// Appends `suffix` to the file name of `path`, e.g. `x.SAFE` -> `x.SAFE.part`.
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn is_empty_dir(path: &Path) -> bool {
+    fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+/// Whether `dir` holds a SAFE product with a manifest and at least one measurement TIFF.
+fn is_complete_safe(dir: &Path) -> bool {
+    let has_manifest = dir.join("manifest.safe").is_file();
+    let has_measurement = fs::read_dir(dir.join("measurement")).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            path.extension().is_some_and(|ext| ext == "tiff")
+                && entry.metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
+        })
+    });
+    has_manifest && has_measurement
+}
+
+fn check_zip_magic(path: &Path) -> Result<(), AttemptError> {
+    let mut head = Vec::with_capacity(256);
+    File::open(path)?.take(256).read_to_end(&mut head)?;
+    if head.starts_with(ZIP_MAGIC) {
+        return Ok(());
+    }
+    // Not retried as transient: the server answered successfully with something else.
+    Err(AttemptError::Fatal(AsfDownloadError::InvalidArchive(
+        format!(
+            "Expected a zip archive, got: {:?}",
+            String::from_utf8_lossy(&head)
+        ),
+    )))
+}
+
+/// The start of an error response body, for diagnostics.
+fn body_snippet(resp: &mut Response<Body>) -> String {
+    resp.body_mut()
+        .with_config()
+        .limit(1024)
+        .read_to_string()
+        .unwrap_or_else(|err| format!("<unreadable body: {err}>"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// A canned HTTP response for the mock server.
+    struct MockResponse {
+        status: u16,
+        headers: Vec<(&'static str, String)>,
+        body: Vec<u8>,
+    }
+
+    impl MockResponse {
+        fn json(status: u16, message: &str) -> Self {
+            MockResponse {
+                status,
+                headers: vec![("Content-Type", "application/json".into())],
+                body: format!("{{\"message\":\"{message}\"}}").into_bytes(),
+            }
+        }
+
+        fn redirect(location: String) -> Self {
+            MockResponse {
+                status: 307,
+                headers: vec![("Location", location)],
+                body: Vec::new(),
+            }
+        }
+
+        fn zip(body: Vec<u8>) -> Self {
+            MockResponse {
+                status: 200,
+                headers: vec![("Content-Type", "application/zip".into())],
+                body,
+            }
+        }
+    }
+
+    /// Serves `responses` in order, one per connection, and records the requested paths.
+    fn mock_server(responses: Vec<MockResponse>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&paths);
+        thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let path = request_line.split_whitespace().nth(1).unwrap().to_string();
+                recorded.lock().unwrap().push(path);
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 2 {
+                    line.clear();
+                }
+                let mut head = format!(
+                    "HTTP/1.1 {} Mock\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    response.status,
+                    response.body.len()
+                );
+                for (name, value) in &response.headers {
+                    head.push_str(&format!("{name}: {value}\r\n"));
+                }
+                head.push_str("\r\n");
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&response.body).unwrap();
+            }
+        });
+        (base, paths)
+    }
+
+    /// A zip laid out like the ones served by ASF: a single top-level SAFE directory.
+    fn safe_zip() -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, contents) in [
+            ("S1A_TEST.SAFE/manifest.safe", "<manifest/>"),
+            (
+                "S1A_TEST.SAFE/annotation/s1a-iw3-slc-vv-test.xml",
+                "<product/>",
+            ),
+            (
+                "S1A_TEST.SAFE/measurement/s1a-iw3-slc-vv-test.tiff",
+                "II*\0data",
+            ),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(contents.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(10),
+            poll_interval: Duration::from_millis(10),
+            extraction_timeout: Duration::from_secs(5),
+        }
+    }
+
+    fn test_downloader(policy: RetryPolicy) -> AsfBurstDownloader {
+        AsfBurstDownloader::new("user", "pass").with_retry_policy(policy)
+    }
+
+    fn output_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join("psi_insar_rs_asf_burst_download");
+        fs::create_dir_all(&dir).unwrap();
+        let output = dir.join(format!("{name}.SAFE"));
+        let _ = fs::remove_dir_all(&output);
+        output
+    }
+
+    #[test]
+    fn polls_while_burst_is_being_extracted() {
+        let (base, paths) = mock_server(vec![
+            MockResponse::json(202, "Accepted"),
+            MockResponse::json(202, "Accepted"),
+            MockResponse::redirect("/bucket/burst.zip".into()),
+            MockResponse::zip(safe_zip()),
+        ]);
+        let output = output_dir("polls");
+        test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output)
+            .unwrap();
+        assert!(is_complete_safe(&output));
+        assert_eq!(
+            *paths.lock().unwrap(),
+            [
+                "/G/IW3/VV/2.zip",
+                "/G/IW3/VV/2.zip",
+                "/G/IW3/VV/2.zip",
+                "/bucket/burst.zip"
+            ]
+        );
+    }
+
+    #[test]
+    fn extraction_timeout_leaves_no_output() {
+        let responses = (0..1000)
+            .map(|_| MockResponse::json(202, "Accepted"))
+            .collect();
+        let (base, _) = mock_server(responses);
+        let output = output_dir("timeout");
+        let policy = RetryPolicy {
+            extraction_timeout: Duration::from_millis(100),
+            ..fast_policy()
+        };
+        let result =
+            test_downloader(policy).download_file(&format!("{base}/G/IW3/VV/2.zip"), &output);
+        assert!(matches!(
+            result,
+            Err(AsfDownloadError::ExtractionTimeout(_))
+        ));
+        assert!(
+            !output.exists(),
+            "no empty output directory must be left behind"
+        );
+    }
+
+    #[test]
+    fn retries_transient_server_errors() {
+        let (base, _) = mock_server(vec![
+            MockResponse::json(500, "Internal server error"),
+            MockResponse::json(503, "Service Unavailable"),
+            MockResponse::zip(safe_zip()),
+        ]);
+        let output = output_dir("transient");
+        test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output)
+            .unwrap();
+        assert!(is_complete_safe(&output));
+    }
+
+    #[test]
+    fn gives_up_after_max_retries() {
+        let responses = (0..3)
+            .map(|_| MockResponse::json(500, "Internal server error"))
+            .collect();
+        let (base, paths) = mock_server(responses);
+        let output = output_dir("gives_up");
+        let result = test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output);
+        assert!(matches!(result, Err(AsfDownloadError::DownloadFailed(_))));
+        assert_eq!(paths.lock().unwrap().len(), 3);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn not_found_is_not_retried() {
+        let (base, paths) = mock_server(vec![MockResponse::json(404, "Not Found")]);
+        let output = output_dir("not_found");
+        let result = test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW9/VV/2.zip"), &output);
+        assert!(matches!(result, Err(AsfDownloadError::NotFound(_))));
+        assert_eq!(paths.lock().unwrap().len(), 1);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn non_zip_body_is_rejected_without_output() {
+        let (base, _) = mock_server(vec![MockResponse::json(200, "Accepted")]);
+        let output = output_dir("non_zip");
+        let result = test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output);
+        assert!(matches!(result, Err(AsfDownloadError::InvalidArchive(_))));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn forbidden_logs_in_again_once() {
+        let (base, paths) = mock_server(vec![
+            MockResponse::json(403, "Invalid token"),
+            MockResponse::zip(safe_zip()),
+        ]);
+        let output = output_dir("forbidden");
+        test_downloader(fast_policy())
+            .download_file(&format!("{base}/G/IW3/VV/2.zip"), &output)
+            .unwrap();
+        assert_eq!(paths.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn replaces_empty_output_and_skips_complete_output() {
+        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let output = output_dir("existing");
+        fs::create_dir(&output).unwrap();
+        let downloader = test_downloader(fast_policy());
+        let url = format!("{base}/G/IW3/VV/2.zip");
+        downloader.download_file(&url, &output).unwrap();
+        // The second call must not hit the server (which only serves one response).
+        downloader.download_file(&url, &output).unwrap();
+        assert!(is_complete_safe(&output));
+        assert_eq!(paths.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn credentials_are_only_sent_to_earthdata_login() {
+        let urs = Url::parse("https://urs.earthdata.nasa.gov/oauth/authorize?x=1").unwrap();
+        let urs_http = Url::parse("http://urs.earthdata.nasa.gov/oauth/authorize").unwrap();
+        let asf = Url::parse("https://sentinel1-burst.asf.alaska.edu/G/IW3/VV/2.zip").unwrap();
+        let lookalike = Url::parse("https://urs.earthdata.nasa.gov.evil.com/").unwrap();
+        assert!(is_urs_url(&urs));
+        assert!(!is_urs_url(&urs_http));
+        assert!(!is_urs_url(&asf));
+        assert!(!is_urs_url(&lookalike));
+    }
 
     // This test requires valid EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables to be set.
-    // It will attempt a real download, which might be slow and consume data.
-    // It also writes a file to the current directory.
-    // Consider running this test manually or with placeholder credentials to test error paths.
-    // This test is ignored by default to prevent unintended network access and file writes during automated tests.
+    // It downloads every burst in VALUES (~140 MB each) into the working directory, skipping
+    // bursts that were already downloaded completely, and fails if any burst could not be fetched.
+    // It is ignored by default to prevent unintended network access and file writes during automated tests.
     #[test]
     #[ignore]
     fn test_real_download_with_env_auth() {
-        if env::var("EARTHDATA_USERNAME").is_err() || env::var("EARTHDATA_PASSWORD").is_err() {
-            println!(
-                "Skipping test_real_download_with_env_auth: EARTHDATA_USERNAME or EARTHDATA_PASSWORD not set."
-            );
-            return;
-        }
+        let _ = env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Info)
+            .try_init();
 
-        let downloader = AsfBurstDownloader::new_with_env_auth().unwrap();
-        for (_, url) in VALUES {
-            // Split by '/' and collect into parts
-            let parts: Vec<&str> = url.split('/').collect();
+        let downloader = AsfBurstDownloader::new_with_env_auth()
+            .expect("EARTHDATA_USERNAME and EARTHDATA_PASSWORD must be set");
+        let mut failures = Vec::new();
+        for (burst, url) in VALUES {
+            // The granule name is the first path segment after the domain.
+            let name = url.split('/').nth(3).expect("Unable to find granule name");
+            let output_path = PathBuf::from(format!("{name}.SAFE"));
 
-            // The part we want is right after the domain, so last occurrence before "IW3"
-            // Here, it's simply the 3rd element after "https://sentinel1-burst.asf.alaska.edu"
-            let name = parts.get(3).expect("Unable to find file name");
-            let output_filename = format!("{name}.SAFE");
-            let output_path = Path::new(&output_filename);
-
-            println!(
-                "Running test_real_download_with_env_auth: downloading {} to {}",
-                url,
-                output_path.display()
-            );
-
-            let result = downloader.download_file(url, output_path);
-
-            if result.is_ok() {
-                println!("Test download successful.");
-                assert!(output_path.exists(), "Downloaded file should exist.");
-                // Clean up the downloaded file
-                // let _ = std::fs::remove_file(output_path);
-            } else {
-                eprintln!("Test download failed: {:?}", result.as_ref().err().unwrap());
-                // If it failed due to auth, that's an expected path if creds are wrong/missing
-                // If it failed for other network reasons, the test might still be useful.
+            println!("Downloading {burst}: {url} -> {}", output_path.display());
+            match downloader.download_file(url, &output_path) {
+                Ok(()) => assert!(
+                    is_complete_safe(&output_path),
+                    "{} is not a complete SAFE product",
+                    output_path.display()
+                ),
+                Err(err) => {
+                    eprintln!("Download of {burst} failed: {err:?}");
+                    failures.push((burst, err));
+                }
             }
-            // We don't assert!(result.is_ok()) here because network/auth can fail for valid reasons.
-            // The purpose is more to exercise the code path.
         }
+        assert!(failures.is_empty(), "Failed downloads: {failures:#?}");
     }
 }
