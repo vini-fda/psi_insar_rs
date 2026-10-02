@@ -2,9 +2,9 @@
 //!
 //! Downloads Sentinel-1 bursts from the ASF burst extractor service.
 //! It uses NASA Earthdata Login (EDL) credentials for authentication.
-//! https://sentinel1-burst-documentation.asf.alaska.edu/#api-specification
 //!
-//! The extractor API responds to `GET /{granule}/{subswath}/{pol}/{burst}.zip` with:
+//! According to the ASF API specification [\[1\]], the extractor responds to
+//! `GET /{granule}/{subswath}/{pol}/{burst}.zip` with:
 //!
 //! * `307` and a `Location` to the extracted product when it is ready,
 //! * `202` when an extraction job was just triggered (the client must retry later),
@@ -12,9 +12,80 @@
 //! * `404` when the path parameters are invalid,
 //! * `500` on unhandled server errors.
 //!
-//! Requests without a session cookie are redirected through Earthdata Login
-//! (`urs.earthdata.nasa.gov`), which sets the `asf-urs` cookie and redirects back.
-//! Like `curl -n`, credentials are only ever sent to the Earthdata Login host.
+//! [\[1\]] also says that requests without credentials are redirected to Earthdata Login, and
+//! that after a `202` the client should "wait briefly" before requesting the burst again.
+//!
+//! # Redirects and authentication
+//!
+//! Redirects are followed manually (the agent has `max_redirects(0)`), up to
+//! `MAX_REDIRECTS` hops. Each `Location` is resolved against the current URL, and
+//! session cookies are kept in the agent's cookie jar. Following them by hand lets every
+//! intermediate status be inspected and controls which host receives the credentials.
+//! NASA's guide for scripted EDL access [\[2\]] uses `curl -L -n -b cookies -c cookies`:
+//! it follows redirects, keeps a cookie session, and takes the credentials from a `.netrc`
+//! entry for `urs.earthdata.nasa.gov`. That way only the EDL host gets the credentials.
+//! This module does the same: the `Authorization: Basic` header is only sent over https to
+//! `urs.earthdata.nasa.gov`, never to ASF or S3.
+//!
+//! Without a session cookie, a burst request goes through the EDL OAuth flow. Neither [\[1\]]
+//! nor [\[2\]] documents the individual hops; this chain was observed with curl in October 2026
+//! and may change:
+//!
+//! ```text
+//! sentinel1-burst.asf.alaska.edu/{burst}.zip            307 -> auth.asf.alaska.edu/loginservice/in/{burst url}
+//! auth.asf.alaska.edu/loginservice/in/...               302 -> urs.earthdata.nasa.gov/oauth/authorize?...
+//! urs.earthdata.nasa.gov/oauth/authorize (+ Basic auth) 302 -> auth.asf.alaska.edu/login?code=...
+//! auth.asf.alaska.edu/login                             301 -> auth.asf.alaska.edu/loginservice/out
+//! auth.asf.alaska.edu/loginservice/out (sets asf-urs)   302 -> sentinel1-burst.asf.alaska.edu/{burst}.zip
+//! sentinel1-burst.asf.alaska.edu/{burst}.zip            202 (extracting) or 307 -> presigned S3 URL
+//! S3 bucket                                             200 (the zip)
+//! ```
+//!
+//! With a valid `asf-urs` cookie, only the last two steps happen.
+//!
+//! # Response handling
+//!
+//! Every download attempt ends at the first non-redirect response, which is handled as follows:
+//!
+//! | Final response                 | Meaning                                    | Action                                    |
+//! |--------------------------------|--------------------------------------------|-------------------------------------------|
+//! | `200` from ASF/S3              | The burst zip                              | Stream to disk, validate, extract         |
+//! | `200` from EDL                 | EDL showed a page instead of redirecting   | Fail: authentication error                |
+//! | `202`                          | Extraction job triggered or still running  | Poll every `poll_interval`, up to `extraction_timeout` |
+//! | `401` from EDL                 | Wrong username/password                    | Fail: authentication error                |
+//! | `403`                          | Invalid/expired cookie or presigned URL    | Clear cookies and log in again, once      |
+//! | `404`                          | Invalid granule/subswath/pol/burst         | Fail immediately                          |
+//! | `408`, `429`, `5xx`            | Transient server error                     | Retry with exponential backoff            |
+//! | Network/timeout errors         | Transient transport error                  | Retry with exponential backoff            |
+//! | Anything else                  | Unexpected                                 | Fail                                      |
+//!
+//! Retries are bounded by [`RetryPolicy`]. A `200` body is also retried if it is truncated
+//! (fewer bytes than `Content-Length`) or cannot be extracted. It fails without a retry if it
+//! is not a zip, or if the extracted product lacks `manifest.safe` or a measurement TIFF.
+//!
+//! The zip is written to `<output>.zip.part` and extracted to `<output>.part`. That directory
+//! is only renamed to the output path once validated, so failures never leave an empty or
+//! partial SAFE directory behind.
+//!
+//! The `202`, `403`, `404` and `5xx` meanings come from [\[1\]]. The rest of the table is not
+//! from either source:
+//!
+//! * Transient `500`s from `auth.asf.alaska.edu` were observed with curl (October 2026).
+//! * The EDL rows (`200` page, `401`) are assumptions about EDL's behavior and were not
+//!   tested with bad credentials or unauthorized applications.
+//! * `408`, `429` and expired presigned S3 URLs answering `403` follow standard HTTP and S3
+//!   semantics.
+//! * Retry counts, backoff and the polling interval are choices made here.
+//!
+//! # Sources
+//!
+//! 1. ASF Sentinel-1 burst documentation, API specification section:
+//!    <https://sentinel1-burst-documentation.asf.alaska.edu/#api-specification>
+//! 2. NASA Earthdata Login documentation, data access with curl and wget:
+//!    <https://urs.earthdata.nasa.gov/documentation/for_users/data_access/curl_and_wget>
+//!
+//! [\[1\]]: https://sentinel1-burst-documentation.asf.alaska.edu/#api-specification
+//! [\[2\]]: https://urs.earthdata.nasa.gov/documentation/for_users/data_access/curl_and_wget
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use log::{info, warn};
