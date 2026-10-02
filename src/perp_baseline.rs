@@ -966,7 +966,10 @@ pub fn coregister_and_remove_flat_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dem::CopernicusDemType, granule_id::IWSwath};
+    use crate::{
+        datasets::opentopography::dem_download::{CopernicusDemType, download_dem},
+        granule_id::IWSwath,
+    };
 
     #[test]
     #[ignore = "Needs to download external data"]
@@ -989,7 +992,7 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = download_dem(bounds, CopernicusDemType::Cop30);
         println!("dem: {:?}", dem.corners_lat_lon());
     }
 }

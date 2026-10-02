@@ -7,6 +7,7 @@ pub mod cdse;
 pub(crate) mod http;
 #[cfg(test)]
 pub(crate) mod mock_server;
+pub mod opentopography;
 
 /// Root of the on-disk dataset caches: `{user cache dir}/psi_insar_rs`.
 ///
