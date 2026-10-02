@@ -2,6 +2,7 @@
 mod tests {
     use std::f32::consts::PI;
 
+    use chrono::{NaiveDate, TimeZone, Utc};
     use nalgebra::{Matrix3, Unit, Vector3};
     use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2, Axis, s};
     use ndarray_npy::WriteNpyExt;
@@ -17,7 +18,10 @@ mod tests {
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         datasets::{
-            asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+            asf::{
+                burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+                burst_search::{AsfBurstSearch, BurstSearchQuery},
+            },
             cdse::orbit_download::CdseOrbitDownloader,
             opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
         },
@@ -1689,6 +1693,97 @@ mod tests {
             rr.log("diff_phase", &rr_phase(&phase_diff))
                 .expect("Could not log phase to Rerun");
         }
+    }
+
+    /// Differential interferogram of the April 2016 Kumamoto earthquakes, following NASA
+    /// Earthdata's "Create an Interferogram Using ESA's Sentinel-1 Toolbox" data recipe:
+    /// <https://www.earthdata.nasa.gov/learn/data-recipes/create-interferogram-using-esas-sentinel-1-toolbox>
+    ///
+    /// Like the recipe, it uses the Sentinel-1A IW1/VV acquisitions of 2016-04-08 (reference,
+    /// before the April 14 foreshock and the April 16 mainshock) and 2016-04-20 (secondary).
+    /// Instead of whole SLC products, only the burst over the mainshock epicenter is used.
+    #[test]
+    #[ignore]
+    fn kumamoto_interferogram() {
+        env_logger::init();
+        log::info!("Starting kumamoto_interferogram test.");
+        // Epicenter of the M7.0 mainshock, from the USGS event page:
+        // <https://earthquake.usgs.gov/earthquakes/eventpage/us20005iis/executive>
+        const EPICENTER_LAT: f64 = 32.7906;
+        const EPICENTER_LON: f64 = 130.7543;
+        let reference_date = NaiveDate::from_ymd_opt(2016, 4, 8).unwrap();
+        let secondary_date = NaiveDate::from_ymd_opt(2016, 4, 20).unwrap();
+
+        // Find the IW1 bursts covering the epicenter on both dates. The ASF search needs no
+        // credentials, and its response is cached (see `burst_search::default_cache_dir`), so
+        // that once the bursts are downloaded, the test runs offline.
+        let query = BurstSearchQuery::new(
+            EPICENTER_LAT,
+            EPICENTER_LON,
+            Utc.from_utc_datetime(&reference_date.and_hms_opt(0, 0, 0).unwrap()),
+            Utc.from_utc_datetime(&secondary_date.and_hms_opt(23, 59, 59).unwrap()),
+            Polarization::VV,
+        )
+        .subswath(IWSwath::IW1);
+        let bursts = AsfBurstSearch::builder()
+            .build()
+            .search(&query)
+            .unwrap_or_else(|err| panic!("Could not search {query:?}: {err}"));
+        for burst in &bursts {
+            log::info!(
+                "Found burst {} ({}) of {}, index {}",
+                burst.full_burst_id,
+                burst.flight_direction,
+                burst.granule,
+                burst.burst_index
+            );
+        }
+        // The epicenter may fall in the overlap of two consecutive bursts: use the one whose
+        // center is closest, and the burst with the same ID (same area and track) as secondary.
+        let distance_to_epicenter = |lat: f64, lon: f64| {
+            (lat - EPICENTER_LAT).powi(2)
+                + ((lon - EPICENTER_LON) * EPICENTER_LAT.to_radians().cos()).powi(2)
+        };
+        let reference_burst = bursts
+            .iter()
+            .filter(|burst| burst.start_time.date_naive() == reference_date)
+            .min_by(|a, b| {
+                distance_to_epicenter(a.center_lat, a.center_lon)
+                    .total_cmp(&distance_to_epicenter(b.center_lat, b.center_lon))
+            })
+            .unwrap_or_else(|| panic!("No IW1 burst over the epicenter on {reference_date}"));
+        let secondary_burst = bursts
+            .iter()
+            .find(|burst| {
+                burst.start_time.date_naive() == secondary_date
+                    && burst.full_burst_id == reference_burst.full_burst_id
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "No burst {} on {secondary_date}",
+                    reference_burst.full_burst_id
+                )
+            });
+
+        // Downloaded from ASF on the first run (requires EARTHDATA_USERNAME and
+        // EARTHDATA_PASSWORD) and read from the user cache directory afterwards.
+        let downloader = AsfBurstDownloader::builder().build();
+        let [reference, secondary] = [reference_burst, secondary_burst].map(|burst| {
+            let request = burst.request();
+            let safe_dir = downloader
+                .fetch_burst(&request)
+                .unwrap_or_else(|err| panic!("Could not fetch {request:?}: {err:?}"));
+            Sentinel1SlcIWSwath::load_swath_from_directory(request.subswath, safe_dir).unwrap()
+        });
+        log::info!(
+            "Reference: {}, secondary: {}",
+            reference.granule_id.raw_filename,
+            secondary.granule_id.raw_filename
+        );
+
+        // TODO: the remaining steps of the recipe: coregistration, interferogram formation
+        // (with coherence), topographic phase removal, multilooking, Goldstein phase filtering
+        // and terrain correction.
     }
 
     #[test]
