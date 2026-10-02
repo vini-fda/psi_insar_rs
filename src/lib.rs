@@ -1,6 +1,7 @@
 pub mod constants;
 pub mod coregistration;
 pub mod datasets;
+pub mod deburst;
 pub mod dem;
 pub mod egm_2008;
 pub mod geodesy;
