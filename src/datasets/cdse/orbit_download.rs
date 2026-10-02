@@ -59,7 +59,6 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -68,6 +67,9 @@ use serde_json::Value;
 use ureq::Body;
 use ureq::http::{Response, header};
 
+use crate::datasets::http::{
+    RetryError, TempPath, USER_AGENT, body_snippet, call_with_retries, path_with_suffix,
+};
 use crate::{granule_id::Mission, metadata::orbit_xml::EarthExplorerFile};
 
 /// Base URL of the CDSE OData catalogue, used for searching products.
@@ -279,7 +281,7 @@ impl CdseOrbitDownloaderBuilder {
             .https_only(cfg!(not(test)))
             .http_status_as_error(false)
             .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
-            .user_agent(concat!("psi_insar_rs/", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(Duration::from_secs(10 * 60)))
@@ -498,7 +500,7 @@ impl CdseOrbitDownloader {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let part_path = TempFile(path_with_suffix(path, ".part"));
+        let part_path = TempPath(path_with_suffix(path, ".part"));
         let expected_len = resp.body().content_length();
         // Read/write: the file is checked after writing it.
         let mut file = File::options()
@@ -581,50 +583,24 @@ impl CdseOrbitDownloader {
         Ok(value.to_string())
     }
 
-    /// Calls `request`, retrying transport errors, `429` and `5xx` responses with exponential
-    /// backoff. Other responses are returned as they are.
+    /// [`call_with_retries`] with this downloader's retry settings.
     fn call_with_retries(
         &self,
         what: &str,
-        mut request: impl FnMut() -> Result<Response<Body>, ureq::Error>,
+        request: impl FnMut() -> Result<Response<Body>, ureq::Error>,
     ) -> Result<Response<Body>, CdseOrbitError> {
-        let mut backoff = self.initial_backoff;
-        let mut retries = 0;
-        loop {
-            let error = match request() {
-                Ok(resp) if resp.status() == 429 || resp.status().is_server_error() => {
-                    let mut resp = resp;
-                    format!("HTTP {}: {}", resp.status(), body_snippet(&mut resp))
-                }
-                Ok(resp) => return Ok(resp),
-                Err(err) if is_transient(&err) => err.to_string(),
-                Err(err) => return Err(err.into()),
-            };
-            if retries == self.max_retries {
-                return Err(CdseOrbitError::InvalidResponse(format!(
-                    "{what} failed after {retries} retries: {error}"
-                )));
+        call_with_retries(what, self.max_retries, self.initial_backoff, request).map_err(|err| {
+            match err {
+                RetryError::Request(err) => err.into(),
+                RetryError::Exhausted {
+                    retries,
+                    last_error,
+                } => CdseOrbitError::InvalidResponse(format!(
+                    "{what} failed after {retries} retries: {last_error}"
+                )),
             }
-            retries += 1;
-            warn!(
-                "{what} failed ({error}), retry {retries}/{} in {backoff:?}",
-                self.max_retries
-            );
-            thread::sleep(backoff);
-            backoff *= 2;
-        }
+        })
     }
-}
-
-fn is_transient(err: &ureq::Error) -> bool {
-    matches!(
-        err,
-        ureq::Error::Io(_)
-            | ureq::Error::Timeout(_)
-            | ureq::Error::HostNotFound
-            | ureq::Error::ConnectionFailed
-            | ureq::Error::Protocol(_)
-    )
 }
 
 fn http_error(url: &str, resp: &mut Response<Body>) -> CdseOrbitError {
@@ -633,15 +609,6 @@ fn http_error(url: &str, resp: &mut Response<Body>) -> CdseOrbitError {
         url: url.to_string(),
         body: body_snippet(resp),
     }
-}
-
-/// The start of an error response body, for diagnostics.
-fn body_snippet(resp: &mut Response<Body>) -> String {
-    resp.body_mut()
-        .with_config()
-        .limit(1024)
-        .read_to_string()
-        .unwrap_or_else(|err| format!("<unreadable body: {err}>"))
 }
 
 /// Cheap check that `file` holds a complete Earth Explorer XML file, without parsing it.
@@ -665,22 +632,6 @@ fn check_earth_explorer_file(file: &mut File, name: &str) -> Result<(), CdseOrbi
             "{name} is not a complete Earth Explorer file, it starts with: {head:?}"
         )))
     }
-}
-
-/// Removes a temporary file when dropped.
-struct TempFile(PathBuf);
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-/// Appends `suffix` to the file name of `path`, e.g. `x.EOF` -> `x.EOF.part`.
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(suffix);
-    PathBuf::from(name)
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod asf;
 pub mod cdse;
+pub(crate) mod http;
 #[cfg(test)]
 pub(crate) mod mock_server;
 

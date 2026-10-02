@@ -111,6 +111,7 @@ use ureq::Body;
 use ureq::http::{Response, header};
 use url::Url;
 
+use crate::datasets::http::{TempPath, USER_AGENT, body_snippet, is_transient, path_with_suffix};
 use crate::granule_id::IWSwath;
 
 /// Base URL of the ASF burst extractor API.
@@ -369,7 +370,7 @@ impl AsfBurstDownloaderBuilder {
         let config = ureq::Agent::config_builder()
             .max_redirects(0)
             .http_status_as_error(false)
-            .user_agent(concat!("psi_insar_rs/", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(120)))
             .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
@@ -432,32 +433,11 @@ impl From<io::Error> for AttemptError {
 
 impl From<ureq::Error> for AttemptError {
     fn from(err: ureq::Error) -> Self {
-        let transient = matches!(
-            err,
-            ureq::Error::Io(_)
-                | ureq::Error::Timeout(_)
-                | ureq::Error::HostNotFound
-                | ureq::Error::ConnectionFailed
-                | ureq::Error::Protocol(_)
-        );
-        if transient {
+        if is_transient(&err) {
             AttemptError::Transient(err.into())
         } else {
             AttemptError::Fatal(err.into())
         }
-    }
-}
-
-/// Removes a temporary file or directory when dropped.
-struct TempPath(PathBuf);
-
-impl Drop for TempPath {
-    fn drop(&mut self) {
-        let _ = if self.0.is_dir() {
-            fs::remove_dir_all(&self.0)
-        } else {
-            fs::remove_file(&self.0)
-        };
     }
 }
 
@@ -751,13 +731,6 @@ fn is_urs_url(url: &Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some(URS_HOST)
 }
 
-/// Appends `suffix` to the file name of `path`, e.g. `x.SAFE` -> `x.SAFE.part`.
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(suffix);
-    PathBuf::from(name)
-}
-
 fn is_empty_dir(path: &Path) -> bool {
     fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
 }
@@ -788,15 +761,6 @@ fn check_zip_magic(path: &Path) -> Result<(), AttemptError> {
             String::from_utf8_lossy(&head)
         ),
     )))
-}
-
-/// The start of an error response body, for diagnostics.
-fn body_snippet(resp: &mut Response<Body>) -> String {
-    resp.body_mut()
-        .with_config()
-        .limit(1024)
-        .read_to_string()
-        .unwrap_or_else(|err| format!("<unreadable body: {err}>"))
 }
 
 #[cfg(test)]
