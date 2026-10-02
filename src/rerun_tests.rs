@@ -16,6 +16,7 @@ mod tests {
             deramping::{DerampSlcBurst, Direction},
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
+        datasets::asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
         dem::{CopernicusDemType, DEM},
         download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
@@ -1444,22 +1445,48 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        // The same IW3/VV burst of each acquisition. Bursts are downloaded from ASF on the first
+        // run (requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD) and read from the user cache
+        // directory afterwards (see `default_cache_dir`).
+        let downloader = AsfBurstDownloader::builder().build();
+        let load_burst = |granule: &str, burst_index: u32| {
+            let burst = BurstRequest::new(granule, IWSwath::IW3, Polarization::VV, burst_index);
+            let safe_dir = downloader
+                .fetch_burst(&burst)
+                .unwrap_or_else(|err| panic!("Could not fetch {burst:?}: {err:?}"));
+            Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, safe_dir).unwrap()
+        };
+        let reference = load_burst(
+            "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
+            2,
+        );
         let secondaries = [
-            "download/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302.SAFE",
-            "download/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
+            (
+                "S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956",
+                4,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF",
+                4,
+            ),
         ]
-        .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
-        .collect::<Vec<_>>();
+        .map(|(granule, burst_index)| load_burst(granule, burst_index));
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
