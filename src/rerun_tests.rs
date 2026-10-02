@@ -16,9 +16,11 @@ mod tests {
             deramping::{DerampSlcBurst, Direction},
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
-        datasets::asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+        datasets::{
+            asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+            cdse::orbit_download::CDSEOrbitDownloader,
+        },
         dem::{CopernicusDemType, DEM},
-        download_orbit::CDSEOrbitDownloader,
         geodesy::{geodetic_to_ecef, local_normal},
         granule_id::IWSwath,
         interferometry::{bounding_box_from_burst_stack, bounding_box_from_stack},

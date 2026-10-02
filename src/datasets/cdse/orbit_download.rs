@@ -163,7 +163,7 @@ fn extract_id(response: &Value) -> Option<String> {
 mod tests {
     use chrono::DateTime;
 
-    use crate::{download_orbit::CDSEOrbitDownloader, granule_id::Mission};
+    use crate::{datasets::cdse::orbit_download::CDSEOrbitDownloader, granule_id::Mission};
 
     #[test]
     #[ignore = "Needs to download external data"]

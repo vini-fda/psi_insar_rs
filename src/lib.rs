@@ -2,7 +2,6 @@ pub mod constants;
 pub mod coregistration;
 pub mod datasets;
 pub mod dem;
-pub mod download_orbit;
 pub mod egm_2008;
 pub mod geodesy;
 pub mod granule_id;
