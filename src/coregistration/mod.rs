@@ -1,5 +1,3 @@
-use std::f32;
-
 use nalgebra::Vector3;
 use ndarray::Array2;
 
