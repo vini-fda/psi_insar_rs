@@ -15,6 +15,18 @@
 //! [\[1\]] also says that requests without credentials are redirected to Earthdata Login, and
 //! that after a `202` the client should "wait briefly" before requesting the burst again.
 //!
+//! # Caching
+//!
+//! [`AsfBurstDownloader::fetch_burst`] stores each burst as a SAFE directory at
+//! `{cache_dir}/{granule}/{subswath}/{pol}/{burst_index}.SAFE`, mirroring the API path. The
+//! cache directory defaults to the per-user cache directory (see [`default_cache_dir`]), so it
+//! does not depend on the working directory, and is set with
+//! [`AsfBurstDownloaderBuilder::cache_dir`]. With caching enabled (the default), a burst
+//! already in the cache is returned without network access, so Earthdata credentials are
+//! only needed for bursts that are not cached yet. With
+//! [`AsfBurstDownloaderBuilder::cache`]`(false)`, every request downloads the burst again
+//! and replaces the cached copy.
+//!
 //! # Redirects and authentication
 //!
 //! Redirects are followed manually (the agent has `max_redirects(0)`), up to
@@ -99,39 +111,13 @@ use ureq::Body;
 use ureq::http::{Response, header};
 use url::Url;
 
-/// List of Sentinel-1 bursts to download.
-/// The first element is the granule name, the second is the URL.
-#[allow(dead_code)]
-const VALUES: [(&str, &str); 7] = [
-    (
-        "S1_305967_IW3_20150916T122546_VV_8302-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302/IW3/VV/2.zip",
-    ),
-    (
-        "S1_305967_IW3_20150928T122546_VV_5407-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407/IW3/VV/2.zip",
-    ),
-    (
-        "S1_305967_IW3_20151010T122546_VV_7501-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501/IW3/VV/2.zip",
-    ),
-    (
-        "S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48/IW3/VV/2.zip",
-    ),
-    (
-        "S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93/IW3/VV/2.zip",
-    ),
-    (
-        "S1_305967_IW3_20151115T122546_VV_8956-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956/IW3/VV/4.zip",
-    ),
-    (
-        "S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF/IW3/VV/4.zip",
-    ),
-];
+use crate::granule_id::IWSwath;
+
+/// Base URL of the ASF burst extractor API.
+pub const ASF_BURST_API_URL: &str = "https://sentinel1-burst.asf.alaska.edu";
+/// Environment variables holding the Earthdata Login credentials.
+pub const EARTHDATA_USERNAME_VAR: &str = "EARTHDATA_USERNAME";
+pub const EARTHDATA_PASSWORD_VAR: &str = "EARTHDATA_PASSWORD";
 
 /// Earthdata Login host, the only host that receives the credentials.
 const URS_HOST: &str = "urs.earthdata.nasa.gov";
@@ -160,6 +146,10 @@ pub enum AsfDownloadError {
     InvalidArchive(String),
     /// The output path exists, is not empty and does not hold a complete SAFE product
     OutputExists(PathBuf),
+    /// A download is needed but no Earthdata Login credentials were configured
+    MissingCredentials(String),
+    /// The burst request has invalid parameters (e.g. an empty or malformed granule name)
+    InvalidBurst(String),
     /// Download failed
     DownloadFailed(String),
     /// URL parsing error
@@ -200,7 +190,213 @@ impl From<zip_extract::ZipExtractError> for AsfDownloadError {
     }
 }
 
-/// Controls how long and how often [`AsfBurstDownloader::download_file`] retries.
+/// The default cache directory: `{user cache dir}/psi_insar_rs/asf_bursts`.
+///
+/// The user cache directory comes from [`dirs::cache_dir`]: `~/Library/Caches` on macOS,
+/// `$XDG_CACHE_HOME` or `~/.cache` on Linux, and `%LOCALAPPDATA%` on Windows. If the platform
+/// has none (e.g. `$HOME` is unset), the system temporary directory is used instead.
+pub fn default_cache_dir() -> PathBuf {
+    let base = dirs::cache_dir().unwrap_or_else(|| {
+        let temp_dir = env::temp_dir();
+        warn!(
+            "No user cache directory found, caching ASF bursts under {}",
+            temp_dir.display()
+        );
+        temp_dir
+    });
+    base.join("psi_insar_rs").join("asf_bursts")
+}
+
+/// Polarization of a single burst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Polarization {
+    HH,
+    HV,
+    VH,
+    VV,
+}
+
+impl std::fmt::Display for Polarization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Polarization::HH => "HH",
+            Polarization::HV => "HV",
+            Polarization::VH => "VH",
+            Polarization::VV => "VV",
+        };
+        f.write_str(name)
+    }
+}
+
+/// A single burst of a Sentinel-1 IW SLC product, as addressed by the ASF burst extractor:
+/// `GET /{granule}/{subswath}/{polarization}/{burst_index}.zip`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurstRequest {
+    /// SLC product name, without the `.SAFE` extension.
+    pub granule: String,
+    pub subswath: IWSwath,
+    pub polarization: Polarization,
+    /// Index of the burst within the subswath (0-based).
+    pub burst_index: u32,
+}
+
+impl BurstRequest {
+    /// A `.SAFE` suffix on `granule` is ignored.
+    pub fn new(
+        granule: impl Into<String>,
+        subswath: IWSwath,
+        polarization: Polarization,
+        burst_index: u32,
+    ) -> Self {
+        let mut granule = granule.into();
+        if let Some(stripped) = granule.strip_suffix(".SAFE") {
+            granule.truncate(stripped.len());
+        }
+        BurstRequest {
+            granule,
+            subswath,
+            polarization,
+            burst_index,
+        }
+    }
+
+    /// The granule name is used both in the URL and as a cache directory name, so it must be
+    /// a plain product name (ASCII letters, digits and underscores).
+    fn validate(&self) -> Result<(), AsfDownloadError> {
+        let valid = !self.granule.is_empty()
+            && self
+                .granule
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if valid {
+            Ok(())
+        } else {
+            Err(AsfDownloadError::InvalidBurst(format!(
+                "Invalid granule name {:?}",
+                self.granule
+            )))
+        }
+    }
+
+    /// Path of the burst relative to the API root and to the cache directory, without extension.
+    fn relative_path(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            self.granule, self.subswath, self.polarization, self.burst_index
+        )
+    }
+}
+
+/// Builder for [`AsfBurstDownloader`].
+///
+/// ```no_run
+/// use psi_insar_rs::datasets::asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization};
+/// use psi_insar_rs::granule_id::IWSwath;
+///
+/// // Caches in `default_cache_dir()` unless `.cache_dir(...)` is given.
+/// let downloader = AsfBurstDownloader::builder().build();
+/// let burst = BurstRequest::new(
+///     "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
+///     IWSwath::IW3,
+///     Polarization::VV,
+///     2,
+/// );
+/// let safe_dir = downloader.fetch_burst(&burst).unwrap();
+/// ```
+pub struct AsfBurstDownloaderBuilder {
+    credentials: Option<(String, String)>,
+    cache_dir: PathBuf,
+    cache_enabled: bool,
+    retry_policy: RetryPolicy,
+    base_url: String,
+}
+
+impl Default for AsfBurstDownloaderBuilder {
+    fn default() -> Self {
+        let credentials = match (
+            env::var(EARTHDATA_USERNAME_VAR),
+            env::var(EARTHDATA_PASSWORD_VAR),
+        ) {
+            (Ok(username), Ok(password)) => Some((username, password)),
+            _ => None,
+        };
+        AsfBurstDownloaderBuilder {
+            credentials,
+            cache_dir: default_cache_dir(),
+            cache_enabled: true,
+            retry_policy: RetryPolicy::default(),
+            base_url: ASF_BURST_API_URL.to_string(),
+        }
+    }
+}
+
+impl AsfBurstDownloaderBuilder {
+    /// Earthdata Login credentials. Defaults to the `EARTHDATA_USERNAME` and
+    /// `EARTHDATA_PASSWORD` environment variables, if both are set.
+    ///
+    /// Credentials are only required when a burst has to be downloaded, so cached bursts can
+    /// be used without them.
+    pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.credentials = Some((username.into(), password.into()));
+        self
+    }
+
+    /// Directory where bursts are stored, as `{cache_dir}/{granule}/{subswath}/{pol}/{burst_index}.SAFE`.
+    /// Defaults to [`default_cache_dir`]. A relative path is resolved against the working
+    /// directory at the time of each download.
+    pub fn cache_dir(mut self, cache_dir: impl Into<PathBuf>) -> Self {
+        self.cache_dir = cache_dir.into();
+        self
+    }
+
+    /// Whether bursts already in the cache directory are reused (the default). When disabled,
+    /// every request downloads the burst again and replaces the copy in the cache directory.
+    pub fn cache(mut self, enabled: bool) -> Self {
+        self.cache_enabled = enabled;
+        self
+    }
+
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
+        self
+    }
+
+    /// Point the downloader at another server, e.g. a mock server in tests.
+    #[cfg(test)]
+    fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
+    pub fn build(self) -> AsfBurstDownloader {
+        let auth_header = self.credentials.map(|(username, password)| {
+            format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{username}:{password}"))
+            )
+        });
+        // Redirects are followed manually, so that the credentials are only sent to
+        // Earthdata Login and every intermediate status code can be inspected.
+        let config = ureq::Agent::config_builder()
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .user_agent(concat!("psi_insar_rs/", env!("CARGO_PKG_VERSION")))
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(120)))
+            .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
+            .build();
+        AsfBurstDownloader {
+            agent: ureq::Agent::new_with_config(config),
+            auth_header,
+            retry_policy: self.retry_policy,
+            cache_dir: self.cache_dir,
+            cache_enabled: self.cache_enabled,
+            base_url: self.base_url,
+        }
+    }
+}
+
+/// Controls how long and how often [`AsfBurstDownloader`] retries a download.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     /// Number of retries after transient failures (network errors, 5xx, truncated or corrupt files).
@@ -276,44 +472,63 @@ impl Drop for TempPath {
     }
 }
 
+/// Downloads Sentinel-1 bursts from ASF into an on-disk cache. Create it with
+/// [`AsfBurstDownloader::builder`].
 pub struct AsfBurstDownloader {
     agent: ureq::Agent,
-    auth_header: String,
+    /// `None` when no credentials were configured; only an error once a download is needed.
+    auth_header: Option<String>,
     retry_policy: RetryPolicy,
+    cache_dir: PathBuf,
+    cache_enabled: bool,
+    base_url: String,
 }
 
 impl AsfBurstDownloader {
-    pub fn new_with_env_auth() -> Result<Self, AsfDownloadError> {
-        let username = env::var("EARTHDATA_USERNAME")?;
-        let password = env::var("EARTHDATA_PASSWORD")?;
-        Ok(Self::new(&username, &password))
+    pub fn builder() -> AsfBurstDownloaderBuilder {
+        AsfBurstDownloaderBuilder::default()
     }
 
-    pub fn new(username: &str, password: &str) -> Self {
-        let auth_header = format!(
-            "Basic {}",
-            BASE64_STANDARD.encode(format!("{username}:{password}"))
-        );
-        // Redirects are followed manually, so that the credentials are only sent to
-        // Earthdata Login and every intermediate status code can be inspected.
-        let config = ureq::Agent::config_builder()
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .user_agent(concat!("psi_insar_rs/", env!("CARGO_PKG_VERSION")))
-            .timeout_connect(Some(Duration::from_secs(30)))
-            .timeout_recv_response(Some(Duration::from_secs(120)))
-            .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
-            .build();
-        AsfBurstDownloader {
-            agent: ureq::Agent::new_with_config(config),
-            auth_header,
-            retry_policy: RetryPolicy::default(),
-        }
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
     }
 
-    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
-        self.retry_policy = retry_policy;
-        self
+    pub fn is_cache_enabled(&self) -> bool {
+        self.cache_enabled
+    }
+
+    /// Where `burst` is stored: `{cache_dir}/{granule}/{subswath}/{pol}/{burst_index}.SAFE`.
+    pub fn cached_path(&self, burst: &BurstRequest) -> PathBuf {
+        self.cache_dir
+            .join(format!("{}.SAFE", burst.relative_path()))
+    }
+
+    /// The ASF burst extractor URL of `burst`.
+    pub fn burst_url(&self, burst: &BurstRequest) -> String {
+        format!("{}/{}.zip", self.base_url, burst.relative_path())
+    }
+
+    /// Return the SAFE directory of `burst`, downloading it unless it is already cached.
+    ///
+    /// When caching is enabled and [`cached_path`](Self::cached_path) already holds a complete
+    /// SAFE product, it is returned without any network access or credentials. Otherwise the
+    /// burst is downloaded there with [`download_file`](Self::download_file).
+    pub fn fetch_burst(&self, burst: &BurstRequest) -> Result<PathBuf, AsfDownloadError> {
+        burst.validate()?;
+        let path = self.cached_path(burst);
+        self.download_file(&self.burst_url(burst), &path)?;
+        Ok(path)
+    }
+
+    /// [`fetch_burst`](Self::fetch_burst) for several bursts, in order. Stops at the first error.
+    pub fn fetch_bursts<'a>(
+        &self,
+        bursts: impl IntoIterator<Item = &'a BurstRequest>,
+    ) -> Result<Vec<PathBuf>, AsfDownloadError> {
+        bursts
+            .into_iter()
+            .map(|burst| self.fetch_burst(burst))
+            .collect()
     }
 
     /// Download a single burst zip from ASF and extract it as a SAFE directory.
@@ -324,8 +539,12 @@ impl AsfBurstDownloader {
     ///
     /// The archive is extracted into a temporary sibling directory that is only moved to
     /// `output_path` once it holds a complete SAFE product, so `output_path` is never left
-    /// empty or half-written. If `output_path` already holds a complete SAFE product, the
-    /// download is skipped.
+    /// empty or half-written.
+    ///
+    /// If `output_path` already holds a complete SAFE product, the download is skipped when
+    /// caching is enabled; otherwise the product is downloaded again and replaces it. An empty
+    /// directory is replaced, and any other existing path is an
+    /// [`OutputExists`](AsfDownloadError::OutputExists) error.
     ///
     /// # Arguments
     ///
@@ -338,17 +557,27 @@ impl AsfBurstDownloader {
     pub fn download_file(&self, url: &str, output_path: &Path) -> Result<(), AsfDownloadError> {
         if output_path.exists() {
             if is_complete_safe(output_path) {
-                info!(
-                    "{} already holds a complete SAFE product, skipping download",
-                    output_path.display()
-                );
-                return Ok(());
-            }
-            // An empty directory is what failed downloads used to leave behind.
-            if !is_empty_dir(output_path) {
+                if self.cache_enabled {
+                    info!("Using cached {}", output_path.display());
+                    return Ok(());
+                }
+                // Caching is disabled: replaced once the new download is complete.
+            } else if is_empty_dir(output_path) {
+                // An empty directory is what failed downloads used to leave behind.
+                fs::remove_dir(output_path)?;
+            } else {
                 return Err(AsfDownloadError::OutputExists(output_path.to_path_buf()));
             }
-            fs::remove_dir(output_path)?;
+        }
+        if self.auth_header.is_none() {
+            return Err(AsfDownloadError::MissingCredentials(format!(
+                "Downloading {url} requires Earthdata Login credentials: set \
+                 {EARTHDATA_USERNAME_VAR} and {EARTHDATA_PASSWORD_VAR}, or call \
+                 AsfBurstDownloaderBuilder::credentials"
+            )));
+        }
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
         }
 
         let policy = &self.retry_policy;
@@ -483,6 +712,11 @@ impl AsfBurstDownloader {
                 format!("{url} does not contain manifest.safe and a measurement TIFF"),
             )));
         }
+        if output_path.exists() {
+            // Only a complete SAFE product gets here (see `download_file`), when caching is
+            // disabled.
+            fs::remove_dir_all(output_path)?;
+        }
         fs::rename(&extract_dir.0, output_path)?;
         Ok(())
     }
@@ -493,8 +727,10 @@ impl AsfBurstDownloader {
         let mut url = Url::parse(url).map_err(|err| AttemptError::Fatal(err.into()))?;
         for _ in 0..=MAX_REDIRECTS {
             let mut request = self.agent.get(url.as_str());
-            if is_urs_url(&url) {
-                request = request.header(header::AUTHORIZATION, &self.auth_header);
+            if is_urs_url(&url)
+                && let Some(auth_header) = &self.auth_header
+            {
+                request = request.header(header::AUTHORIZATION, auth_header);
             }
             let resp = request.call()?;
             if !resp.status().is_redirection() {
@@ -680,16 +916,34 @@ mod tests {
         }
     }
 
+    fn test_root() -> PathBuf {
+        let dir = env::temp_dir().join("psi_insar_rs_asf_burst_download");
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A downloader with fake credentials, caching into a fresh directory named `name`.
+    fn test_builder(name: &str, policy: RetryPolicy) -> AsfBurstDownloaderBuilder {
+        let cache_dir = test_root().join(format!("{name}_cache"));
+        let _ = fs::remove_dir_all(&cache_dir);
+        AsfBurstDownloader::builder()
+            .credentials("user", "pass")
+            .cache_dir(cache_dir)
+            .retry_policy(policy)
+    }
+
     fn test_downloader(policy: RetryPolicy) -> AsfBurstDownloader {
-        AsfBurstDownloader::new("user", "pass").with_retry_policy(policy)
+        test_builder("default", policy).build()
     }
 
     fn output_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join("psi_insar_rs_asf_burst_download");
-        fs::create_dir_all(&dir).unwrap();
-        let output = dir.join(format!("{name}.SAFE"));
+        let output = test_root().join(format!("{name}.SAFE"));
         let _ = fs::remove_dir_all(&output);
         output
+    }
+
+    fn test_burst() -> BurstRequest {
+        BurstRequest::new("G", IWSwath::IW3, Polarization::VV, 2)
     }
 
     #[test]
@@ -827,10 +1081,128 @@ mod tests {
         assert!(!is_urs_url(&lookalike));
     }
 
-    // This test requires valid EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables to be set.
-    // It downloads every burst in VALUES (~140 MB each) into the working directory, skipping
-    // bursts that were already downloaded completely, and fails if any burst could not be fetched.
-    // It is ignored by default to prevent unintended network access and file writes during automated tests.
+    #[test]
+    fn fetch_burst_uses_cache_layout_and_reuses_cached_bursts() {
+        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let downloader = test_builder("fetch_cached", fast_policy())
+            .base_url(base)
+            .build();
+        let burst = test_burst();
+        let path = downloader.fetch_burst(&burst).unwrap();
+        assert_eq!(path, downloader.cache_dir().join("G/IW3/VV/2.SAFE"));
+        assert!(is_complete_safe(&path));
+        // The second call must not hit the server (which only serves one response).
+        assert_eq!(downloader.fetch_burst(&burst).unwrap(), path);
+        assert_eq!(*paths.lock().unwrap(), ["/G/IW3/VV/2.zip"]);
+    }
+
+    #[test]
+    fn disabled_cache_downloads_again_and_replaces_cached_burst() {
+        let (base, paths) = mock_server(vec![
+            MockResponse::zip(safe_zip()),
+            MockResponse::zip(safe_zip()),
+        ]);
+        let downloader = test_builder("fetch_uncached", fast_policy())
+            .base_url(base)
+            .cache(false)
+            .build();
+        let burst = test_burst();
+        let path = downloader.fetch_burst(&burst).unwrap();
+        fs::write(path.join("stale-marker"), "").unwrap();
+        assert_eq!(downloader.fetch_burst(&burst).unwrap(), path);
+        assert!(is_complete_safe(&path));
+        assert!(
+            !path.join("stale-marker").exists(),
+            "cached copy must be replaced"
+        );
+        assert_eq!(paths.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cached_bursts_need_no_credentials() {
+        let (base, paths) = mock_server(vec![MockResponse::zip(safe_zip())]);
+        let builder = test_builder("no_credentials", fast_policy()).base_url(base);
+        let cache_dir = builder.cache_dir.clone();
+        let burst = test_burst();
+        builder.build().fetch_burst(&burst).unwrap();
+
+        let mut builder = AsfBurstDownloader::builder()
+            .cache_dir(cache_dir)
+            .base_url("http://127.0.0.1:1");
+        builder.credentials = None;
+        let downloader = builder.build();
+        assert!(is_complete_safe(&downloader.fetch_burst(&burst).unwrap()));
+
+        let uncached = BurstRequest::new("G", IWSwath::IW3, Polarization::VV, 3);
+        let result = downloader.fetch_burst(&uncached);
+        assert!(matches!(
+            result,
+            Err(AsfDownloadError::MissingCredentials(_))
+        ));
+        assert!(!downloader.cached_path(&uncached).exists());
+        assert_eq!(paths.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn burst_request_validation_and_urls() {
+        let downloader = AsfBurstDownloader::builder().cache_dir("cache").build();
+        let burst = BurstRequest::new("S1A_IW_SLC__1SSV_X.SAFE", IWSwath::IW1, Polarization::VH, 7);
+        assert_eq!(burst.granule, "S1A_IW_SLC__1SSV_X");
+        assert_eq!(
+            downloader.burst_url(&burst),
+            "https://sentinel1-burst.asf.alaska.edu/S1A_IW_SLC__1SSV_X/IW1/VH/7.zip"
+        );
+        assert_eq!(
+            downloader.cached_path(&burst),
+            Path::new("cache/S1A_IW_SLC__1SSV_X/IW1/VH/7.SAFE")
+        );
+        for granule in ["", "../escape", "a/b", "x y"] {
+            let burst = BurstRequest::new(granule, IWSwath::IW1, Polarization::VV, 0);
+            assert!(matches!(
+                downloader.fetch_burst(&burst),
+                Err(AsfDownloadError::InvalidBurst(_))
+            ));
+        }
+    }
+
+    /// Granule and burst index of the bursts used by `rerun_tests::differential_phase_plot`
+    /// (IW3, VV).
+    const TEST_BURSTS: [(&str, u32); 7] = [
+        (
+            "S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302",
+            2,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407",
+            2,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501",
+            2,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
+            2,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93",
+            2,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956",
+            4,
+        ),
+        (
+            "S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF",
+            4,
+        ),
+    ];
+
+    // This test requires valid EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables
+    // to be set. It downloads every burst in TEST_BURSTS (~140 MB each) with caching disabled,
+    // replacing the copies in default_cache_dir(), and fails if any burst could not be fetched.
+    // It is ignored by default to prevent unintended network access and file writes during
+    // automated tests.
     #[test]
     #[ignore]
     fn test_real_download_with_env_auth() {
@@ -839,23 +1211,23 @@ mod tests {
             .filter_level(log::LevelFilter::Info)
             .try_init();
 
-        let downloader = AsfBurstDownloader::new_with_env_auth()
-            .expect("EARTHDATA_USERNAME and EARTHDATA_PASSWORD must be set");
+        let downloader = AsfBurstDownloader::builder().cache(false).build();
         let mut failures = Vec::new();
-        for (burst, url) in VALUES {
-            // The granule name is the first path segment after the domain.
-            let name = url.split('/').nth(3).expect("Unable to find granule name");
-            let output_path = PathBuf::from(format!("{name}.SAFE"));
-
-            println!("Downloading {burst}: {url} -> {}", output_path.display());
-            match downloader.download_file(url, &output_path) {
-                Ok(()) => assert!(
-                    is_complete_safe(&output_path),
+        for (granule, burst_index) in TEST_BURSTS {
+            let burst = BurstRequest::new(granule, IWSwath::IW3, Polarization::VV, burst_index);
+            println!(
+                "Downloading {} -> {}",
+                downloader.burst_url(&burst),
+                downloader.cached_path(&burst).display()
+            );
+            match downloader.fetch_burst(&burst) {
+                Ok(path) => assert!(
+                    is_complete_safe(&path),
                     "{} is not a complete SAFE product",
-                    output_path.display()
+                    path.display()
                 ),
                 Err(err) => {
-                    eprintln!("Download of {burst} failed: {err:?}");
+                    eprintln!("Download of {burst:?} failed: {err:?}");
                     failures.push((burst, err));
                 }
             }
