@@ -5,9 +5,12 @@ use crate::{
     sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 use nalgebra::Vector3;
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, ArrayView2, Axis, Zip, s};
 use ndarray_npy::WriteNpyExt;
+use num_complex::Complex;
+use num_traits::Zero;
 use rayon::prelude::*;
+use std::ops::AddAssign;
 
 pub fn coregister_and_remove_flat_phase(
     reference: &Sentinel1SlcIWBurst,
@@ -252,4 +255,231 @@ pub fn bounding_box_from_burst_stack<'a, I: IntoIterator<Item = &'a Sentinel1Slc
         min_lon - OFFSET_LON,
         max_lon + OFFSET_LON,
     ]
+}
+
+/// Size of the window over which [`coherence`] is estimated, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoherenceWindow {
+    pub azimuth: usize,
+    pub range: usize,
+}
+
+impl Default for CoherenceWindow {
+    /// 3 azimuth × 10 range pixels, which is roughly square on the ground for Sentinel-1 IW
+    /// SLCs (about 14 m azimuth by 3-4 m ground range pixels).
+    fn default() -> Self {
+        CoherenceWindow {
+            azimuth: 3,
+            range: 10,
+        }
+    }
+}
+
+/// The interferometric coherence of each pixel,
+///
+/// ```text
+/// γ = |Σ s1 · s2* · e^(-iφ)| / √(Σ |s1|² · Σ |s2|²)
+/// ```
+///
+/// with sums over the `window` centered on the pixel (truncated at the image edges), where
+/// `s1` is the `reference` SLC and `s2` the `secondary` SLC coregistered to it. `interferogram`
+/// is `s1 · s2* · e^(-iφ)`, i.e. the interferogram after removing any phase `φ` that is
+/// expected to vary within the window: with the flat-earth and topographic phase removed, the
+/// fringes they cause do not lower the coherence.
+///
+/// The result is in `[0, 1]`, and 0 where either SLC is zero over the whole window. With few
+/// pixels per window the estimate is biased upwards: uncorrelated SLCs give about
+/// `1 / √(window pixels)` rather than 0.
+///
+/// # Panics
+///
+/// If the three arrays do not have the same shape, or the window is empty.
+pub fn coherence(
+    interferogram: ArrayView2<'_, Complex<f32>>,
+    reference: ArrayView2<'_, Complex<f32>>,
+    secondary: ArrayView2<'_, Complex<f32>>,
+    window: CoherenceWindow,
+) -> Array2<f32> {
+    assert_eq!(
+        interferogram.dim(),
+        reference.dim(),
+        "Interferogram and reference shapes differ"
+    );
+    assert_eq!(
+        interferogram.dim(),
+        secondary.dim(),
+        "Interferogram and secondary shapes differ"
+    );
+    assert!(
+        window.azimuth > 0 && window.range > 0,
+        "Empty coherence window: {window:?}"
+    );
+    let numerator = box_sum(interferogram, window);
+    let reference_power = box_sum(reference.mapv(|v| v.norm_sqr()).view(), window);
+    let secondary_power = box_sum(secondary.mapv(|v| v.norm_sqr()).view(), window);
+    Zip::from(&numerator)
+        .and(&reference_power)
+        .and(&secondary_power)
+        .par_map_collect(|numerator, &p1, &p2| {
+            let denominator = (p1 as f64 * p2 as f64).sqrt();
+            if denominator > 0.0 {
+                (numerator.norm() as f64 / denominator).min(1.0) as f32
+            } else {
+                0.0
+            }
+        })
+}
+
+/// The sum of `data` over the `window` centered on each pixel, truncated at the edges. For an
+/// even window size, the window extends one pixel further after the center than before it.
+fn box_sum<A>(data: ArrayView2<'_, A>, window: CoherenceWindow) -> Array2<A>
+where
+    A: Copy + Zero + AddAssign + Send + Sync,
+{
+    let (rows, cols) = data.dim();
+    let window_range = |center: usize, size: usize, len: usize| {
+        center.saturating_sub((size - 1) / 2)..(center + size / 2 + 1).min(len)
+    };
+
+    // Sums along range, then along azimuth.
+    let mut range_sums = Array2::zeros((rows, cols));
+    range_sums
+        .axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .zip(data.axis_iter(Axis(0)))
+        .for_each(|(mut sums, row)| {
+            for (j, sum) in sums.iter_mut().enumerate() {
+                for &value in row.slice(s![window_range(j, window.range, cols)]) {
+                    *sum += value;
+                }
+            }
+        });
+    let mut sums = Array2::zeros((rows, cols));
+    sums.axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, mut sums)| {
+            for row in range_sums
+                .slice(s![window_range(i, window.azimuth, rows), ..])
+                .outer_iter()
+            {
+                sums.zip_mut_with(&row, |sum, &value| *sum += value);
+            }
+        });
+    sums
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Deterministic pseudo-random complex values with unit-ish amplitude (xorshift).
+    fn speckle(rows: usize, cols: usize, seed: u64) -> Array2<Complex<f32>> {
+        let mut state = seed;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        Array2::from_shape_simple_fn((rows, cols), || {
+            Complex::from_polar(0.5 + next(), std::f32::consts::TAU * next())
+        })
+    }
+
+    fn interferogram(
+        s1: &Array2<Complex<f32>>,
+        s2: &Array2<Complex<f32>>,
+        phase: impl Fn(usize, usize) -> f32,
+    ) -> Array2<Complex<f32>> {
+        Array2::from_shape_fn(s1.dim(), |(i, j)| {
+            s1[[i, j]] * s2[[i, j]].conj() * Complex::from_polar(1.0, -phase(i, j))
+        })
+    }
+
+    #[test]
+    fn box_sum_truncates_at_edges() {
+        let data = Array2::<f32>::ones((4, 5));
+        let window = CoherenceWindow {
+            azimuth: 3,
+            range: 4,
+        };
+        // Range window [j - 1, j + 2]: 3, 4, 4, 3, 2 pixels; azimuth window [i - 1, i + 1]:
+        // 2, 3, 3, 2 pixels.
+        let sums = box_sum(data.view(), window);
+        assert_eq!(sums.row(0).to_vec(), [6.0, 8.0, 8.0, 6.0, 4.0]);
+        assert_eq!(sums.row(1).to_vec(), [9.0, 12.0, 12.0, 9.0, 6.0]);
+        assert_eq!(sums.row(3), sums.row(0));
+    }
+
+    #[test]
+    fn identical_images_are_fully_coherent() {
+        let s1 = speckle(20, 30, 1);
+        // Same speckle with a constant phase offset and a different gain.
+        let s2 = s1.mapv(|v| v * Complex::from_polar(2.0, 1.0));
+        let gamma = coherence(
+            interferogram(&s1, &s2, |_, _| 0.0).view(),
+            s1.view(),
+            s2.view(),
+            CoherenceWindow::default(),
+        );
+        gamma
+            .iter()
+            .for_each(|&g| assert_relative_eq!(g, 1.0, epsilon = 1e-5));
+    }
+
+    #[test]
+    fn removing_the_fringes_restores_coherence() {
+        let s1 = speckle(20, 60, 2);
+        // A fast range phase ramp, like flat-earth fringes: a full cycle every 8 samples.
+        let ramp = |_: usize, j: usize| std::f32::consts::TAU * j as f32 / 8.0;
+        let s2 = Array2::from_shape_fn(s1.dim(), |(i, j)| {
+            s1[[i, j]] * Complex::from_polar(1.0, -ramp(i, j))
+        });
+        let window = CoherenceWindow::default();
+        let with_fringes = coherence(
+            interferogram(&s1, &s2, |_, _| 0.0).view(),
+            s1.view(),
+            s2.view(),
+            window,
+        );
+        let flattened = coherence(
+            interferogram(&s1, &s2, ramp).view(),
+            s1.view(),
+            s2.view(),
+            window,
+        );
+        assert!(with_fringes.mean().unwrap() < 0.5);
+        flattened
+            .iter()
+            .for_each(|&g| assert_relative_eq!(g, 1.0, epsilon = 1e-5));
+    }
+
+    #[test]
+    fn independent_images_have_low_coherence() {
+        let (s1, s2) = (speckle(60, 200, 3), speckle(60, 200, 4));
+        let window = CoherenceWindow::default();
+        let gamma = coherence(
+            interferogram(&s1, &s2, |_, _| 0.0).view(),
+            s1.view(),
+            s2.view(),
+            window,
+        );
+        // Bias of the estimator for 30-pixel windows: about 1 / sqrt(30) = 0.18.
+        let mean = gamma.mean().unwrap();
+        assert!(mean > 0.05 && mean < 0.3, "mean coherence {mean}");
+    }
+
+    #[test]
+    fn zero_images_have_zero_coherence() {
+        let zeros = Array2::<Complex<f32>>::zeros((5, 5));
+        let gamma = coherence(
+            zeros.view(),
+            zeros.view(),
+            zeros.view(),
+            CoherenceWindow::default(),
+        );
+        assert!(gamma.iter().all(|&g| g == 0.0));
+    }
 }
