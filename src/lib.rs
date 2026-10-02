@@ -10,6 +10,7 @@ pub mod interferometry;
 pub mod interpolation;
 pub mod io;
 pub mod metadata;
+pub mod multilook;
 pub mod perp_baseline;
 mod rerun_tests;
 pub mod satellite_orbit;
