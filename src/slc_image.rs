@@ -44,13 +44,13 @@ impl SlcImage {
         Complex::new(value.re as f32, value.im as f32)
     }
 
-    /// Returns the Complex<f32> array
+    /// Returns the `Complex<f32>` array
     pub fn array_f32(&self) -> Array2<Complex<f32>> {
         self.array
             .map(|v| Complex::<f32>::new(v.re as f32, v.im as f32))
     }
 
-    /// Returns an array view of the burst at `burst_index`, with type Complex<i16>
+    /// Returns an array view of the burst at `burst_index`, with type `Complex<i16>`
     pub fn burst_view_at_i16<'a>(&'a self, burst_index: usize) -> ArrayView2<'a, Complex<i16>> {
         let start = burst_index * self.lines_per_burst;
         let end = start + self.lines_per_burst;
@@ -64,7 +64,7 @@ impl SlcImage {
         self.array.slice(s![start..end, ..])
     }
 
-    /// Returns an array representing the burst at `burst_index`, with type Complex<f32>
+    /// Returns an array representing the burst at `burst_index`, with type `Complex<f32>`
     pub fn burst_at_f32(&self, burst_index: usize) -> Array2<Complex<f32>> {
         self.burst_view_at_i16(burst_index)
             .map(|v| Complex::<f32>::new(v.re as f32, v.im as f32))

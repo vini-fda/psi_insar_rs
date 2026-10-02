@@ -1,6 +1,6 @@
 /// Turbo colormap (polynomial approximation)
-/// Reference: https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html
-/// Original LUT: https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f
+/// Reference: <https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html>
+/// Original LUT: <https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f>
 /// Authors: Anton Mikhailov (mikhailov@google.com), Ruofei Du (ruofei@google.com)
 pub fn turbo_colormap(x: f32) -> [f32; 3] {
     // Coefficients for the polynomial approximation

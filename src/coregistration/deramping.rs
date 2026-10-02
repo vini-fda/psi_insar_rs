@@ -407,7 +407,7 @@ impl DerampSlcBurst {
         -(self.f_eta_c(tau) / self.k_a(tau))
     }
 
-    /// Doppler Centroid frequency [Hz].
+    /// Doppler Centroid frequency \[Hz\].
     ///
     /// This is provided as a sequence of range polynomial
     /// regularly updated with azimuth time 𝜂. For deramping the i-th burst, it is recommended to

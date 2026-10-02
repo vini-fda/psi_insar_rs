@@ -417,7 +417,7 @@ impl ContinuousOrbitalStateHistory {
         azimuth_index * self.azimuth_time_interval - slant_range / C_LIGHT
     }
 
-    /// Calculate p(t) and v(t) at t = time[i]
+    /// Calculate `p(t)` and `v(t)` at `t = time[i]`
     pub fn pos_vel(&self, i: usize) -> (Vector3<f64>, Vector3<f64>) {
         let pos: &[Vector3<f64>] = self.position.as_slice();
         let vel: &[Vector3<f64>] = self.velocity.as_slice();

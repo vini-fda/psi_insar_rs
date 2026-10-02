@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Represents a geographic point in WGS84 coordinates
 ///
-/// Source: https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry
+/// Source: <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoPoint {
     pub latitude: f64,
@@ -23,7 +23,7 @@ pub struct GeoPoint {
 
 /// Represents a geographic bounding box in WGS84 coordinates
 ///
-/// Source: https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry
+/// Source: <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoBoundingBox {
     pub min_latitude: f64,
@@ -38,8 +38,8 @@ pub struct GeoBoundingBox {
 /// to acquire data over a wide swath with enhanced image performance.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BurstMetadata {
     pub burst_id: String,
@@ -65,8 +65,8 @@ pub struct BurstMetadata {
 /// Each sub-swath contains a series of bursts, where each burst has been processed as a separate SLC image.
 ///
 /// Sources:
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-wide-swath
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-wide-swath>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubswathMetadata {
     pub subswath_id: String,
@@ -86,8 +86,8 @@ pub struct SubswathMetadata {
 /// They are used for accurate geolocation and InSAR processing.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitStateVector {
     pub time: DateTime<Utc>,
@@ -105,8 +105,8 @@ pub struct OrbitStateVector {
 /// orbit number, pass direction (ascending or descending), and state vectors.
 ///
 /// Sources:
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitInformation {
     pub orbit_number: u32,
@@ -121,8 +121,8 @@ pub struct OrbitInformation {
 /// and attitude data from the satellite, and provided in slant-range geometry.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/single-look-complex
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/single-look-complex>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sentinel1SlcMetadata {
     pub granule_id: Sentinel1GranuleId,
@@ -147,9 +147,9 @@ pub struct Sentinel1SlcMetadata {
 /// during a single sweep of the antenna beam from back to fore.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-/// - https://sentiwiki.copernicus.eu/__attachments/1673968/S1-RS-MDA-52-7441%20-%20Sentinel-1%20Product%20Specification%202023%20-%203.14.1.pdf
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
+/// - <https://sentiwiki.copernicus.eu/__attachments/1673968/S1-RS-MDA-52-7441%20-%20Sentinel-1%20Product%20Specification%202023%20-%203.14.1.pdf>
 pub struct Sentinel1SlcIWSwath {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,

@@ -1128,7 +1128,7 @@ pub struct DcEstimateList {
 pub struct DcEstimate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    /// Zero Doppler azimuth time of this Doppler centroid estimate [UTC].
+    /// Zero Doppler azimuth time of this Doppler centroid estimate \[UTC\].
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     pub t0: f64,
@@ -1371,7 +1371,7 @@ pub struct BurstList {
 pub struct Burst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    /// Zero Doppler azimuth time of the first line of this burst [UTC]
+    /// Zero Doppler azimuth time of the first line of this burst \[UTC\]
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     /// "ANX time" (seconds from ANX - Ascending Node Crossing)

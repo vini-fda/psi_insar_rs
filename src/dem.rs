@@ -291,7 +291,7 @@ impl DEM {
     /// Gets the corresponding triangle indices in the 3D Mesh.
     /// Useful to build a 3D Mesh of the DEM.
     ///
-    /// See also [`vertex_positions`]
+    /// See also [`vertex_positions`](Self::vertex_positions)
     pub fn triangle_indices(&self) -> Vec<[u32; 3]> {
         let rows = self.rows;
         let cols = self.cols;
