@@ -1118,14 +1118,17 @@ pub struct DcEstimateList {
     pub count: u32,
     #[serde(rename = "$text")]
     pub text: Option<String>,
+    /// Annotation record for Doppler estimate blocks
     #[serde(rename = "dcEstimate")]
     pub dc_estimate: Vec<DcEstimate>,
 }
 
+/// Annotation record for Doppler estimate blocks
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DcEstimate {
     #[serde(rename = "$text")]
     pub text: Option<String>,
+    /// Zero Doppler azimuth time of this Doppler centroid estimate \[UTC\].
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     pub t0: f64,
@@ -1360,13 +1363,15 @@ pub struct BurstList {
     pub count: u32,
     #[serde(rename = "$text")]
     pub text: Option<String>,
-    pub burst: Burst,
+    #[serde(rename = "burst")]
+    pub bursts: Vec<Burst>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Burst {
     #[serde(rename = "$text")]
     pub text: Option<String>,
+    /// Zero Doppler azimuth time of the first line of this burst \[UTC\]
     #[serde(rename = "azimuthTime", with = "datetime_format")]
     pub azimuth_time: DateTime<Utc>,
     /// "ANX time" (seconds from ANX - Ascending Node Crossing)

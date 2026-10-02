@@ -1,6 +1,8 @@
 use crate::{
-    constants::SENTINEL_1_WAVELENGTH, dem::DEM, perp_baseline::EnhancedDelaunayWarpFunction,
-    satellite_orbit::zero_doppler_time, sentinel::Sentinel1SlcBurst,
+    constants::SENTINEL_1_WAVELENGTH,
+    dem::DEM,
+    perp_baseline::EnhancedDelaunayWarpFunction,
+    sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 use nalgebra::Vector3;
 use ndarray::{Array2, Axis};
@@ -8,18 +10,22 @@ use ndarray_npy::WriteNpyExt;
 use rayon::prelude::*;
 
 pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcBurst,
-    secondaries: &[Sentinel1SlcBurst],
+    reference: &Sentinel1SlcIWBurst,
+    secondaries: &[Sentinel1SlcIWBurst],
     dem: &DEM,
 ) {
     for secondary in secondaries {
         log::info!("Computing warp function");
         let start_time = std::time::Instant::now();
-        let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+        // The same orbits are used for the warp function and for the geometric phase
+        let osh_1 = reference.continuous_orbital_state_history();
+        let osh_2 = secondary.continuous_orbital_state_history();
+        let warp_function =
+            EnhancedDelaunayWarpFunction::with_orbits(reference, &osh_1, &osh_2, dem);
         let end_time = std::time::Instant::now();
         log::info!("Time taken: {:?}", end_time - start_time);
 
-        let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+        let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
         // let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
         // let kernel = KnabSincKernel::default();
@@ -73,14 +79,10 @@ pub fn coregister_and_remove_flat_phase(
         // let end_time = std::time::Instant::now();
         // log::info!("Time taken: {:?}", end_time - start_time);
 
-        let osh_1 = reference.orbital_state_history();
-        let annotation_1 = &reference.metadata;
-        // let s = annotation_1
+        // let s = reference.metadata
         //     .image_annotation
         //     .image_information
         //     .range_pixel_spacing;
-        let osh_2 = secondary.orbital_state_history();
-        let annotation_2 = &secondary.metadata;
         let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
         // for i in 0..ref_azimuth_dim {
         //     for j in 0..ref_slant_range_dim {
@@ -108,6 +110,8 @@ pub fn coregister_and_remove_flat_phase(
                             let ref_coords = [ref_az as f64, ref_rg as f64];
                             let sec_az =
                                 nn.interpolate(|v| v.data().secondary_coords[0], ref_coords.into());
+                            let sec_rg =
+                                nn.interpolate(|v| v.data().secondary_coords[1], ref_coords.into());
 
                             // Now compute the ground target position
                             let ground_target_lat =
@@ -117,12 +121,14 @@ pub fn coregister_and_remove_flat_phase(
 
                             // if any are None, skip
                             if sec_az.is_none()
+                                || sec_rg.is_none()
                                 || ground_target_lat.is_none()
                                 || ground_target_lon.is_none()
                             {
                                 continue;
                             }
                             let sec_az = sec_az.unwrap();
+                            let sec_rg = sec_rg.unwrap();
                             let ground_target_lat = ground_target_lat.unwrap();
                             let ground_target_lon = ground_target_lon.unwrap();
 
@@ -130,10 +136,12 @@ pub fn coregister_and_remove_flat_phase(
                                 dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                             );
 
-                            let zero_doppler_1 = zero_doppler_time(ref_az as f64, annotation_1);
-                            let zero_doppler_2 = zero_doppler_time(sec_az, annotation_2);
-                            let (s_1, _) = osh_1.interp_pos_vel(zero_doppler_1);
-                            let (s_2, _) = osh_2.interp_pos_vel(zero_doppler_2);
+                            // Pixel coordinates include the R/c bistatic shift; undo it
+                            let zero_doppler_1 =
+                                osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                            let zero_doppler_2 = osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
+                            let s_1 = osh_1.interp_pos(zero_doppler_1);
+                            let s_2 = osh_2.interp_pos(zero_doppler_2);
 
                             let r1 = (s_1 - ground_target_pos).norm();
                             let r2 = (s_2 - ground_target_pos).norm();
@@ -156,10 +164,10 @@ pub fn coregister_and_remove_flat_phase(
     }
 }
 
-/// Compute the bounding box of a stack of Sentinel1SlcBurst images,
+/// Compute the bounding box of a stack of Sentinel1SlcIWSwath images,
 /// with a small margin to account for the fact that the images are not
 /// exactly aligned.
-pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcBurst>>(
+pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWSwath>>(
     stack: I,
 ) -> [f64; 4] {
     const OFFSET_LAT: f64 = 0.05;
@@ -192,5 +200,56 @@ pub fn bounding_box_from_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcBurst>
         max_lat_final + OFFSET_LAT,
         min_lon_final - OFFSET_LON,
         max_lon_final + OFFSET_LON,
+    ]
+}
+
+/// Compute the bounding box of a stack of Sentinel1SlcIWSwath images,
+/// with a small margin to account for the fact that the images are not
+/// exactly aligned.
+pub fn bounding_box_from_burst_stack<'a, I: IntoIterator<Item = &'a Sentinel1SlcIWBurst>>(
+    stack: I,
+) -> [f64; 4] {
+    const OFFSET_LAT: f64 = 0.05;
+    const OFFSET_LON: f64 = 0.05;
+    let mut min_lat = f64::MAX;
+    let mut max_lat = f64::MIN;
+    let mut min_lon = f64::MAX;
+    let mut max_lon = f64::MIN;
+    for burst in stack {
+        let burst_index = burst.burst_index;
+        let gcps_len = burst
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .count as usize;
+        let num_bursts = burst.metadata.swath_timing.burst_list.count as usize;
+        // Rows along azimuth, columns along range
+        let gcp_rows = num_bursts + 1;
+        assert!(gcps_len.is_multiple_of(gcp_rows));
+        let gcp_columns = gcps_len / gcp_rows;
+        let start = burst_index * gcp_columns;
+        let end = (burst_index + 2) * gcp_columns;
+
+        for point in &burst
+            .metadata
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point[start..end]
+        {
+            min_lat = min_lat.min(point.latitude);
+            max_lat = max_lat.max(point.latitude);
+            min_lon = min_lon.min(point.longitude);
+            max_lon = max_lon.max(point.longitude);
+        }
+    }
+    assert_ne!(min_lat, f64::MAX);
+    assert_ne!(max_lat, f64::MIN);
+    assert_ne!(min_lon, f64::MAX);
+    assert_ne!(max_lon, f64::MIN);
+    [
+        min_lat - OFFSET_LAT,
+        max_lat + OFFSET_LAT,
+        min_lon - OFFSET_LON,
+        max_lon + OFFSET_LON,
     ]
 }

@@ -102,8 +102,8 @@ use crate::{
     dem::DEM,
     geodesy::{geodetic_to_ecef, local_normal},
     metadata::annotation_xml::GeolocationGrid,
-    satellite_orbit::pixel_coords_to_radar_coords,
-    sentinel::Sentinel1SlcBurst,
+    satellite_orbit::{ContinuousOrbitalStateHistory, pixel_coords_to_radar_coords},
+    sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
 };
 
 /// Calculate the perpendicular baseline between two satellite positions, using a ground point.
@@ -153,8 +153,8 @@ pub fn perp_baseline(s_1: &Vector3<f64>, s_2: &Vector3<f64>, p: &Vector3<f64>) -
 }
 
 pub fn perp_baseline_from_pixel_index(
-    primary_burst: &Sentinel1SlcBurst,
-    secondary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcIWSwath,
+    secondary_burst: &Sentinel1SlcIWSwath,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -174,7 +174,7 @@ pub fn perp_baseline_from_pixel_index(
 
 /// Calculates the incidence angle theta
 pub fn theta_from_pixel_index(
-    primary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcIWSwath,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -291,8 +291,8 @@ pub struct FlatEarthComponentsInterpolator {
 
 impl FlatEarthComponentsInterpolator {
     pub fn from_grid_params(
-        primary_burst: &Sentinel1SlcBurst,
-        secondary_burst: &Sentinel1SlcBurst,
+        primary_burst: &Sentinel1SlcIWSwath,
+        secondary_burst: &Sentinel1SlcIWSwath,
         dem: &DEM,
         azimuth_samples: usize,
         slant_range_samples: usize,
@@ -450,8 +450,8 @@ impl FlatEarthComponentsInterpolator {
     ///
     /// A vector of `[f64; 3]`, where each value contains the computed `theta`, `bperp` and `r` values.
     fn compute_components_precisely(
-        primary_burst: &Sentinel1SlcBurst,
-        secondary_burst: &Sentinel1SlcBurst,
+        primary_burst: &Sentinel1SlcIWSwath,
+        secondary_burst: &Sentinel1SlcIWSwath,
         azimuth_index: f64,
         slant_range_index: f64,
         dem: &DEM,
@@ -500,8 +500,8 @@ impl FlatEarthComponentsInterpolator {
 }
 
 pub fn flat_earth_dphi(
-    primary_burst: &Sentinel1SlcBurst,
-    secondary_burst: &Sentinel1SlcBurst,
+    primary_burst: &Sentinel1SlcIWSwath,
+    secondary_burst: &Sentinel1SlcIWSwath,
     azimuth_index: f64,
     slant_range_index: f64,
     dem: &DEM,
@@ -587,10 +587,28 @@ impl HasPosition for WarpFunctionExactMapping {
 
 impl EnhancedDelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
-        let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.precise_orbital_state_history();
-        let sec_osh = secondary.precise_orbital_state_history();
+    pub fn new(
+        reference: &Sentinel1SlcIWBurst,
+        secondary: &Sentinel1SlcIWBurst,
+        dem: &DEM,
+    ) -> Self {
+        Self::with_orbits(
+            reference,
+            &reference.continuous_orbital_state_history(),
+            &secondary.continuous_orbital_state_history(),
+            dem,
+        )
+    }
+
+    /// Same as [`Self::new`], but with caller-provided orbits (e.g. precise POE orbits), so that the
+    /// warp function and any later geometric phase computation use the same trajectories.
+    pub fn with_orbits(
+        reference: &Sentinel1SlcIWBurst,
+        ref_osh: &ContinuousOrbitalStateHistory,
+        sec_osh: &ContinuousOrbitalStateHistory,
+        dem: &DEM,
+    ) -> Self {
+        let [slant_range_size, azimuth_size] = reference.burst_data.raster_size();
         let mut triangulation = WarpTriangulation::new();
         let mappings: Vec<_> = dem
             .lat_lon_iter()
@@ -690,9 +708,9 @@ impl EnhancedDelaunayWarpFunction {
     }
 }
 
-pub fn coregister_and_remove_flat_phase(
-    reference: &Sentinel1SlcBurst,
-    secondary: &Sentinel1SlcBurst,
+pub fn coregister_and_calculate_phase_diff(
+    reference: &Sentinel1SlcIWBurst,
+    secondary: &Sentinel1SlcIWBurst,
     dem: &DEM,
 ) -> Array2<f32> {
     log::info!("Computing warp function");
@@ -701,16 +719,95 @@ pub fn coregister_and_remove_flat_phase(
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
-    let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
     let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
     let kernel = KnabSincKernel::default();
-    let deramp = DerampSlcBurst::new();
 
     log::info!("Deramping reference and secondary images");
     let start_time = std::time::Instant::now();
-    let reference_img = deramp.apply_forward(reference);
-    let secondary_img = deramp.apply_forward(secondary);
+    let reference_img = DerampSlcBurst::process_burst(reference);
+    let secondary_img = DerampSlcBurst::process_burst(secondary);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    log::info!("Resampling secondary image to reference image via warp function");
+    let start_time = std::time::Instant::now();
+    const CHUNK_SIZE: usize = 256;
+    coregistered_secondary_img
+        .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+        .into_par_iter()
+        .enumerate()
+        .for_each_init(
+            || warp_function.triangulation.natural_neighbor(),
+            |nn, (chunk_idx, mut chunk)| {
+                let az_offset = chunk_idx * CHUNK_SIZE;
+
+                for (i, mut row) in chunk.outer_iter_mut().enumerate() {
+                    let ref_az = az_offset + i;
+
+                    for (ref_rg, value) in row.iter_mut().enumerate() {
+                        let ref_coords = [ref_az as f64, ref_rg as f64];
+                        let compute_mapped_coord = |dimension: usize| {
+                            nn.interpolate(
+                                |v| v.data().secondary_coords[dimension],
+                                ref_coords.into(),
+                            )
+                        };
+                        if let (Some(sec_az), Some(sec_rg)) =
+                            (compute_mapped_coord(0), compute_mapped_coord(1))
+                        {
+                            let v = interpolate_2d(
+                                secondary_img.view(),
+                                sec_az as f32,
+                                sec_rg as f32,
+                                &kernel,
+                            );
+                            *value = v;
+                        }
+                    }
+                }
+            },
+        );
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    log::info!("Calculating phase difference");
+    let start_time = std::time::Instant::now();
+    let mut phase_diff = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+    for i in 0..ref_azimuth_dim {
+        for j in 0..ref_slant_range_dim {
+            let s1 = reference_img[[i, j]];
+            let s2 = coregistered_secondary_img[[i, j]];
+            phase_diff[[i, j]] = (s1 * s2.conj()).arg();
+        }
+    }
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    phase_diff
+}
+
+pub fn coregister_and_remove_flat_phase(
+    reference: &Sentinel1SlcIWBurst,
+    secondary: &Sentinel1SlcIWBurst,
+    dem: &DEM,
+) -> Array2<f32> {
+    log::info!("Computing warp function");
+    let start_time = std::time::Instant::now();
+    let warp_function = EnhancedDelaunayWarpFunction::new(reference, secondary, dem);
+    let end_time = std::time::Instant::now();
+    log::info!("Time taken: {:?}", end_time - start_time);
+
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
+    let mut coregistered_secondary_img = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
+
+    let kernel = KnabSincKernel::default();
+
+    log::info!("Deramping reference and secondary images");
+    let start_time = std::time::Instant::now();
+    let reference_img = DerampSlcBurst::process_burst(reference);
+    let secondary_img = DerampSlcBurst::process_burst(secondary);
     let end_time = std::time::Instant::now();
     log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -869,12 +966,16 @@ pub fn coregister_and_remove_flat_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dem::CopernicusDemType;
+    use crate::{
+        datasets::opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
+        granule_id::IWSwath,
+    };
 
     #[test]
     #[ignore = "Needs to download external data"]
     fn get_bounding_box_lat_lon() {
-        let burst = Sentinel1SlcBurst::load_first_from_directory(
+        let burst = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         )
         .unwrap();
@@ -891,7 +992,10 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let dem = OpenTopographyDemDownloader::builder()
+            .build()
+            .fetch_dem(bounds, CopernicusDemType::Cop30)
+            .unwrap();
         println!("dem: {:?}", dem.corners_lat_lon());
     }
 }

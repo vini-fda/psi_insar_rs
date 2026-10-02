@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::PI;
+
     use nalgebra::{Matrix3, Unit, Vector3};
-    use ndarray::{Array1, Array2, ArrayView2, Axis, s};
+    use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2, Axis, s};
     use ndarray_npy::WriteNpyExt;
     use num_complex::{Complex, ComplexFloat};
     use rayon::prelude::*;
@@ -11,13 +13,18 @@ mod tests {
         constants::SENTINEL_1_WAVELENGTH,
         coregistration::{
             coarse_coregistration::{CoarseCoregistration, CoregistrationResult},
-            deramping::DerampSlcBurst,
+            deramping::{DerampSlcBurst, Direction},
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
-        dem::{CopernicusDemType, DEM},
-        download_orbit::CDSEOrbitDownloader,
+        datasets::{
+            asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+            cdse::orbit_download::CdseOrbitDownloader,
+            opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
+        },
+        dem::DEM,
         geodesy::{geodetic_to_ecef, local_normal},
-        interferometry::bounding_box_from_stack,
+        granule_id::IWSwath,
+        interferometry::{bounding_box_from_burst_stack, bounding_box_from_stack},
         metadata::annotation_xml::SlcProductAnnotation,
         perp_baseline::{
             EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
@@ -27,17 +34,37 @@ mod tests {
             ContinuousOrbitalStateHistory, OrbitalStateHistory, pixel_coords_to_radar_coords,
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
-        sentinel::Sentinel1SlcBurst,
+        sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
 
-    fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcBurst) {
+    /// The Copernicus DEM covering `bounds`, downloaded from OpenTopography on the first run
+    /// (requires OPENTOPOGRAPHY_API_KEY) and read from the cache afterwards.
+    fn fetch_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> DEM {
+        OpenTopographyDemDownloader::builder()
+            .build()
+            .fetch_dem(bounds, dem_type)
+            .unwrap_or_else(|err| {
+                panic!("Could not fetch the {dem_type} DEM for {bounds:?}: {err}")
+            })
+    }
+
+    fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
+        let name = &burst.granule_id.raw_filename;
+        let log_name = format!("slc_burst_amplitude_{name}");
+        let array = &burst.burst_data.array;
+        let (_, cols) = array.dim();
+        let img = rr_gamma_corrected_amplitude(&array.slice(s![.., 0..cols / 2]));
+        rr.log(log_name, &img).expect("Could not log SLC Image");
+    }
+
+    fn plot_sar_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWSwath) {
         let name = &burst.granule_id.raw_filename;
         let log_name = format!("slc_amplitude_{name}");
         let array = burst.data.array_f32();
-        let (_, cols) = array.dim();
+        let (rows, cols) = array.dim();
         let mut amplitude = array
-            .slice(s![.., 0..cols / 2])
+            .slice(s![0..rows / 2, 0..cols / 2])
             .map(|&v| v.abs())
             .to_owned();
         let max_amplitude = *amplitude
@@ -51,6 +78,17 @@ mod tests {
             .expect("Could not log SLC Image");
     }
 
+    fn plot_sar_phase(rr: &RecordingStream, burst: &Sentinel1SlcIWSwath) {
+        let name = &burst.granule_id.raw_filename;
+        let log_name = format!("slc_phase_{name}");
+        let array = burst.data.array_f32();
+        let (rows, cols) = array.dim();
+        let complex = array.slice(s![0..rows / 2, 0..cols / 2]).to_owned();
+        let img = rr_phase_from_complex(&complex);
+        rr.log_static(log_name, &img)
+            .expect("Could not log SLC Image Phase");
+    }
+
     fn rr_gamma_corrected_amplitude(slc_data: &ArrayView2<Complex<f32>>) -> rerun::Image {
         const GAMMA: f32 = 0.3;
         let abs = slc_data.map(|x| x.abs());
@@ -61,6 +99,28 @@ mod tests {
         let corrected = abs.mapv_into(|x| (x / max).powf(GAMMA));
         rerun::Image::from_color_model_and_tensor(rerun::ColorModel::L, corrected)
             .expect("Unable to create Rerun image")
+    }
+
+    fn rr_phase_from_complex(complex: &Array2<Complex<f32>>) -> rerun::Image {
+        let (rows, cols) = complex.dim();
+        let rgb_vector: Vec<u8> = complex
+            .as_slice_memory_order()
+            .unwrap()
+            .iter()
+            .flat_map(|&x| {
+                let phase = x.arg();
+                let remainder = phase.rem_euclid(std::f32::consts::TAU);
+                let normalized_phase = remainder / (std::f32::consts::TAU);
+                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+            })
+            .collect();
+
+        rerun::Image::from_color_model_and_bytes(
+            rgb_vector,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::RGB,
+            rerun::ChannelDatatype::U8,
+        )
     }
 
     fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
@@ -84,18 +144,45 @@ mod tests {
         )
     }
 
+    fn rr_stft_3d_tensor(
+        x: ArrayView2<Complex<f32>>,
+    ) -> Result<rerun::Tensor, Box<dyn std::error::Error>> {
+        let (az_dim, rg_dim) = x.dim();
+        let win_len = 64;
+        let hop = 32;
+        let nfft = 1024;
+        let n = az_dim;
+        let num_frames = (n - win_len) / hop + 1;
+        let step = 256;
+        let freq_bins = nfft;
+        let mut array_3d = Array3::<f32>::zeros((freq_bins, num_frames, ((rg_dim - 1) / step) + 1));
+        for (out_idx, range_idx) in (0..rg_dim).step_by(step).enumerate() {
+            let view = x.index_axis(Axis(1), range_idx);
+            let result = signed_spectrogram(view, win_len, hop, nfft);
+
+            array_3d.index_axis_mut(Axis(2), out_idx).assign(&result);
+        }
+        let tensor = rerun::Tensor::try_from(array_3d)
+            .expect("Could not open as tensor")
+            .with_dim_names(["Azimuth Frequency Bin", "Azimuth Time", "Range Index"]);
+
+        Ok(tensor)
+    }
+
     #[test]
     #[ignore]
     fn plot_slc_images() {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
         )
         .unwrap();
 
@@ -105,17 +192,20 @@ mod tests {
 
         plot_sar_amplitude(&rr, &primary);
         plot_sar_amplitude(&rr, &secondary);
+        plot_sar_phase(&rr, &primary);
     }
 
     #[test]
     #[ignore]
     fn compare_zero_doppler() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         )
         .unwrap();
@@ -189,7 +279,7 @@ mod tests {
             // "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
         .collect::<Vec<_>>();
         for burst in bursts {
             let annotation = &burst.metadata;
@@ -248,11 +338,13 @@ mod tests {
     #[ignore]
     fn test_orbit_speed() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
         )
         .unwrap();
@@ -327,7 +419,8 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -340,12 +433,12 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
         // Log reference sat position
@@ -383,7 +476,12 @@ mod tests {
             )
             .unwrap();
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, &secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::new(
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -480,7 +578,8 @@ mod tests {
     #[test]
     #[ignore]
     fn coarse_coregistration_stack() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
@@ -494,7 +593,7 @@ mod tests {
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
         .collect::<Vec<_>>();
         let rec = rerun::RecordingStreamBuilder::new("coarse_coregistration_stack")
             .connect_grpc()
@@ -580,18 +679,23 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resample_secondary_to_reference() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
 
+        let burst_index = 0;
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
-            &reference, &secondary, &dem,
+            &reference.burst(burst_index),
+            &secondary.burst(burst_index),
+            &dem,
         );
         // lets reduce the number of samples by 1/2 in the cols
         let (rows, cols) = resampled_data.dim();
@@ -801,12 +905,14 @@ mod tests {
     #[test]
     #[ignore]
     fn test_warp_function() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -827,8 +933,9 @@ mod tests {
     #[ignore]
     fn testfn_dem_radar_coords() {
         let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
@@ -917,11 +1024,277 @@ mod tests {
         )
         .expect("Could not log wireframe to Rerun");
     }
+
+    use rustfft::FftPlanner;
+    /// Compute a 1D magnitude spectrogram (short-time Fourier transform).
+    ///
+    /// # Arguments
+    /// - `x`: Input complex signal as a 1D view. If your signal is real, pass it as
+    ///   complex with `imag=0`.
+    /// - `win_len`: Window length (in samples).
+    /// - `hop`: Hop size (in samples) between successive frames.
+    /// - `nfft`: FFT size (>= `win_len`). Zero-padding is applied if `nfft > win_len`.
+    ///
+    /// # Returns
+    /// A 2D array of shape `(nfft/2 + 1, num_frames)` where:
+    /// - The first dimension is frequency bins from DC to Nyquist (inclusive).
+    /// - The second dimension is time frames.
+    ///
+    /// Magnitudes are **not** normalized by window power or `nfft`; adjust as needed
+    /// for your application (e.g., divide by `win_len` or convert to dB).
+    ///
+    /// # Panics
+    /// Panics if:
+    /// - `win_len == 0`
+    /// - `hop == 0`
+    /// - `nfft == 0`
+    /// - `win_len > nfft`
+    /// - `x.len() < win_len`
+    ///
+    /// # Example
+    /// ```ignore
+    /// let spec = spectrogram_1d(x.view(), 128, 32, 1024);
+    /// // spec.dim() == (513, num_frames)
+    /// ```
+    pub fn spectrogram_1d(
+        x: ArrayView1<Complex<f32>>,
+        win_len: usize,
+        hop: usize,
+        nfft: usize,
+    ) -> Array2<f32> {
+        assert!(win_len > 0, "win_len must be > 0");
+        assert!(hop > 0, "hop must be > 0");
+        assert!(nfft > 0, "nfft must be > 0");
+        assert!(win_len <= nfft, "win_len must be <= nfft");
+        assert!(
+            x.len() >= win_len,
+            "input length ({}) must be >= win_len ({})",
+            x.len(),
+            win_len
+        );
+
+        let n = x.len();
+
+        // Plan FFT once
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(nfft);
+
+        // Number of frames with last fully covered window
+        let num_frames = (n - win_len) / hop + 1;
+
+        // Hann (Hanning) window
+        let window = hanning(win_len);
+
+        // Output: (freq bins x time frames)
+        let mut spec = Array2::<f32>::zeros((nfft / 2 + 1, num_frames));
+
+        // Reusable FFT buffer
+        let mut buf = vec![Complex::new(0.0, 0.0); nfft];
+
+        for frame in 0..num_frames {
+            let start = frame * hop;
+
+            // Apply window to the current frame into the FFT buffer
+            for i in 0..win_len {
+                buf[i] = x[start + i] * window[i];
+            }
+            // Zero-pad the rest of the buffer if nfft > win_len
+            buf[win_len..nfft].fill(Complex::new(0.0, 0.0));
+
+            // In-place FFT
+            fft.process(&mut buf);
+
+            // Magnitude for positive frequencies (including Nyquist)
+            for k in 0..=nfft / 2 {
+                // |X[k]|
+                let mag = buf[k].norm();
+                spec[[k, frame]] = mag;
+            }
+        }
+
+        spec
+    }
+
+    /// STFT including negative frequencies
+    pub fn signed_spectrogram(
+        x: ArrayView1<Complex<f32>>,
+        win_len: usize,
+        hop: usize,
+        nfft: usize,
+    ) -> Array2<f32> {
+        assert!(win_len > 0, "win_len must be > 0");
+        assert!(hop > 0, "hop must be > 0");
+        assert!(nfft > 0, "nfft must be > 0");
+        assert!(win_len <= nfft, "win_len must be <= nfft");
+        assert!(
+            x.len() >= win_len,
+            "input length ({}) must be >= win_len ({})",
+            x.len(),
+            win_len
+        );
+
+        let n = x.len();
+
+        // Plan FFT once
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(nfft);
+
+        // Number of frames with last fully covered window
+        let num_frames = (n - win_len) / hop + 1;
+
+        // Hann (Hanning) window
+        let window = hanning(win_len);
+
+        // Output: (freq bins x time frames)
+        let mut spec = Array2::<f32>::zeros((nfft, num_frames));
+
+        // Reusable FFT buffer
+        let mut buf = vec![Complex::new(0.0, 0.0); nfft];
+
+        let positive_freqs = nfft / 2 + 1;
+        let negative_freqs = nfft - positive_freqs;
+        for frame in 0..num_frames {
+            let start = frame * hop;
+
+            // Apply window to the current frame into the FFT buffer
+            for i in 0..win_len {
+                buf[i] = x[start + i] * window[i];
+            }
+            // Zero-pad the rest of the buffer if nfft > win_len
+            buf[win_len..nfft].fill(Complex::new(0.0, 0.0));
+
+            // In-place FFT
+            fft.process(&mut buf);
+
+            // Magnitude for positive frequencies (including Nyquist)
+            for k in 0..positive_freqs {
+                // |X[k]| positive
+                spec[[k + negative_freqs, frame]] = buf[k].norm();
+            }
+            // Magnitude for negative frequencies
+            for k in 0..negative_freqs {
+                // |X[k]| negative
+                spec[[k, frame]] = buf[k + positive_freqs].norm();
+            }
+        }
+
+        spec
+    }
+
+    pub fn hanning(win_len: usize) -> Vec<f32> {
+        (0..win_len)
+            .map(|i| {
+                (std::f32::consts::PI * i as f32 / (win_len as f32 - 1.0))
+                    .sin()
+                    .powi(2)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore]
+    fn test_chirp_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+
+        let n = 17916;
+
+        let fs = 1024.0; // Sampling frequency (Hz)
+        let f0 = 10.0; // Start frequency (Hz)
+        let f1 = 512.0; // End frequency (Hz)
+
+        // Create a linear chirp: frequency increases linearly from f0 to f1
+        let x = Array1::<Complex<f32>>::from_shape_fn(n, |i| {
+            let t = i as f32 / fs;
+            let k = (f1 - f0) / (n as f32 / fs); // Chirp rate
+            let phase = 2.0 * PI * (f0 * t + 0.5 * k * t * t);
+            Complex::<f32>::new(phase.cos(), phase.sin())
+        });
+        log::info!("n = {n}");
+        let rr = rerun::RecordingStreamBuilder::new("stft_chirp_spectrum_visualization")
+            .connect_grpc()?;
+        let win_len = 64;
+        let hop = 16;
+        let nfft = 1024;
+        let amplitude_spectrum = spectrogram_1d(x.view(), win_len, hop, nfft);
+        let tensor = rerun::Tensor::try_from(amplitude_spectrum)
+            .expect("Could not open as tensor")
+            .with_dim_names(["Azimuth Frequency Bin", "Azimuth time"]);
+        rr.log("amplitude_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_deramp_function_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let metadata = &reference.metadata;
+        let deramp = DerampSlcBurst::new(metadata, 0);
+        let image = deramp.debug_array();
+        // ---------------------------------------------------
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let rr = rerun::RecordingStreamBuilder::new("stft_deramp_visualization").connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
+        rr.log("amplitude_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_slc_burst_spectrum_deramping_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let burst_index = 0;
+        let image = reference.burst(burst_index).burst_data.array; //reference.data.array_f32();
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let rr = rerun::RecordingStreamBuilder::new("slc_burst_spectrum_deramping_visualization")
+            .connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
+        rr.log("original_spectrum", &tensor)?;
+        let deramped = DerampSlcBurst::process_burst(&reference.burst(burst_index));
+        let tensor = rr_stft_3d_tensor(deramped.view())?;
+        rr.log("deramped_spectrum", &tensor)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_slc_swath_spectrum_deramping_visualization() -> Result<(), Box<dyn std::error::Error>> {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let image = reference.data.array_f32();
+        let (rows, cols) = image.dim();
+        log::info!("rows = {rows}, cols = {cols}");
+        let rr = rerun::RecordingStreamBuilder::new("slc_swath_spectrum_deramping_visualization")
+            .connect_grpc()?;
+        let tensor = rr_stft_3d_tensor(image.view())?;
+        rr.log("original_spectrum", &tensor)?;
+        let deramped = DerampSlcBurst::process_swath(&reference);
+        let tensor = rr_stft_3d_tensor(deramped.view())?;
+        rr.log("deramped_spectrum", &tensor)?;
+        Ok(())
+    }
+
     #[test]
     #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
 
@@ -986,8 +1359,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
 
@@ -1021,22 +1395,27 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resampled_phase_difference() {
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
 
         // Secondary resampled to reference (also deramped)
+        let burst_index = 0;
         let resampled_sec_data =
             crate::coregistration::warp_function::resample_secondary_to_reference(
-                &reference, &secondary, &dem,
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
             );
-        let ref_deramp = DerampSlcBurst::new().apply_forward(&reference);
+        let ref_deramp = DerampSlcBurst::process_burst(&reference.burst(burst_index));
 
         // cut cols by half in both images
         let (rows, cols) = resampled_sec_data.dim();
@@ -1080,26 +1459,56 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
+        // The same IW3/VV burst of each acquisition. Bursts are downloaded from ASF on the first
+        // run (requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD) and read from the user cache
+        // directory afterwards (see `default_cache_dir`).
+        let downloader = AsfBurstDownloader::builder().build();
+        let load_burst = |granule: &str, burst_index: u32| {
+            let burst = BurstRequest::new(granule, IWSwath::IW3, Polarization::VV, burst_index);
+            let safe_dir = downloader
+                .fetch_burst(&burst)
+                .unwrap_or_else(|err| panic!("Could not fetch {burst:?}: {err:?}"));
+            Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, safe_dir).unwrap()
+        };
+        let reference = load_burst(
+            "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
+            2,
+        );
         let secondaries = [
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            (
+                "S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93",
+                2,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956",
+                4,
+            ),
+            (
+                "S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF",
+                4,
+            ),
         ]
-        .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
-        .collect::<Vec<_>>();
+        .map(|(granule, burst_index)| load_burst(granule, burst_index));
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
+        // Precise orbits are used both for the warp function and for the geometric phase, so both
+        // steps share the same trajectories and time reference.
+        let osh_1 = reference.precise_orbital_state_history();
 
         for (id, secondary) in secondaries.iter().enumerate() {
             rr.set_time_sequence("secondary_id", id as i64);
@@ -1111,9 +1520,17 @@ mod tests {
                 delta_time.num_days()
             );
 
+            let osh_2 = secondary.precise_orbital_state_history();
+
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::with_orbits(
+                &reference.burst(burst_index),
+                &osh_1,
+                &osh_2,
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -1125,12 +1542,20 @@ mod tests {
                 Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
             let kernel = KnabSincKernel::default();
-            let deramp = DerampSlcBurst::new();
 
-            log::info!("Deramping reference and secondary images");
+            log::info!("Deramping secondary image");
             let start_time = std::time::Instant::now();
-            let reference_img = deramp.apply_forward(&reference);
-            let secondary_img = deramp.apply_forward(secondary);
+            // TODO: remove burst_index
+            let burst_index = 0;
+            // Only the secondary is resampled, so only the secondary is deramped. After resampling,
+            // it is reramped at the secondary coordinates, which exactly undoes the deramp phase
+            // (standard SNAP/ISCE/GAMMA workflow). The reference stays raw.
+            // NOTE: warp coordinates are relative to the first line of the product, which only
+            // coincides with the burst's first line for burst 0.
+            let reference_img = reference.burst(burst_index).burst_data.array;
+            let secondary_img = DerampSlcBurst::process_burst(&secondary.burst(burst_index));
+            let secondary_reramp = DerampSlcBurst::new(&secondary.metadata, burst_index)
+                .direction(Direction::Backward);
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
@@ -1166,7 +1591,13 @@ mod tests {
                                         sec_rg as f32,
                                         &kernel,
                                     );
-                                    *value = v;
+                                    let reramp_phase =
+                                        secondary_reramp.phi_at_pixel(sec_az, sec_rg);
+                                    let reramp = Complex::new(
+                                        reramp_phase.cos() as f32,
+                                        reramp_phase.sin() as f32,
+                                    );
+                                    *value = v * reramp;
                                 }
                             }
                         }
@@ -1175,10 +1606,6 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            let osh_1 = reference.precise_orbital_state_history();
-            let annotation_1 = &reference.metadata;
-            let osh_2 = secondary.precise_orbital_state_history();
-            let annotation_2 = &secondary.metadata;
             let mut phase_diff =
                 Array2::from_shape_fn((ref_azimuth_dim, ref_slant_range_dim / 2), |(i, j)| {
                     let s1 = reference_img[[i, j]];
@@ -1191,14 +1618,6 @@ mod tests {
 
             log::info!("Removing topographic phase");
             let start_time = std::time::Instant::now();
-            let azimuth_time_interval_1 = annotation_1
-                .image_annotation
-                .image_information
-                .azimuth_time_interval;
-            let azimuth_time_interval_2 = annotation_2
-                .image_annotation
-                .image_information
-                .azimuth_time_interval;
             phase_diff
                 .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
                 .into_par_iter()
@@ -1217,6 +1636,10 @@ mod tests {
                                     |v| v.data().secondary_coords[0],
                                     ref_coords.into(),
                                 );
+                                let sec_rg = nn.interpolate(
+                                    |v| v.data().secondary_coords[1],
+                                    ref_coords.into(),
+                                );
 
                                 // Now compute the ground target position
                                 let ground_target_lat =
@@ -1226,12 +1649,14 @@ mod tests {
 
                                 // if any are None, skip
                                 if sec_az.is_none()
+                                    || sec_rg.is_none()
                                     || ground_target_lat.is_none()
                                     || ground_target_lon.is_none()
                                 {
                                     continue;
                                 }
                                 let sec_az = sec_az.unwrap();
+                                let sec_rg = sec_rg.unwrap();
                                 let ground_target_lat = ground_target_lat.unwrap();
                                 let ground_target_lon = ground_target_lon.unwrap();
 
@@ -1239,8 +1664,10 @@ mod tests {
                                     dem.get_ecef_at_lat_lon(ground_target_lat, ground_target_lon),
                                 );
 
-                                let zero_doppler_1 = ref_az as f64 * azimuth_time_interval_1;
-                                let zero_doppler_2 = sec_az * azimuth_time_interval_2;
+                                let zero_doppler_1 =
+                                    osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                                let zero_doppler_2 =
+                                    osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
                                 let s_1 = osh_1.interp_pos(zero_doppler_1);
                                 let s_2 = osh_2.interp_pos(zero_doppler_2);
 
@@ -1250,7 +1677,8 @@ mod tests {
                                 let delta_phi =
                                     4.0 * std::f64::consts::PI * (r1 - r2) / SENTINEL_1_WAVELENGTH;
 
-                                *phase += delta_phi as f32;
+                                // Wrap in f64 first: delta_phi can be ~1e4 rad, where f32 loses precision.
+                                *phase += delta_phi.rem_euclid(std::f64::consts::TAU) as f32;
                             }
                         }
                     },
@@ -1271,25 +1699,26 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("topo_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
         let secondaries = [
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "download/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302.SAFE",
+            "download/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956.SAFE",
+            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
         ]
         .iter()
-        .map(|name| Sentinel1SlcBurst::load_first_from_directory(name).unwrap())
+        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         let start_time_ref = reference.metadata.ads_header.start_time;
 
         for (id, secondary) in secondaries.iter().enumerate() {
@@ -1304,7 +1733,12 @@ mod tests {
 
             log::info!("Computing warp function");
             let start_time = std::time::Instant::now();
-            let warp_function = EnhancedDelaunayWarpFunction::new(&reference, secondary, &dem);
+            let burst_index = 0;
+            let warp_function = EnhancedDelaunayWarpFunction::new(
+                &reference.burst(burst_index),
+                &secondary.burst(burst_index),
+                &dem,
+            );
             let end_time = std::time::Instant::now();
             log::info!(
                 "Time taken to compute warp function: {:?}",
@@ -1498,24 +1932,26 @@ mod tests {
     fn warp_fn_offsets_histogram() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_histogram test.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop30);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram
         log::info!("Building (dx, dy) offset values for histogram");
         let [slant_range_size, azimuth_size] = reference.data.raster_size();
-        let ref_osh = reference.precise_orbital_state_history();
-        let sec_osh = secondary.precise_orbital_state_history();
+        let ref_osh = reference.continuous_orbital_state_history();
+        let sec_osh = secondary.continuous_orbital_state_history();
 
         let n = dem.len();
         let mut delta_azimuth_coords = Vec::with_capacity(n);
@@ -1560,21 +1996,23 @@ mod tests {
     fn orbital_path_coregistration() {
         env_logger::init();
         log::info!("Starting orbital_path_coregistration test.");
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let bounding_box = bounding_box_from_stack([&primary, &secondary]);
         log::info!("Downloading DEM");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
-        let ref_osh = &primary.precise_orbital_state_history();
-        let sec_osh = &secondary.precise_orbital_state_history();
+        let ref_osh = &primary.continuous_orbital_state_history();
+        let sec_osh = &secondary.continuous_orbital_state_history();
 
         let lat0 = 19.57468_f64;
         let lon0 = -99.08250_f64;
@@ -1638,7 +2076,7 @@ mod tests {
 
         for (burst_id, burst) in bursts.iter().enumerate() {
             let mut sat_pos = vec![];
-            let osh = burst.precise_orbital_state_history();
+            let osh = burst.continuous_orbital_state_history();
             // let start_time = burst.metadata.ads_header.start_time;
             let end_time = osh.time.last().unwrap();
             let n = 100;
@@ -1749,17 +2187,19 @@ mod tests {
     fn warp_fn_offsets_mesh() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_mesh test.");
-        let reference = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
-        let dem = DEM::download_dem(bounding_box, CopernicusDemType::Cop90);
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
         log::info!("DEM succesfully downloaded!");
 
         // Build (dx, dy) offset values for histogram
@@ -1789,13 +2229,13 @@ mod tests {
             for j in 0..cols {
                 let [lat, lon] = dem.get_lat_lon_at_pixel(i * FACTOR_ROWS, j * FACTOR_COLS);
                 let pos = dem.get_ecef_at_lat_lon(lat, lon);
-                let rc_ref = ref_osh.find_zero_doppler_state_newton_raphson(pos.into());
-                let rc_sec = sec_osh.find_zero_doppler_state_newton_raphson(pos.into());
+                let rc_ref = ref_osh.find_zero_doppler_state(pos.into());
+                let rc_sec = sec_osh.find_zero_doppler_state(pos.into());
 
                 if (rc_ref[0] >= 0.0 && rc_ref[0] < azimuth_size as f64)
                     && (rc_ref[1] >= 0.0 && rc_ref[1] < slant_range_size as f64)
                 {
-                    delta_azimuth_coords.push((rc_sec[0] - rc_ref[0]) as f32);
+                    delta_azimuth_coords.push((rc_sec[0] * 1.00001 - rc_ref[0]) as f32);
                     delta_slant_range_coords.push((rc_sec[1] - rc_ref[1]) as f32);
                 } else {
                     delta_azimuth_coords.push(f32::NAN);
@@ -1843,12 +2283,14 @@ mod tests {
     #[test]
     #[ignore]
     fn test_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -1890,12 +2332,14 @@ mod tests {
     #[test]
     #[ignore]
     fn test_interpolated_flat_earth_dphi() {
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
+            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
         )
         .unwrap();
         let dem = DEM::open_file("dem.tif");
@@ -1943,37 +2387,33 @@ mod tests {
     #[ignore]
     fn test_interpolated_flat_earth_removal() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
         )
         .unwrap();
-        let [min_lat, max_lat, min_lon, max_lon] = &primary
-            .metadata
-            .geolocation_grid
-            .geolocation_grid_point_list
-            .get_bounding_box_lat_lon();
-        let offset_lat = 0.05;
-        let offset_lon = 0.05;
-        let bounds = [
-            min_lat - offset_lat,
-            max_lat + offset_lat,
-            min_lon - offset_lon,
-            max_lon + offset_lon,
-        ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
+        let primary_burst_count = primary.metadata.swath_timing.burst_list.bursts.len();
+        log::info!("Primary burst count: {}", primary_burst_count);
+        let secondary_burst_count = secondary.metadata.swath_timing.burst_list.bursts.len();
+        log::info!("Secondary burst count: {}", secondary_burst_count);
+        // let burst_index = std::cmp::min(primary_burst_count, secondary_burst_count) - 1;
+        let burst_index = 0;
+
+        let primary = primary.burst(burst_index);
+        let secondary = secondary.burst(burst_index);
+        let bounds = bounding_box_from_burst_stack([&primary, &secondary]);
+        let dem = fetch_dem(bounds, CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_removal")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let wrap_phase = |phase: f32| {
-            phase - 2.0 * std::f32::consts::PI * (phase / (2.0 * std::f32::consts::PI)).floor()
-        };
+
         let phase =
-            crate::perp_baseline::coregister_and_remove_flat_phase(&primary, &secondary, &dem)
-                .map(|phase| wrap_phase(*phase));
+            crate::perp_baseline::coregister_and_remove_flat_phase(&primary, &secondary, &dem);
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();
@@ -1997,11 +2437,13 @@ mod tests {
     #[ignore]
     fn plot_warp_fn() {
         env_logger::init();
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
         )
         .unwrap();
-        let secondary = Sentinel1SlcBurst::load_first_from_directory(
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW3,
             "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
         )
         .unwrap();
@@ -2018,8 +2460,13 @@ mod tests {
             min_lon - offset_lon,
             max_lon + offset_lon,
         ];
-        let dem = DEM::download_dem(bounds, CopernicusDemType::Cop30);
-        let warp_fn = EnhancedDelaunayWarpFunction::new(&primary, &secondary, &dem);
+        let dem = fetch_dem(bounds, CopernicusDemType::Cop30);
+        let burst_index = 0;
+        let warp_fn = EnhancedDelaunayWarpFunction::new(
+            &primary.burst(burst_index),
+            &secondary.burst(burst_index),
+            &dem,
+        );
         let [ref_slant_range_dim, ref_azimuth_dim] = primary.data.raster_size();
         let mut offsets = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim / 2));
         const CHUNK_SIZE: usize = 256;
@@ -2287,14 +2734,22 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("compare_poe_with_metadata")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let primary = Sentinel1SlcBurst::load_first_from_directory(
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
         )
         .unwrap();
         let mission = primary.metadata.ads_header.mission_id;
         let start = primary.metadata.ads_header.start_time;
         let end = primary.metadata.ads_header.stop_time;
-        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        let poe_orbit = CdseOrbitDownloader::builder()
+            .build()
+            .fetch_poe_orbit(mission, start, end)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Could not fetch the precise orbit of {mission} from {start} to {end}: {err}"
+                )
+            });
         // save poe_orbit to file
         let poe_orbit_path = format!("poe_orbit_{mission}.xml");
         let poe_orbit_xml = quick_xml::se::to_string(&poe_orbit).unwrap();
@@ -2379,5 +2834,129 @@ mod tests {
 
             t += dt;
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn plot_full_slc_images() {
+        //Records logged during cargo test will not be captured by the test harness by default.
+        // The Builder::is_test method can be used in unit tests to ensure logs will be captured
+        env_logger::init();
+        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
+        )
+        .unwrap();
+
+        let rr = rerun::RecordingStreamBuilder::new("plot_full_slc_images")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+
+        println!("Primary dim = {:?}", primary.data.raster_size());
+        println!("Secondary dim = {:?}", secondary.data.raster_size());
+
+        for burst_index in 0..9 {
+            rr.set_time_sequence("burst_index", burst_index as i64);
+            plot_burst_amplitude(&rr, &primary.burst(burst_index));
+            plot_burst_amplitude(&rr, &secondary.burst(burst_index));
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_full_slc_resample_secondary_to_reference() {
+        env_logger::init();
+        log::info!("Test started!");
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        log::info!("Loaded reference image");
+        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160420T091355_20160420T091423_010903_010569_F9CE.SAFE",
+        )
+        .unwrap();
+        log::info!("Loaded secondary image");
+        // -- Choose burst --
+        let burst_index = 0;
+        let reference = reference.burst(burst_index);
+        let secondary = secondary.burst(burst_index);
+        let bounding_box = bounding_box_from_burst_stack([&reference, &secondary]);
+
+        log::info!("Downloading DEM {bounding_box:?}");
+        let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
+        log::info!("Finished downloading DEM");
+
+        let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
+            &reference, &secondary, &dem,
+        );
+
+        // -- Rerun logger --
+        let rr =
+            rerun::RecordingStreamBuilder::new("test_full_slc_resample_secondary_to_reference")
+                .connect_grpc()
+                .expect("Could not connect to local Rerun instance.");
+        // -- Let's reduce the number of samples --
+        let (_, cols) = resampled_data.dim();
+        let resampled_data = resampled_data.slice(s![.., 0..cols / 2]).to_owned();
+        // Log amplitude for resampled data
+        let rr_resampled_amplitude = rr_gamma_corrected_amplitude(&resampled_data.view());
+        rr.log("resampled_amplitude", &rr_resampled_amplitude)
+            .expect("Could not log resampled_amplitude to Rerun");
+
+        // Log phase for resampled data
+        let rr_resampled_phase = rr_phase_from_complex(&resampled_data);
+        rr.log("resampled_phase", &rr_resampled_phase)
+            .expect("Could not log resampled_phase to Rerun");
+
+        // -- Let's reduce the number of samples --
+        let ref_array = reference.burst_data.array;
+        let (_, cols) = ref_array.dim();
+        let ref_array = ref_array.slice(s![.., 0..cols / 2]).to_owned();
+        // Log the reference image amplitude
+        let rr_ref_amplitude = rr_gamma_corrected_amplitude(&ref_array.view());
+        rr.log("reference_amplitude", &rr_ref_amplitude)
+            .expect("Could not log reference_amplitude to Rerun");
+
+        // Log phase for reference data
+        let rr_ref_phase = rr_phase_from_complex(&ref_array);
+        rr.log("reference_phase", &rr_ref_phase)
+            .expect("Could not log reference_phase to Rerun");
+    }
+
+    #[test]
+    #[ignore]
+    fn log_full_gcps() {
+        env_logger::init();
+        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
+            IWSwath::IW1,
+            "download_full_slc/S1A_IW_SLC__1SSV_20160408T091355_20160408T091430_010728_01001F_83EB.SAFE",
+        )
+        .unwrap();
+        let annotation = reference.metadata;
+        let gcps = &annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .geolocation_grid_point;
+        // GCPs on the map
+        let gcps_lat_lon = gcps
+            .iter()
+            .map(|gcp| [gcp.latitude, gcp.longitude])
+            .collect::<Vec<_>>();
+        let rr = rerun::RecordingStreamBuilder::new("log_full_gcps")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        rr.log_static(
+            "GCPs Lat Lon",
+            &rerun::GeoPoints::from_lat_lon(&gcps_lat_lon),
+        )
+        .unwrap();
     }
 }

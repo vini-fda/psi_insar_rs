@@ -1,6 +1,6 @@
 /// Turbo colormap (polynomial approximation)
-/// Reference: https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html
-/// Original LUT: https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f
+/// Reference: <https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html>
+/// Original LUT: <https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f>
 /// Authors: Anton Mikhailov (mikhailov@google.com), Ruofei Du (ruofei@google.com)
 pub fn turbo_colormap(x: f32) -> [f32; 3] {
     // Coefficients for the polynomial approximation
@@ -106,8 +106,8 @@ pub fn cubehelix_colormap(x: f32) -> [f32; 3] {
         [100.0 / 255.0, 70.0 / 255.0, 190.0 / 255.0], // color7
     ];
 
-    // Clamp input to [0, 1]
-    let x = x.clamp(0.0, 1.0);
+    // Wrap input to [0, 1]
+    let x = x.rem_euclid(1.0);
 
     // Scale x to [0, 7] to match our 8 color points
     let x_scaled = x * 7.0;

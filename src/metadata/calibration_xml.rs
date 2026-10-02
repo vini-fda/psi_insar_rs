@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::AdsHeader;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Calibration {
     #[serde(rename = "adsHeader")]
     pub ads_header: AdsHeader,
@@ -12,13 +12,13 @@ pub struct Calibration {
     pub calibration_vector_list: CalibrationVectorList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CalibrationInformation {
     #[serde(rename = "absoluteCalibrationConstant")]
     pub absolute_calibration_constant: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CalibrationVectorList {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -26,7 +26,7 @@ pub struct CalibrationVectorList {
     pub calibration_vectors: Vec<CalibrationVector>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CalibrationVector {
     #[serde(rename = "azimuthTime")]
     pub azimuth_time: String,
@@ -41,7 +41,7 @@ pub struct CalibrationVector {
 }
 
 /// Represents a list of pixel indices along a range line.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Pixel {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -55,7 +55,7 @@ pub struct Pixel {
 
 /// Represents the sigma nought (σ⁰) calibration values.
 /// These values are space-separated floats.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SigmaNought {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -69,7 +69,7 @@ pub struct SigmaNought {
 
 /// Represents the beta nought (β⁰) calibration values.
 /// These values are space-separated floats.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BetaNought {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -83,7 +83,7 @@ pub struct BetaNought {
 
 /// Represents the gamma (γ) calibration values.
 /// These values are space-separated floats.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Gamma {
     #[serde(rename = "@count")]
     pub count: u32,
@@ -97,7 +97,7 @@ pub struct Gamma {
 
 /// Represents the Digital Number (DN) calibration values.
 /// The values are space-separated integers.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Dn {
     #[serde(rename = "@count")]
     pub count: u32,

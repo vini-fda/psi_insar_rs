@@ -15,53 +15,7 @@ pub struct DEM {
     height: Vec<f32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopernicusDemType {
-    Cop30,
-    Cop90,
-}
-
-impl std::fmt::Display for CopernicusDemType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CopernicusDemType::Cop30 => write!(f, "COP30"),
-            CopernicusDemType::Cop90 => write!(f, "COP90"),
-        }
-    }
-}
-
 impl DEM {
-    /// Download a DEM from the OpenTopography API.
-    ///
-    /// # Arguments
-    ///
-    /// - `bounds` [min_lat, max_lat, min_lon, max_lon] - The bounding box of the DEM.
-    /// - `dem_type` - The type of DEM to download.
-    ///
-    /// # Returns
-    ///
-    /// - A new [`DEM`].
-    ///
-    pub fn download_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> Self {
-        let [min_lat, max_lat, min_lon, max_lon] = bounds;
-        let api_key =
-            std::env::var("OPENTOPOGRAPHY_API_KEY").expect("OPENTOPOGRAPHY_API_KEY not set");
-        let url = format!(
-            "https://portal.opentopography.org/API/globaldem?demtype={dem_type}&south={min_lat}&north={max_lat}&west={min_lon}&east={max_lon}&outputFormat=GTiff&API_Key={api_key}"
-        );
-        let response = ureq::get(url).call().expect("Failed to download DEM");
-        if response.status() == 200 {
-            let body = response.into_body();
-            let mut reader = body.into_reader();
-            let file_path = std::env::temp_dir().join(format!("dem_{dem_type}.tif"));
-            let mut dem_file = std::fs::File::create(file_path.clone()).unwrap();
-            std::io::copy(&mut reader, &mut dem_file).unwrap();
-            Self::open_file(file_path)
-        } else {
-            panic!("Failed to download DEM");
-        }
-    }
-
     pub fn rows(&self) -> usize {
         self.rows
     }
@@ -150,10 +104,19 @@ impl DEM {
         self.get_value_at_index(index)
     }
 
-    /// Gets the height value at the coordinates (lat, lon)
+    /// Gets the height value at the coordinates (lat, lon), bilinearly interpolated between the
+    /// four surrounding DEM posts (clamped at the raster edges).
     pub fn get_height_at_lat_lon(&self, lat: f64, lon: f64) -> f32 {
-        let [row, col] = self.get_pixel_at_lat_lon(lat, lon);
-        self.get_value_at_pixel(row, col)
+        let igt = self.inv_geo_transform;
+        let col = (lon * igt[0] + igt[1]).clamp(0.0, (self.cols - 1) as f64);
+        let row = (lat * igt[2] + igt[3]).clamp(0.0, (self.rows - 1) as f64);
+        let (r0, c0) = (row.floor() as usize, col.floor() as usize);
+        let (r1, c1) = ((r0 + 1).min(self.rows - 1), (c0 + 1).min(self.cols - 1));
+        let (fr, fc) = (row - r0 as f64, col - c0 as f64);
+        let h = |r, c| self.get_value_at_pixel(r, c) as f64;
+        let top = h(r0, c0) * (1.0 - fc) + h(r0, c1) * fc;
+        let bottom = h(r1, c0) * (1.0 - fc) + h(r1, c1) * fc;
+        (top * (1.0 - fr) + bottom * fr) as f32
     }
 
     /// Gets the Earth-Centered Earth-Fixed (ECEF) cartesian coordinates of the pixel (row, col)
@@ -282,7 +245,7 @@ impl DEM {
     /// Gets the corresponding triangle indices in the 3D Mesh.
     /// Useful to build a 3D Mesh of the DEM.
     ///
-    /// See also [`vertex_positions`]
+    /// See also [`vertex_positions`](Self::vertex_positions)
     pub fn triangle_indices(&self) -> Vec<[u32; 3]> {
         let rows = self.rows;
         let cols = self.cols;
@@ -402,18 +365,24 @@ impl Iterator for IndexedLatLonHeightIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    #[ignore = "Needs to download external data"]
-    fn simple_test() {
-        let bounds = [
-            19.28241180526043,
-            19.67909634636101,
-            -99.4141148418833,
-            -98.53735764573854,
-        ];
-        let dem_type = CopernicusDemType::Cop90;
-        let dem = DEM::download_dem(bounds, dem_type);
-        println!("transform = {:?}", dem.geo_transform);
-        println!("inv transform = {:?}", dem.inv_geo_transform);
+    fn height_is_bilinearly_interpolated() {
+        // lon = col, lat = -row
+        let dem = DEM {
+            geo_transform: [1.0, 0.0, -1.0, 0.0],
+            inv_geo_transform: [1.0, 0.0, -1.0, 0.0],
+            rows: 2,
+            cols: 2,
+            height: vec![0.0, 10.0, 20.0, 30.0],
+        };
+        // Grid posts are returned exactly
+        assert_eq!(dem.get_height_at_lat_lon(0.0, 1.0), 10.0);
+        assert_eq!(dem.get_height_at_lat_lon(-1.0, 0.0), 20.0);
+        // In-between values are interpolated
+        assert_eq!(dem.get_height_at_lat_lon(0.0, 0.5), 5.0);
+        assert_eq!(dem.get_height_at_lat_lon(-0.5, 0.5), 15.0);
+        // Outside the raster, values are clamped to the edge
+        assert_eq!(dem.get_height_at_lat_lon(1.0, 5.0), 10.0);
     }
 }

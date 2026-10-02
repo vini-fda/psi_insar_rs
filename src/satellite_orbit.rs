@@ -55,10 +55,22 @@ impl OrbitalStateHistory {
         let mut position = Vec::with_capacity(n);
         let mut velocity = Vec::with_capacity(n);
 
-        for osv in &osvs[first_index..=last_index] {
+        for (i, osv) in osvs[first_index..=last_index].iter().enumerate() {
             time.push(osv.utc);
             position.push([osv.x, osv.y, osv.z].into());
             velocity.push([osv.vx, osv.vy, osv.vz].into());
+            if osv.x.is_nan() || osv.y.is_nan() || osv.z.is_nan() {
+                panic!(
+                    "NaN position value(s) encountered at index {i}: {:?}",
+                    [osv.x, osv.y, osv.z]
+                );
+            }
+            if osv.vx.is_nan() || osv.vy.is_nan() || osv.vz.is_nan() {
+                panic!(
+                    "NaN velocity value(s) encountered at index {i}: {:?}",
+                    [osv.vx, osv.vy, osv.vz]
+                );
+            }
         }
         Self {
             time,
@@ -389,8 +401,27 @@ impl ContinuousOrbitalStateHistory {
         end_time: DateTime<Utc>,
         annotation: &SlcProductAnnotation,
     ) -> Self {
-        let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
+        // Keep a margin of state vectors around the acquisition, so that zero-Doppler searches for
+        // DEM points outside the product's time span still bracket a solution.
+        let margin = TimeDelta::seconds(60);
+        let osh =
+            OrbitalStateHistory::from_poe_timeframe(eef, start_time - margin, end_time + margin);
         Self::from_osh(&osh, start_time, annotation)
+    }
+
+    /// Inverse of the pixel mapping in [`Self::find_zero_doppler_state`]: returns the zero-Doppler
+    /// time (seconds since start) of a pixel, removing the bistatic shift (R/c) that is baked
+    /// into the azimuth index.
+    pub fn pixel_to_zero_doppler_time(&self, azimuth_index: f64, slant_range_index: f64) -> f64 {
+        let slant_range = self.near_edge_slant_range + slant_range_index * self.range_spacing;
+        azimuth_index * self.azimuth_time_interval - slant_range / C_LIGHT
+    }
+
+    /// Calculate `p(t)` and `v(t)` at `t = time[i]`
+    pub fn pos_vel(&self, i: usize) -> (Vector3<f64>, Vector3<f64>) {
+        let pos: &[Vector3<f64>] = self.position.as_slice();
+        let vel: &[Vector3<f64>] = self.velocity.as_slice();
+        (pos[i], vel[i])
     }
 
     /// Interpolate p(t) and v(t)
@@ -522,6 +553,12 @@ impl ContinuousOrbitalStateHistory {
         let time = self.time.as_slice();
         assert!(time.len() >= 2);
 
+        let f_indexed = |t_index: usize| {
+            let (sat_pos, sat_vel) = self.pos_vel(t_index);
+            let normalized_displacement = (ground_target_pos - sat_pos).normalize();
+            sat_vel.normalize().dot(&normalized_displacement)
+        };
+
         let f = |t: f64| {
             let (sat_pos, sat_vel) = self.interp_pos_vel(t);
             let normalized_displacement = (ground_target_pos - sat_pos).normalize();
@@ -534,8 +571,11 @@ impl ContinuousOrbitalStateHistory {
         'outer: for i in 0..time.len() - 1 {
             let t0 = time[i];
             let t1 = time[i + 1];
-            let f0 = f(t0);
-            let f1 = f(t1);
+            let f0 = f_indexed(i);
+            let f1 = f_indexed(i + 1);
+            // if f0 * f1 <= 0.0 {
+            //     return [i as f64, i as f64];
+            // }
 
             if f0 * f1 <= 0.0 {
                 // Step 2: Narrow down using bisection over time
@@ -565,9 +605,21 @@ impl ContinuousOrbitalStateHistory {
             }
         }
 
-        if distance_to_target.is_nan() || delta_time_secs.is_nan() {
-            panic!("NaN found in bisection");
+        if distance_to_target.is_nan() {
+            //panic!("NaN found in bisection: distance to target is NaN");
+            return [0.0, 0.0];
         }
+
+        if delta_time_secs.is_nan() {
+            // panic!("NaN found in bisection: delta time (seconds) is NaN");
+            return [0.0, 0.0];
+        }
+
+        // Bistatic correction
+        // See: https://github.com/senbox-org/microwave-toolbox/blob/254aa8f5de2cfe65138a8b7edf9d596eb3ba03c1/sar-op-sar-processing/src/main/java/eu/esa/sar/sar/gpf/geometric/RangeDopplerGeocodingOp.java#L1500
+        delta_time_secs += distance_to_target / C_LIGHT;
+        let sat_pos = self.interp_pos(delta_time_secs);
+        distance_to_target = (ground_target_pos - sat_pos).norm();
 
         // Calculation using azimuth_time_interval (similar to linear interp)
         // This is what the official SNAP microwave toolbox performs:
@@ -602,6 +654,11 @@ impl ContinuousOrbitalStateHistory {
             let t1 = time[i + 1];
             let f0 = f(t0);
             let f1 = f(t1);
+
+            // if f0 * f1 <= 0.0 {
+            //     let sat_pos = self.interp_pos(t0);
+            //     return (sat_pos, i as f64);
+            // }
 
             if f0 * f1 <= 0.0 {
                 // Step 2: Narrow down using bisection over time

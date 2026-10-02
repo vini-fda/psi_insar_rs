@@ -1,7 +1,7 @@
 use super::AdsHeader;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Noise {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -11,7 +11,7 @@ pub struct Noise {
     pub noise_vector_list: NoiseVectorList,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NoiseVectorList {
     #[serde(rename = "@count")]
     pub count: String,
@@ -21,7 +21,7 @@ pub struct NoiseVectorList {
     pub noise_vector: Vec<NoiseVector>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NoiseVector {
     #[serde(rename = "$text")]
     pub text: Option<String>,
@@ -33,7 +33,7 @@ pub struct NoiseVector {
     pub noise_lut: NoiseLut,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Pixel {
     #[serde(rename = "@count")]
     pub count: String,
@@ -41,7 +41,7 @@ pub struct Pixel {
     pub text: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NoiseLut {
     #[serde(rename = "@count")]
     pub count: String,

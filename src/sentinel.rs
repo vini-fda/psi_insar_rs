@@ -1,10 +1,10 @@
-use crate::download_orbit::CDSEOrbitDownloader;
-use crate::granule_id::{Sentinel1GranuleId, Sentinel1TIFFFileName};
+use crate::datasets::cdse::orbit_download::CdseOrbitDownloader;
+use crate::granule_id::{IWSwath, Sentinel1GranuleId, Sentinel1TIFFFileName};
 use crate::metadata::annotation_xml::SlcProductAnnotation;
 use crate::metadata::calibration_xml::Calibration;
 use crate::metadata::noise_xml::Noise;
 use crate::satellite_orbit::{ContinuousOrbitalStateHistory, OrbitalStateHistory};
-use crate::slc_image::SlcImage;
+use crate::slc_image::{SlcBurst, SlcImage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Represents a geographic point in WGS84 coordinates
 ///
-/// Source: https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry
+/// Source: <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoPoint {
     pub latitude: f64,
@@ -23,7 +23,7 @@ pub struct GeoPoint {
 
 /// Represents a geographic bounding box in WGS84 coordinates
 ///
-/// Source: https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry
+/// Source: <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/ground-range-geometry>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeoBoundingBox {
     pub min_latitude: f64,
@@ -38,8 +38,8 @@ pub struct GeoBoundingBox {
 /// to acquire data over a wide swath with enhanced image performance.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BurstMetadata {
     pub burst_id: String,
@@ -65,8 +65,8 @@ pub struct BurstMetadata {
 /// Each sub-swath contains a series of bursts, where each burst has been processed as a separate SLC image.
 ///
 /// Sources:
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-wide-swath
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/interferometric-wide-swath>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubswathMetadata {
     pub subswath_id: String,
@@ -86,8 +86,8 @@ pub struct SubswathMetadata {
 /// They are used for accurate geolocation and InSAR processing.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitStateVector {
     pub time: DateTime<Utc>,
@@ -105,8 +105,8 @@ pub struct OrbitStateVector {
 /// orbit number, pass direction (ascending or descending), and state vectors.
 ///
 /// Sources:
-/// - https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1/orbit-accuracy>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitInformation {
     pub orbit_number: u32,
@@ -121,8 +121,8 @@ pub struct OrbitInformation {
 /// and attitude data from the satellite, and provided in slant-range geometry.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/single-look-complex
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/single-look-complex>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sentinel1SlcMetadata {
     pub granule_id: Sentinel1GranuleId,
@@ -136,15 +136,21 @@ pub struct Sentinel1SlcMetadata {
     pub bounding_box: GeoBoundingBox,
 }
 
-/// Represents a single burst of Sentinel-1 SLC data.
+/// Represents a single Interferometric Wide Swath (IW) of Sentinel-1 SLC data.
+///
+/// Data is acquired in 3 swaths using the
+/// Terrain Observation with Progressive Scanning SAR (TOPSAR) imaging
+/// technique. In IW mode bursts are synchronised from pass to pass to ensure
+/// the alignment of interferometric pairs.
 ///
 /// A burst is the basic acquisition unit in TOPS mode. Each burst contains SAR data acquired
 /// during a single sweep of the antenna beam from back to fore.
 ///
 /// Sources:
-/// - https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing
-/// - https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification
-pub struct Sentinel1SlcBurst {
+/// - <https://sentinel.esa.int/web/sentinel/technical-guides/sentinel-1-sar/products-algorithms/level-1-algorithms/tops-processing>
+/// - <https://sentinel.esa.int/documents/247904/1877131/Sentinel-1-Product-Specification>
+/// - <https://sentiwiki.copernicus.eu/__attachments/1673968/S1-RS-MDA-52-7441%20-%20Sentinel-1%20Product%20Specification%202023%20-%203.14.1.pdf>
+pub struct Sentinel1SlcIWSwath {
     pub metadata: SlcProductAnnotation,
     pub calibration: Calibration,
     pub noise: Noise,
@@ -152,9 +158,12 @@ pub struct Sentinel1SlcBurst {
     pub data: SlcImage,
 }
 
-impl Sentinel1SlcBurst {
-    /// Load the burst from a directory, choosing the first .tiff file in the measurement directory.
-    pub fn load_first_from_directory(directory: impl AsRef<Path>) -> Result<Self, String> {
+impl Sentinel1SlcIWSwath {
+    /// Load the IW swath from a directory, choosing the first .tiff file in the measurement directory.
+    pub fn load_swath_from_directory(
+        swath: IWSwath,
+        directory: impl AsRef<Path>,
+    ) -> Result<Self, String> {
         let directory = directory.as_ref();
         let measurement_dir = directory.join("measurement");
 
@@ -170,7 +179,7 @@ impl Sentinel1SlcBurst {
         let entries = std::fs::read_dir(&measurement_dir)
             .map_err(|e| format!("Failed to read measurement directory: {e}"))?;
 
-        let mut granule_str = None;
+        let mut granule_id = None;
         for entry_result in entries {
             let entry = entry_result.map_err(|e| format!("Failed to read directory entry: {e}"))?;
             let file_name = entry.file_name();
@@ -178,18 +187,25 @@ impl Sentinel1SlcBurst {
                 && (file_name.ends_with(".tiff") || file_name.ends_with(".tif"))
             {
                 let removed_extension = file_name.split(".").next().unwrap();
-                granule_str = Some(removed_extension.to_string());
+                let local_granule_str = removed_extension.to_string();
+                match Sentinel1TIFFFileName::parse(&local_granule_str) {
+                    Ok(granule_id_candidate) => {
+                        let mode = granule_id_candidate.mode_subswath.mode;
+                        let subswath = granule_id_candidate.mode_subswath.subswath;
+                        if swath == (mode, subswath) {
+                            granule_id = Some(granule_id_candidate);
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
             }
         }
 
-        if granule_str.is_none() {
-            return Err("No TIFF file found in measurement directory".to_string());
-        }
-
-        let granule_str = granule_str.unwrap();
-
-        let granule_id =
-            Sentinel1TIFFFileName::parse(&granule_str).map_err(|e| format!("ERROR: {e}"))?;
+        let granule_id = granule_id.ok_or("No valid TIFF file found in measurement directory")?;
+        let granule_str = granule_id.raw_filename.clone().to_ascii_lowercase();
 
         // Construct paths to necessary files
         let calibration_path = Self::find_calibration_xml(directory, &granule_str)?;
@@ -213,11 +229,14 @@ impl Sentinel1SlcBurst {
         let metadata: SlcProductAnnotation = quick_xml::de::from_str(&annotation_xml_content)
             .expect("Failed to parse annotation XML");
 
+        let bursts = metadata.swath_timing.burst_list.count as usize;
+        let lines_per_burst = metadata.swath_timing.lines_per_burst;
+
         // Load data from GeoTiff
-        let data = SlcImage::new(&measurement_path);
+        let data = SlcImage::new(&measurement_path, bursts, lines_per_burst);
 
         // Create the SlcBurst instance
-        Ok(Sentinel1SlcBurst {
+        Ok(Sentinel1SlcIWSwath {
             calibration,
             noise,
             metadata,
@@ -436,7 +455,68 @@ impl Sentinel1SlcBurst {
         let mission = self.metadata.ads_header.mission_id;
         let start = self.metadata.ads_header.start_time;
         let end = self.metadata.ads_header.stop_time;
-        let poe_orbit = CDSEOrbitDownloader::new().search_and_download(mission, start, end);
+        let poe_orbit = CdseOrbitDownloader::builder()
+            .build()
+            .fetch_poe_orbit(mission, start, end)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Could not fetch the precise orbit of {mission} from {start} to {end}: {err}"
+                )
+            });
+
+        ContinuousOrbitalStateHistory::from_poe_timeframe(poe_orbit, start, end, &self.metadata)
+    }
+
+    pub fn burst(&self, burst_index: usize) -> Sentinel1SlcIWBurst {
+        Sentinel1SlcIWBurst {
+            burst_index,
+            metadata: self.metadata.clone(),
+            calibration: self.calibration.clone(),
+            noise: self.noise.clone(),
+            granule_id: self.granule_id.clone(),
+            burst_data: self.data.burst(burst_index),
+        }
+    }
+}
+
+pub struct Sentinel1SlcIWBurst {
+    pub burst_index: usize,
+    pub metadata: SlcProductAnnotation,
+    pub calibration: Calibration,
+    pub noise: Noise,
+    pub granule_id: Sentinel1TIFFFileName,
+    pub burst_data: SlcBurst,
+}
+
+impl Sentinel1SlcIWBurst {
+    pub fn orbital_state_history(&self) -> OrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        OrbitalStateHistory::from(orbit_list)
+    }
+
+    pub fn continuous_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let orbit_list = &self.metadata.general_annotation.orbit_list;
+        let osh = OrbitalStateHistory::from(orbit_list);
+        let t_start = self
+            .metadata
+            .image_annotation
+            .image_information
+            .product_first_line_utc_time;
+        ContinuousOrbitalStateHistory::from_osh(&osh, t_start, &self.metadata)
+    }
+
+    pub fn precise_orbital_state_history(&self) -> ContinuousOrbitalStateHistory {
+        let mission = self.metadata.ads_header.mission_id;
+        let start = self.metadata.ads_header.start_time;
+        let end = self.metadata.ads_header.stop_time;
+        let poe_orbit = CdseOrbitDownloader::builder()
+            .build()
+            .fetch_poe_orbit(mission, start, end)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Could not fetch the precise orbit of {mission} from {start} to {end}: {err}"
+                )
+            });
 
         ContinuousOrbitalStateHistory::from_poe_timeframe(poe_orbit, start, end, &self.metadata)
     }
@@ -453,6 +533,7 @@ mod tests {
         let root = PathBuf::from(
             "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
         );
-        let _ = Sentinel1SlcBurst::load_first_from_directory(&root).expect("Failed to load burst");
+        let _ = Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW1, &root)
+            .expect("Failed to load burst");
     }
 }

@@ -22,7 +22,7 @@ use crate::{
     dem::DEM,
     metadata::annotation_xml::SlcProductAnnotation,
     satellite_orbit::{OrbitalStateHistory, radar_coords_to_pixel_coords},
-    sentinel::Sentinel1SlcBurst,
+    sentinel::Sentinel1SlcIWBurst,
 };
 
 use super::{
@@ -71,8 +71,12 @@ impl HasPosition for ExactMapping {
 
 impl DelaunayWarpFunction {
     /// Computes the warp function \rho between two SLC images, in the domain of the reference image.
-    pub fn new(reference: &Sentinel1SlcBurst, secondary: &Sentinel1SlcBurst, dem: &DEM) -> Self {
-        let [slant_range_size, azimuth_size] = reference.data.raster_size();
+    pub fn new(
+        reference: &Sentinel1SlcIWBurst,
+        secondary: &Sentinel1SlcIWBurst,
+        dem: &DEM,
+    ) -> Self {
+        let [slant_range_size, azimuth_size] = reference.burst_data.raster_size();
         let ref_osh = reference.orbital_state_history();
         let sec_osh = secondary.orbital_state_history();
         let radar_coords = |ground_target_pos: Vector3<f64>,
@@ -174,13 +178,13 @@ impl WarpFunction for DelaunayWarpFunction {
 }
 
 pub fn resample_secondary_to_reference(
-    reference: &Sentinel1SlcBurst,
-    secondary: &Sentinel1SlcBurst,
+    reference: &Sentinel1SlcIWBurst,
+    secondary: &Sentinel1SlcIWBurst,
     dem: &DEM,
 ) -> Array2<Complex<f32>> {
     let warp_function = DelaunayWarpFunction::new(reference, secondary, dem);
 
-    let [ref_slant_range_dim, ref_azimuth_dim] = reference.data.raster_size();
+    let [ref_slant_range_dim, ref_azimuth_dim] = reference.burst_data.raster_size();
     let mut resampled_data = Array2::zeros((ref_azimuth_dim, ref_slant_range_dim));
 
     // The indices in the domain of the reference image
@@ -189,9 +193,10 @@ pub fn resample_secondary_to_reference(
     let indices_usize: Vec<[usize; 2]> = indices.clone().collect();
 
     let kernel = KnabSincKernel::default();
-    let deramp = DerampSlcBurst::new();
+    let burst_index = 0;
+    let deramp = DerampSlcBurst::new(&secondary.metadata, burst_index);
 
-    let secondary_img = deramp.apply_forward(secondary);
+    let secondary_img = deramp.apply(secondary.burst_data.array.view());
 
     warp_function
         .map_many(indices.clone().map(|[az, rg]| [az as f32, rg as f32]))
