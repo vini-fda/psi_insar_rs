@@ -60,6 +60,21 @@ impl Looks {
             (range as f64 * ground_range_spacing / info.azimuth_pixel_spacing).round() as usize;
         Looks::new(azimuth.max(1), range)
     }
+
+    /// The (fractional) `[azimuth, range]` coordinates in the multilooked image of the
+    /// full-resolution coordinates `[azimuth, range]`. Output pixel `i` averages input pixels
+    /// `i * looks..(i + 1) * looks`, so its center is at input coordinate
+    /// `i * looks + (looks - 1) / 2`.
+    pub fn multilooked_coords(&self, [azimuth, range]: [f64; 2]) -> [f64; 2] {
+        let to_multilooked = |coord: f64, looks: usize| {
+            let looks = looks as f64;
+            (coord - (looks - 1.0) / 2.0) / looks
+        };
+        [
+            to_multilooked(azimuth, self.azimuth),
+            to_multilooked(range, self.range),
+        ]
+    }
 }
 
 /// The mean of each block of `looks.azimuth × looks.range` pixels of `data` (`[azimuth,
@@ -125,6 +140,15 @@ mod tests {
             epsilon = 1e-6
         );
         assert_relative_eq!(output[[0, 0]].norm(), phase.cos().abs(), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn multilooked_coords_of_block_centers() {
+        let looks = Looks::new(2, 3);
+        // Block (0, 0) is centered between input pixels 0-1 and on input pixel 1.
+        assert_eq!(looks.multilooked_coords([0.5, 1.0]), [0.0, 0.0]);
+        assert_eq!(looks.multilooked_coords([2.5, 4.0]), [1.0, 1.0]);
+        assert_eq!(looks.multilooked_coords([0.0, 0.0]), [-0.25, -1.0 / 3.0]);
     }
 
     #[test]

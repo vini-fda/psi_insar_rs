@@ -30,7 +30,7 @@
 //!
 //! [\[2\]]: https://github.com/senbox-org/microwave-toolbox/blob/master/sar-op-sentinel1/src/main/java/eu/esa/sar/sentinel1/gpf/TOPSARDeburstOp.java
 
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use chrono::{DateTime, TimeDelta, Utc};
 use ndarray::{Array2, ArrayView2, Axis, s};
@@ -147,6 +147,11 @@ pub struct Debursted<T> {
     /// Zero-Doppler azimuth time of the first line. Line `i` is at
     /// `first_line_time + i * azimuth_time_interval`.
     pub first_line_time: DateTime<Utc>,
+    /// For each input burst, the output lines filled from it (empty if none).
+    pub burst_lines: Vec<Range<usize>>,
+    /// For each input burst, the output line of its line 0: line `l` of burst `k` is output
+    /// line `l + line_offsets[k]`.
+    pub line_offsets: Vec<i64>,
 }
 
 /// Joins consecutive bursts of a subswath (in azimuth order) into a single image.
@@ -214,19 +219,23 @@ where
         })
         .collect();
 
+    // The burst and burst line of output line i, if it is a valid line of that burst.
+    let source = |i: usize| {
+        let time = first_time + i as f64 * azimuth_time_interval;
+        let k = switch_times.partition_point(|&switch_time| switch_time <= time);
+        let (start, valid_lines) = &timings[k];
+        let line = ((time - start) / azimuth_time_interval).round();
+        (line >= 0.0 && valid_lines.contains(&(line as usize))).then_some((k, line as usize))
+    };
+
     let mut data = Array2::zeros((lines, samples));
     data.axis_iter_mut(Axis(0))
         .into_par_iter()
         .enumerate()
         .for_each(|(i, mut row)| {
-            let time = first_time + i as f64 * azimuth_time_interval;
-            let k = switch_times.partition_point(|&switch_time| switch_time <= time);
-            let (start, valid_lines) = &timings[k];
-            let line = ((time - start) / azimuth_time_interval).round();
-            if line < 0.0 || !valid_lines.contains(&(line as usize)) {
+            let Some((k, line)) = source(i) else {
                 return;
-            }
-            let line = line as usize;
+            };
             let (array, geometry) = &bursts[k];
             if let Some(valid_samples) = geometry.valid_samples(line) {
                 let end = (*valid_samples.end()).min(samples - 1);
@@ -236,10 +245,29 @@ where
             }
         });
 
+    // Each burst fills a contiguous range of output lines, since the burst of a line only
+    // increases with the line.
+    let mut burst_lines: Vec<Option<Range<usize>>> = vec![None; bursts.len()];
+    for i in 0..lines {
+        if let Some((k, _)) = source(i) {
+            burst_lines[k].get_or_insert(i..i).end = i + 1;
+        }
+    }
+    let burst_lines = burst_lines
+        .into_iter()
+        .map(|range| range.unwrap_or(0..0))
+        .collect();
+    let line_offsets = timings
+        .iter()
+        .map(|(start, _)| ((start - first_time) / azimuth_time_interval).round() as i64)
+        .collect();
+
     let first_line_time = t0 + TimeDelta::nanoseconds((first_time * 1e9).round() as i64);
     Ok(Debursted {
         data,
         first_line_time,
+        burst_lines,
+        line_offsets,
     })
 }
 
@@ -342,6 +370,9 @@ mod tests {
             debursted.first_line_time,
             geometries[0].azimuth_time + TimeDelta::milliseconds(2)
         );
+        assert_eq!(debursted.burst_lines, [0..7, 7..14]);
+        // Output line i is at time i + 1: burst 0 line 1 -> line 0, burst 1 line 2 -> line 7.
+        assert_eq!(debursted.line_offsets, [-1, 5]);
     }
 
     #[test]
@@ -360,6 +391,9 @@ mod tests {
             column,
             [0.0, 1.0, 2.0, 3.0, 4.0, 101.0, 102.0, 103.0, 104.0, 105.0]
         );
+        assert_eq!(debursted.burst_lines, [0..5, 5..10]);
+        // Burst 1 line 1 (at time 5.3) is output line 5.
+        assert_eq!(debursted.line_offsets, [0, 4]);
     }
 
     #[test]
@@ -376,6 +410,8 @@ mod tests {
             column,
             [1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 100.0, 101.0, 102.0, 103.0]
         );
+        assert_eq!(debursted.burst_lines, [0..4, 6..10]);
+        assert_eq!(debursted.line_offsets, [0, 6]);
     }
 
     #[test]
