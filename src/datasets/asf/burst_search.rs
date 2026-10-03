@@ -1,18 +1,21 @@
 //! ASF Burst Search
 //!
-//! Finds Sentinel-1 SLC bursts covering a point with the ASF Search API [\[1\]], so that they
-//! can be downloaded with [`AsfBurstDownloader`](super::burst_download::AsfBurstDownloader).
+//! Finds Sentinel-1 SLC bursts covering a point or an area with the ASF Search API [\[1\]], so
+//! that they can be downloaded with [`AsfBurstDownloader`](super::burst_download::AsfBurstDownloader).
 //!
 //! ```no_run
 //! use chrono::{TimeZone, Utc};
 //! use psi_insar_rs::datasets::asf::burst_download::Polarization;
-//! use psi_insar_rs::datasets::asf::burst_search::{AsfBurstSearch, BurstSearchQuery};
+//! use psi_insar_rs::datasets::asf::burst_search::{AsfBurstSearch, BurstSearchQuery, SearchArea};
 //! use psi_insar_rs::granule_id::IWSwath;
 //!
 //! let start = Utc.with_ymd_and_hms(2016, 4, 8, 0, 0, 0).unwrap();
 //! let end = Utc.with_ymd_and_hms(2016, 4, 21, 0, 0, 0).unwrap();
-//! let query = BurstSearchQuery::new(32.7906, 130.7543, start, end, Polarization::VV)
-//!     .subswath(IWSwath::IW1);
+//! let epicenter = SearchArea::Point {
+//!     lat: 32.7906,
+//!     lon: 130.7543,
+//! };
+//! let query = BurstSearchQuery::new(epicenter, start, end, Polarization::VV).subswath(IWSwath::IW1);
 //! let bursts = AsfBurstSearch::builder().build().search(&query).unwrap();
 //! let requests: Vec<_> = bursts.iter().map(|burst| burst.request()).collect();
 //! ```
@@ -23,10 +26,11 @@
 //!
 //! ```text
 //! {search url}?platform=SENTINEL-1&processingLevel=BURST&polarization={pol}
-//!     &intersectsWith=POINT({lon} {lat})&start={start}&end={end}&output=geojson
+//!     &intersectsWith={area}&start={start}&end={end}&output=geojson
 //! ```
 //!
-//! The keywords come from [\[1\]]. The response is a GeoJSON `FeatureCollection` with one
+//! where `{area}` is the WKT of the [`SearchArea`]: `POINT({lon} {lat})` or a `POLYGON` with
+//! the corners of a bounding box. The keywords come from [\[1\]]. The response is a GeoJSON `FeatureCollection` with one
 //! feature per burst (an empty `features` array when nothing matches), and errors are `400`
 //! responses with an `{"error": ...}` body. Each feature's `properties.burst` holds the burst
 //! ID, the subswath and the burst index, and `properties.url` is the burst extractor URL,
@@ -41,8 +45,9 @@
 //!
 //! # Caching
 //!
-//! Each search response is stored as `{cache_dir}/{pol}_{lat}_{lon}_{start}_{end}.geojson`,
-//! named after the query sent to ASF (the subswath filter is applied afterwards, so queries
+//! Each search response is stored as `{cache_dir}/{pol}_{area}_{start}_{end}.geojson`, where
+//! `{area}` is `{lat}_{lon}` for a point and `{min lat}_{min lon}_{max lat}_{max lon}` for a
+//! bounding box, i.e. named after the query sent to ASF (the subswath filter is applied afterwards, so queries
 //! that only differ in subswath share a file). With caching enabled (the default), a query
 //! whose response is cached is answered without network access, which lets the bursts found
 //! be downloaded and reused offline by
@@ -105,13 +110,84 @@ pub enum AsfSearchError {
     InvalidResponse(String),
 }
 
+/// The area that the bursts must intersect, in degrees (WGS84).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchArea {
+    Point {
+        lat: f64,
+        lon: f64,
+    },
+    /// A latitude/longitude box. It must not cross the antimeridian (`min_lon <= max_lon`).
+    BoundingBox {
+        min_lat: f64,
+        min_lon: f64,
+        max_lat: f64,
+        max_lon: f64,
+    },
+}
+
+impl SearchArea {
+    /// A box of `half_size_lat` × `half_size_lon` degrees on each side of (`lat`, `lon`).
+    pub fn around(lat: f64, lon: f64, half_size_lat: f64, half_size_lon: f64) -> Self {
+        SearchArea::BoundingBox {
+            min_lat: lat - half_size_lat,
+            min_lon: lon - half_size_lon,
+            max_lat: lat + half_size_lat,
+            max_lon: lon + half_size_lon,
+        }
+    }
+
+    /// Whether (`lat`, `lon`) is the point, or lies in the box (edges included).
+    pub fn contains(&self, lat: f64, lon: f64) -> bool {
+        match *self {
+            SearchArea::Point {
+                lat: p_lat,
+                lon: p_lon,
+            } => lat == p_lat && lon == p_lon,
+            SearchArea::BoundingBox {
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            } => (min_lat..=max_lat).contains(&lat) && (min_lon..=max_lon).contains(&lon),
+        }
+    }
+
+    /// The area in WKT, as the `intersectsWith` keyword expects it (longitude first).
+    fn wkt(&self) -> String {
+        match *self {
+            SearchArea::Point { lat, lon } => format!("POINT({lon} {lat})"),
+            SearchArea::BoundingBox {
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            } => format!(
+                "POLYGON(({min_lon} {min_lat},{max_lon} {min_lat},{max_lon} {max_lat},\
+                 {min_lon} {max_lat},{min_lon} {min_lat}))"
+            ),
+        }
+    }
+
+    /// The part of the cache file name that identifies the area.
+    fn cache_key(&self) -> String {
+        match *self {
+            SearchArea::Point { lat, lon } => format!("{lat}_{lon}"),
+            SearchArea::BoundingBox {
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            } => format!("{min_lat}_{min_lon}_{max_lat}_{max_lon}"),
+        }
+    }
+}
+
 /// Which bursts to search for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurstSearchQuery {
-    /// Latitude of a point the bursts must cover, in degrees.
-    pub lat: f64,
-    /// Longitude of a point the bursts must cover, in degrees.
-    pub lon: f64,
+    /// The area the bursts must intersect.
+    pub area: SearchArea,
     /// Start of the acquisition time range.
     pub start: DateTime<Utc>,
     /// End of the acquisition time range.
@@ -122,17 +198,15 @@ pub struct BurstSearchQuery {
 }
 
 impl BurstSearchQuery {
-    /// Bursts of any subswath covering (`lat`, `lon`), acquired between `start` and `end`.
+    /// Bursts of any subswath intersecting `area`, acquired between `start` and `end`.
     pub fn new(
-        lat: f64,
-        lon: f64,
+        area: SearchArea,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         polarization: Polarization,
     ) -> Self {
         BurstSearchQuery {
-            lat,
-            lon,
+            area,
             start,
             end,
             polarization,
@@ -334,14 +408,13 @@ impl AsfBurstSearch {
     }
 
     /// Where the response to `query` is stored:
-    /// `{cache_dir}/{pol}_{lat}_{lon}_{start}_{end}.geojson`, with compact UTC times.
+    /// `{cache_dir}/{pol}_{area}_{start}_{end}.geojson`, with compact UTC times.
     pub fn cached_path(&self, query: &BurstSearchQuery) -> PathBuf {
         let time = |t: DateTime<Utc>| t.format("%Y%m%dT%H%M%SZ");
         self.cache_dir.join(format!(
-            "{}_{}_{}_{}_{}.geojson",
+            "{}_{}_{}_{}.geojson",
             query.polarization,
-            query.lat,
-            query.lon,
+            query.area.cache_key(),
             time(query.start),
             time(query.end)
         ))
@@ -388,7 +461,7 @@ impl AsfBurstSearch {
 
     /// Sends `query` to ASF and returns the body of the response.
     fn request(&self, query: &BurstSearchQuery) -> Result<String, AsfSearchError> {
-        let point = format!("POINT({} {})", query.lon, query.lat);
+        let area = query.area.wkt();
         let start = query.start.to_rfc3339_opts(SecondsFormat::Secs, true);
         let end = query.end.to_rfc3339_opts(SecondsFormat::Secs, true);
         let polarization = query.polarization.to_string();
@@ -403,7 +476,7 @@ impl AsfBurstSearch {
                     .query("platform", "SENTINEL-1")
                     .query("processingLevel", "BURST")
                     .query("polarization", &polarization)
-                    .query("intersectsWith", &point)
+                    .query("intersectsWith", &area)
                     .query("start", &start)
                     .query("end", &end)
                     .query("output", "geojson")
@@ -509,8 +582,10 @@ mod tests {
 
     fn kumamoto_query() -> BurstSearchQuery {
         BurstSearchQuery::new(
-            32.7906,
-            130.7543,
+            SearchArea::Point {
+                lat: 32.7906,
+                lon: 130.7543,
+            },
             utc("2016-04-08T00:00:00Z"),
             utc("2016-04-21T00:00:00Z"),
             Polarization::VV,
@@ -699,5 +774,55 @@ mod tests {
         assert_eq!(search.search(&kumamoto_query()).unwrap().len(), 1);
         assert_eq!(requests.len(), 1);
         assert!(parse_response(&fs::read_to_string(&path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn bounding_box_is_sent_as_a_polygon() {
+        let (base, requests) = mock_server(vec![search_response(&[feature(
+            REFERENCE,
+            "IW1",
+            2,
+            "2016-04-08T09:14:02Z",
+        )])]);
+        let area = SearchArea::around(32.8, 130.75, 0.2, 0.25);
+        let query = BurstSearchQuery {
+            area,
+            ..kumamoto_query()
+        };
+        let search = test_builder("bounding_box", &base).build();
+        assert_eq!(search.search(&query).unwrap().len(), 1);
+
+        let target = &requests.all()[0].target;
+        let wkt = url::form_urlencoded::parse(target.split_once('?').unwrap().1.as_bytes())
+            .find(|(key, _)| key == "intersectsWith")
+            .unwrap()
+            .1
+            .into_owned();
+        assert_eq!(
+            wkt,
+            "POLYGON((130.5 32.599999999999994,131 32.599999999999994,131 33,130.5 33,\
+             130.5 32.599999999999994))"
+        );
+        let name = search.cached_path(&query);
+        let name = name.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("VV_32.599999999999994_130.5_33_131_"),
+            "{name}"
+        );
+    }
+
+    #[test]
+    fn area_contains() {
+        let area = SearchArea::around(32.8, 130.75, 0.2, 0.25);
+        assert!(area.contains(32.8, 130.75));
+        assert!(area.contains(32.99, 130.51));
+        assert!(!area.contains(33.01, 130.75));
+        assert!(!area.contains(32.8, 130.49));
+        let point = SearchArea::Point {
+            lat: 32.8,
+            lon: 130.75,
+        };
+        assert!(point.contains(32.8, 130.75));
+        assert!(!point.contains(32.8, 130.76));
     }
 }

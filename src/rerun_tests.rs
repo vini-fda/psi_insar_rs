@@ -20,16 +20,20 @@ mod tests {
         datasets::{
             asf::{
                 burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
-                burst_search::{AsfBurstSearch, BurstSearchQuery},
+                burst_search::{AsfBurstSearch, BurstSearchQuery, BurstSearchResult, SearchArea},
             },
             cdse::orbit_download::CdseOrbitDownloader,
             opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
         },
+        deburst::{BurstGeometry, Debursted, deburst},
         dem::DEM,
         geodesy::{geodetic_to_ecef, local_normal},
         granule_id::IWSwath,
-        interferometry::{bounding_box_from_burst_stack, bounding_box_from_stack},
+        interferometry::{
+            CoherenceWindow, bounding_box_from_burst_stack, bounding_box_from_stack, coherence,
+        },
         metadata::annotation_xml::SlcProductAnnotation,
+        multilook::{Looks, multilook},
         perp_baseline::{
             EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
             perp_baseline,
@@ -1695,18 +1699,153 @@ mod tests {
         }
     }
 
+    /// Steps 2, 3 and 5 of NASA's interferogram recipe (see [`kumamoto_interferogram`]) for one
+    /// burst: coregisters `secondary` to `reference` with precise orbits and the DEM, forms the
+    /// interferogram `s1 · s2*`, removes its flat-earth and topographic phase, and estimates its
+    /// coherence. Returns the interferogram and the coherence, in the geometry of the reference
+    /// burst.
+    ///
+    /// Both swaths must be single-burst products, as served by the ASF burst extractor: their
+    /// first line is the burst's first line, so the warp function's azimuth coordinates (which
+    /// count lines from the product start) are burst lines.
+    fn flattened_burst_interferogram(
+        reference: &Sentinel1SlcIWSwath,
+        secondary: &Sentinel1SlcIWSwath,
+        dem: &DEM,
+    ) -> (Array2<Complex<f32>>, Array2<f32>) {
+        // Precise orbits are used both for the warp function and for the geometric phase, so
+        // both steps share the same trajectories and time reference.
+        let osh_1 = reference.precise_orbital_state_history();
+        let osh_2 = secondary.precise_orbital_state_history();
+        let reference_burst = reference.burst(0);
+        let warp_function =
+            EnhancedDelaunayWarpFunction::with_orbits(&reference_burst, &osh_1, &osh_2, dem);
+        let reference_img = &reference_burst.burst_data.array;
+        // Only the secondary is resampled, so only the secondary is deramped, and it is
+        // reramped at the secondary coordinates after resampling.
+        let secondary_img = DerampSlcBurst::process_burst(&secondary.burst(0));
+        let secondary_reramp =
+            DerampSlcBurst::new(&secondary.metadata, 0).direction(Direction::Backward);
+        let kernel = KnabSincKernel::default();
+
+        const CHUNK_SIZE: usize = 256;
+        let mut coregistered_secondary = Array2::zeros(reference_img.dim());
+        let mut interferogram = Array2::zeros(reference_img.dim());
+        coregistered_secondary
+            .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+            .into_par_iter()
+            .zip(interferogram.axis_chunks_iter_mut(Axis(0), CHUNK_SIZE))
+            .enumerate()
+            .for_each_init(
+                || warp_function.triangulation.natural_neighbor(),
+                |nn, (chunk_idx, (mut secondary_chunk, mut interferogram_chunk))| {
+                    for i in 0..secondary_chunk.nrows() {
+                        let ref_az = chunk_idx * CHUNK_SIZE + i;
+                        for ref_rg in 0..secondary_chunk.ncols() {
+                            let s1 = reference_img[[ref_az, ref_rg]];
+                            // Invalid (zero-filled) reference samples stay zero.
+                            if s1.norm_sqr() == 0.0 {
+                                continue;
+                            }
+                            let point = [ref_az as f64, ref_rg as f64].into();
+                            let (Some(sec_az), Some(sec_rg), Some(lat), Some(lon)) = (
+                                nn.interpolate(|v| v.data().secondary_coords[0], point),
+                                nn.interpolate(|v| v.data().secondary_coords[1], point),
+                                nn.interpolate(|v| v.data().lat, point),
+                                nn.interpolate(|v| v.data().lon, point),
+                            ) else {
+                                continue;
+                            };
+
+                            // Step 2: resample the secondary at the warped coordinates.
+                            let reramp_phase = secondary_reramp.phi_at_pixel(sec_az, sec_rg);
+                            let reramp =
+                                Complex::new(reramp_phase.cos() as f32, reramp_phase.sin() as f32);
+                            let s2 = interpolate_2d(
+                                secondary_img.view(),
+                                sec_az as f32,
+                                sec_rg as f32,
+                                &kernel,
+                            ) * reramp;
+
+                            // Steps 3 and 5: the phase of s1 · s2* expected from the geometry
+                            // alone (flat earth and topography) is -4π(r1 - r2)/λ, so adding
+                            // 4π(r1 - r2)/λ leaves the deformation (plus atmosphere and noise).
+                            let target = Vector3::from(dem.get_ecef_at_lat_lon(lat, lon));
+                            let t1 = osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                            let t2 = osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
+                            let r1 = (osh_1.interp_pos(t1) - target).norm();
+                            let r2 = (osh_2.interp_pos(t2) - target).norm();
+                            // Wrap in f64 first: the phase can be ~1e4 rad, where f32 loses
+                            // precision.
+                            let geometric_phase = (4.0 * std::f64::consts::PI * (r1 - r2)
+                                / SENTINEL_1_WAVELENGTH)
+                                .rem_euclid(std::f64::consts::TAU);
+                            let flattening = Complex::new(
+                                geometric_phase.cos() as f32,
+                                geometric_phase.sin() as f32,
+                            );
+
+                            secondary_chunk[[i, ref_rg]] = s2;
+                            interferogram_chunk[[i, ref_rg]] = s1 * s2.conj() * flattening;
+                        }
+                    }
+                },
+            );
+
+        let coherence = coherence(
+            interferogram.view(),
+            reference_img.view(),
+            coregistered_secondary.view(),
+            CoherenceWindow::default(),
+        );
+        (interferogram, coherence)
+    }
+
+    /// A grayscale image of `values` in `[0, 1]` (e.g. coherence).
+    fn rr_grayscale(values: &Array2<f32>) -> rerun::Image {
+        let (rows, cols) = values.dim();
+        let bytes: Vec<u8> = values
+            .iter()
+            .map(|&v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect();
+        rerun::Image::from_color_model_and_bytes(
+            bytes,
+            [cols as u32, rows as u32],
+            rerun::ColorModel::L,
+            rerun::ChannelDatatype::U8,
+        )
+    }
+
     /// Differential interferogram of the April 2016 Kumamoto earthquakes, following NASA
     /// Earthdata's "Create an Interferogram Using ESA's Sentinel-1 Toolbox" data recipe:
     /// <https://www.earthdata.nasa.gov/learn/data-recipes/create-interferogram-using-esas-sentinel-1-toolbox>
     ///
     /// Like the recipe, it uses the Sentinel-1A IW1/VV acquisitions of 2016-04-08 (reference,
     /// before the April 14 foreshock and the April 16 mainshock) and 2016-04-20 (secondary).
-    /// Instead of whole SLC products, only the burst over the mainshock epicenter is used.
+    /// Instead of whole SLC products, it uses the bursts around the mainshock epicenter, and
+    /// follows the recipe's steps:
+    ///
+    /// 1. Find and download the bursts (ASF search and burst extractor).
+    /// 2. Coregister each secondary burst to its reference burst (precise orbits, DEM-assisted
+    ///    back-geocoding).
+    /// 3. Form each burst's interferogram and coherence.
+    /// 4. Deburst the interferograms and coherences.
+    /// 5. Remove the topographic phase (done per burst, before step 4, together with step 3).
+    /// 6. Multilook (6 range looks, square ground pixels: 6 × 2 in IW1).
+    ///
+    /// Steps 7 (Goldstein phase filtering) and 8 (terrain correction) are not implemented yet,
+    /// so the results are logged to Rerun in radar geometry. Enhanced spectral diversity (ESD)
+    /// is not applied either (neither does the recipe), so small phase jumps can remain at the
+    /// burst boundaries.
     #[test]
     #[ignore]
     fn kumamoto_interferogram() {
         env_logger::init();
         log::info!("Starting kumamoto_interferogram test.");
+        let rr = rerun::RecordingStreamBuilder::new("kumamoto_interferogram")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
         // Epicenter of the M7.0 mainshock, from the USGS event page:
         // <https://earthquake.usgs.gov/earthquakes/eventpage/us20005iis/executive>
         const EPICENTER_LAT: f64 = 32.7906;
@@ -1714,12 +1853,14 @@ mod tests {
         let reference_date = NaiveDate::from_ymd_opt(2016, 4, 8).unwrap();
         let secondary_date = NaiveDate::from_ymd_opt(2016, 4, 20).unwrap();
 
-        // Find the IW1 bursts covering the epicenter on both dates. The ASF search needs no
-        // credentials, and its response is cached (see `burst_search::default_cache_dir`), so
-        // that once the bursts are downloaded, the test runs offline.
+        // Step 1: find the IW1 bursts whose centers are within about 22 km (north-south) and
+        // 23 km (east-west) of the epicenter, which are the 3 consecutive bursts around it. The
+        // ASF search needs no credentials, and its response is cached (see
+        // `burst_search::default_cache_dir`), so that once the bursts, orbits and DEMs are
+        // cached, the test runs offline.
+        let area = SearchArea::around(EPICENTER_LAT, EPICENTER_LON, 0.2, 0.25);
         let query = BurstSearchQuery::new(
-            EPICENTER_LAT,
-            EPICENTER_LON,
+            area,
             Utc.from_utc_datetime(&reference_date.and_hms_opt(0, 0, 0).unwrap()),
             Utc.from_utc_datetime(&secondary_date.and_hms_opt(23, 59, 59).unwrap()),
             Polarization::VV,
@@ -1729,61 +1870,126 @@ mod tests {
             .build()
             .search(&query)
             .unwrap_or_else(|err| panic!("Could not search {query:?}: {err}"));
-        for burst in &bursts {
-            log::info!(
-                "Found burst {} ({}) of {}, index {}",
-                burst.full_burst_id,
-                burst.flight_direction,
-                burst.granule,
-                burst.burst_index
-            );
-        }
-        // The epicenter may fall in the overlap of two consecutive bursts: use the one whose
-        // center is closest, and the burst with the same ID (same area and track) as secondary.
-        let distance_to_epicenter = |lat: f64, lon: f64| {
-            (lat - EPICENTER_LAT).powi(2)
-                + ((lon - EPICENTER_LON) * EPICENTER_LAT.to_radians().cos()).powi(2)
-        };
-        let reference_burst = bursts
+        // Bursts with the same ID image the same area from the same track, so each reference
+        // burst is paired with the secondary burst with its ID.
+        let reference_bursts: Vec<_> = bursts
             .iter()
-            .filter(|burst| burst.start_time.date_naive() == reference_date)
-            .min_by(|a, b| {
-                distance_to_epicenter(a.center_lat, a.center_lon)
-                    .total_cmp(&distance_to_epicenter(b.center_lat, b.center_lon))
+            .filter(|burst| {
+                burst.start_time.date_naive() == reference_date
+                    && area.contains(burst.center_lat, burst.center_lon)
             })
-            .unwrap_or_else(|| panic!("No IW1 burst over the epicenter on {reference_date}"));
-        let secondary_burst = bursts
-            .iter()
-            .find(|burst| {
-                burst.start_time.date_naive() == secondary_date
-                    && burst.full_burst_id == reference_burst.full_burst_id
+            .collect();
+        assert!(
+            !reference_bursts.is_empty(),
+            "No IW1 burst around the epicenter on {reference_date}"
+        );
+        let pairs: Vec<_> = reference_bursts
+            .into_iter()
+            .map(|reference| {
+                let secondary = bursts
+                    .iter()
+                    .find(|burst| {
+                        burst.start_time.date_naive() == secondary_date
+                            && burst.full_burst_id == reference.full_burst_id
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("No burst {} on {secondary_date}", reference.full_burst_id)
+                    });
+                log::info!(
+                    "Burst {}: index {} of {} and index {} of {}",
+                    reference.full_burst_id,
+                    reference.burst_index,
+                    reference.granule,
+                    secondary.burst_index,
+                    secondary.granule
+                );
+                (reference, secondary)
             })
-            .unwrap_or_else(|| {
-                panic!(
-                    "No burst {} on {secondary_date}",
-                    reference_burst.full_burst_id
-                )
-            });
+            .collect();
 
         // Downloaded from ASF on the first run (requires EARTHDATA_USERNAME and
         // EARTHDATA_PASSWORD) and read from the user cache directory afterwards.
         let downloader = AsfBurstDownloader::builder().build();
-        let [reference, secondary] = [reference_burst, secondary_burst].map(|burst| {
+        let load = |burst: &BurstSearchResult| {
             let request = burst.request();
             let safe_dir = downloader
                 .fetch_burst(&request)
                 .unwrap_or_else(|err| panic!("Could not fetch {request:?}: {err:?}"));
             Sentinel1SlcIWSwath::load_swath_from_directory(request.subswath, safe_dir).unwrap()
-        });
+        };
+
+        // Steps 2, 3 and 5, burst by burst. Each pair gets a DEM covering just its bursts,
+        // since the warp function visits every DEM point.
+        let mut references = Vec::new();
+        let mut interferograms = Vec::new();
+        let mut coherences = Vec::new();
+        for (reference_burst, secondary_burst) in pairs {
+            let reference = load(reference_burst);
+            let secondary = load(secondary_burst);
+            let dem = fetch_dem(
+                bounding_box_from_stack([&reference, &secondary]),
+                CopernicusDemType::Cop30,
+            );
+            log::info!("Processing burst {}", reference_burst.full_burst_id);
+            let start_time = std::time::Instant::now();
+            let (interferogram, coherence) =
+                flattened_burst_interferogram(&reference, &secondary, &dem);
+            log::info!("Time taken: {:?}", start_time.elapsed());
+            references.push(reference);
+            interferograms.push(interferogram);
+            coherences.push(coherence);
+        }
+
+        // Step 4: deburst, in the geometry of the reference bursts.
+        let geometries: Vec<_> = references
+            .iter()
+            .map(|reference| BurstGeometry::from_annotation(&reference.metadata, 0).unwrap())
+            .collect();
+        let azimuth_time_interval = references[0]
+            .metadata
+            .image_annotation
+            .image_information
+            .azimuth_time_interval;
+        fn deburst_all<T: Copy + num_traits::Zero + Send + Sync>(
+            arrays: &[Array2<T>],
+            geometries: &[BurstGeometry],
+            azimuth_time_interval: f64,
+        ) -> Debursted<T> {
+            let bursts: Vec<_> = arrays.iter().map(|a| a.view()).zip(geometries).collect();
+            deburst(&bursts, azimuth_time_interval).unwrap()
+        }
+        let interferogram = deburst_all(&interferograms, &geometries, azimuth_time_interval);
+        drop(interferograms);
+        let coherence = deburst_all(&coherences, &geometries, azimuth_time_interval);
+        drop(coherences);
         log::info!(
-            "Reference: {}, secondary: {}",
-            reference.granule_id.raw_filename,
-            secondary.granule_id.raw_filename
+            "Debursted {} bursts: {:?} pixels from {}",
+            references.len(),
+            interferogram.data.dim(),
+            interferogram.first_line_time
         );
 
-        // TODO: the remaining steps of the recipe: coregistration, interferogram formation
-        // (with coherence), topographic phase removal, multilooking, Goldstein phase filtering
-        // and terrain correction.
+        // Step 6: multilook. The complex interferogram is averaged, not its phase.
+        let looks = Looks::square_ground_pixel(6, &references[0].metadata);
+        let interferogram = multilook(interferogram.data.view(), looks);
+        let coherence = multilook(coherence.data.view(), looks);
+        log::info!(
+            "Multilooked with {looks:?}: {:?} pixels",
+            interferogram.dim()
+        );
+
+        // On an ascending pass, lines run from south to north and samples from west to east,
+        // so flipping the lines puts north up (but the images stay in radar geometry).
+        fn north_up<T: Clone>(array: &Array2<T>) -> Array2<T> {
+            array.slice(s![..;-1, ..]).to_owned()
+        }
+        rr.log(
+            "kumamoto/interferogram",
+            &rr_phase_from_complex(&north_up(&interferogram)),
+        )
+        .expect("Could not log the interferogram to Rerun");
+        rr.log("kumamoto/coherence", &rr_grayscale(&north_up(&coherence)))
+            .expect("Could not log the coherence to Rerun");
     }
 
     #[test]
