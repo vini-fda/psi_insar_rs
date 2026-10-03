@@ -9,6 +9,7 @@ mod tests {
     use num_complex::{Complex, ComplexFloat};
     use rayon::prelude::*;
     use rerun::{Color, Image, RecordingStream};
+    use spade::Triangulation;
 
     use crate::{
         constants::SENTINEL_1_WAVELENGTH,
@@ -27,6 +28,7 @@ mod tests {
         },
         deburst::{BurstGeometry, Debursted, deburst},
         dem::DEM,
+        geocoding::{GeocodingFunction, LatLonGrid, TiePoint},
         geodesy::{geodetic_to_ecef, local_normal},
         goldstein::GoldsteinFilter,
         granule_id::IWSwath,
@@ -1595,7 +1597,8 @@ mod tests {
     /// burst: coregisters `secondary` to `reference` with precise orbits and the DEM, forms the
     /// interferogram `s1 · s2*`, removes its flat-earth and topographic phase, and estimates its
     /// coherence. Returns the interferogram and the coherence, in the geometry of the reference
-    /// burst.
+    /// burst, and the tie points of the warp function (the DEM points with their coordinates in
+    /// the reference burst), for geocoding.
     ///
     /// Both swaths must be single-burst products, as served by the ASF burst extractor: their
     /// first line is the burst's first line, so the warp function's azimuth coordinates (which
@@ -1604,7 +1607,7 @@ mod tests {
         reference: &Sentinel1SlcIWSwath,
         secondary: &Sentinel1SlcIWSwath,
         dem: &DEM,
-    ) -> (Array2<Complex<f32>>, Array2<f32>) {
+    ) -> (Array2<Complex<f32>>, Array2<f32>, Vec<TiePoint>) {
         // Precise orbits are used both for the warp function and for the geometric phase, so
         // both steps share the same trajectories and time reference.
         let osh_1 = reference.precise_orbital_state_history();
@@ -1691,7 +1694,20 @@ mod tests {
             coregistered_secondary.view(),
             CoherenceWindow::default(),
         );
-        (interferogram, coherence)
+        let tie_points = warp_function
+            .triangulation
+            .vertices()
+            .map(|vertex| {
+                let mapping = vertex.data();
+                TiePoint {
+                    lat: mapping.lat,
+                    lon: mapping.lon,
+                    azimuth: mapping.reference_coords[0],
+                    range: mapping.reference_coords[1],
+                }
+            })
+            .collect();
+        (interferogram, coherence, tie_points)
     }
 
     /// A grayscale image of `values` in `[0, 1]` (e.g. coherence).
@@ -1726,11 +1742,13 @@ mod tests {
     /// 5. Remove the topographic phase (done per burst, before step 4, together with step 3).
     /// 6. Multilook (6 range looks, square ground pixels: 6 × 2 in IW1).
     /// 7. Goldstein phase filtering (32 × 32 patches, α = 0.5).
+    /// 8. Terrain correction: resample onto a north-up latitude/longitude grid of 30 m pixels,
+    ///    using the DEM points of the warp functions as tie points.
     ///
-    /// Step 8 (terrain correction) is not implemented yet, so the results are logged to Rerun
-    /// in radar geometry. Enhanced spectral diversity (ESD)
-    /// is not applied either (neither does the recipe), so small phase jumps can remain at the
-    /// burst boundaries.
+    /// The results are logged to Rerun both in radar geometry and geocoded, with the extent of
+    /// the geocoded grid and the epicenter as geographic primitives for a map view. Enhanced
+    /// spectral diversity (ESD) is not applied (neither does the recipe), so small phase jumps
+    /// can remain at the burst boundaries.
     #[test]
     #[ignore]
     fn kumamoto_interferogram() {
@@ -1805,18 +1823,20 @@ mod tests {
         let mut references = Vec::new();
         let mut interferograms = Vec::new();
         let mut coherences = Vec::new();
+        let mut burst_tie_points = Vec::new();
         for (reference_burst, secondary_burst) in pairs {
             let reference = load_burst(&reference_burst.request());
             let secondary = load_burst(&secondary_burst.request());
             let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
             log::info!("Processing burst {}", reference_burst.full_burst_id);
             let start_time = std::time::Instant::now();
-            let (interferogram, coherence) =
+            let (interferogram, coherence, tie_points) =
                 flattened_burst_interferogram(&reference, &secondary, &dem);
             log::info!("Time taken: {:?}", start_time.elapsed());
             references.push(reference);
             interferograms.push(interferogram);
             coherences.push(coherence);
+            burst_tie_points.push(tie_points);
         }
 
         // Step 4: deburst, in the geometry of the reference bursts.
@@ -1850,6 +1870,28 @@ mod tests {
 
         // Step 6: multilook. The complex interferogram is averaged, not its phase.
         let looks = Looks::square_ground_pixel(6, &references[0].metadata);
+        // The tie points of each burst, moved to the debursted lines and then to the multilooked
+        // image. In the burst overlaps, only the tie points of the burst whose lines the
+        // deburst kept are used, so that each ground point has one set of radar coordinates.
+        let tie_points: Vec<_> = burst_tie_points
+            .into_iter()
+            .enumerate()
+            .flat_map(|(k, tie_points)| {
+                let offset = interferogram.line_offsets[k] as f64;
+                let lines = interferogram.burst_lines[k].clone();
+                tie_points.into_iter().filter_map(move |tie_point| {
+                    let line = tie_point.azimuth + offset;
+                    (line >= 0.0 && lines.contains(&(line.round() as usize))).then(|| {
+                        let [azimuth, range] = looks.multilooked_coords([line, tie_point.range]);
+                        TiePoint {
+                            azimuth,
+                            range,
+                            ..tie_point
+                        }
+                    })
+                })
+            })
+            .collect();
         let interferogram = multilook(interferogram.data.view(), looks);
         let coherence = multilook(coherence.data.view(), looks);
         log::info!(
@@ -1860,6 +1902,21 @@ mod tests {
         // Step 7: Goldstein phase filtering, with this crate's defaults (SNAP defaults to 64 × 64
         // blocks and α = 1, which filters harder).
         let filtered = GoldsteinFilter::default().apply(interferogram.view());
+
+        // Step 8: terrain correction, onto a grid of 30 m pixels (about the size of the
+        // multilooked pixels and of the DEM's) covering the tie points.
+        log::info!("Triangulating {} tie points", tie_points.len());
+        let start_time = std::time::Instant::now();
+        let geocoding = GeocodingFunction::new(tie_points);
+        let grid = LatLonGrid::covering(geocoding.bounds().unwrap(), 30.0);
+        let geocoded_interferogram = geocoding.geocode(filtered.view(), &grid);
+        let geocoded_coherence = geocoding.geocode(coherence.view(), &grid);
+        log::info!(
+            "Geocoded onto {} × {} pixels in {:?}",
+            grid.rows,
+            grid.cols,
+            start_time.elapsed()
+        );
 
         rr.log(
             "kumamoto/interferogram",
@@ -1873,6 +1930,33 @@ mod tests {
         .expect("Could not log the filtered interferogram to Rerun");
         rr.log("kumamoto/coherence", &rr_grayscale(&coherence))
             .expect("Could not log the coherence to Rerun");
+
+        // Geocoded images are north-up (row 0 is the northern edge of the grid). Their extent
+        // and the epicenter are logged as geographic primitives, which a map view shows.
+        rr.log(
+            "kumamoto/geocoded/interferogram",
+            &rr_phase_from_complex(&geocoded_interferogram),
+        )
+        .expect("Could not log the geocoded interferogram to Rerun");
+        rr.log(
+            "kumamoto/geocoded/coherence",
+            &rr_grayscale(&geocoded_coherence),
+        )
+        .expect("Could not log the geocoded coherence to Rerun");
+        rr.log(
+            "kumamoto/geocoded/extent",
+            &rerun::GeoLineStrings::from_lat_lon([grid.closed_corners_lat_lon()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .expect("Could not log the geocoded extent to Rerun");
+        rr.log(
+            "kumamoto/geocoded/epicenter",
+            &rerun::GeoPoints::from_lat_lon([(EPICENTER_LAT, EPICENTER_LON)])
+                .with_radii([rerun::Radius::new_ui_points(6.0)])
+                .with_colors([rerun::Color::from_rgb(255, 0, 0)]),
+        )
+        .expect("Could not log the epicenter to Rerun");
     }
 
     #[test]

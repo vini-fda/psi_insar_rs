@@ -4,6 +4,7 @@ pub mod datasets;
 pub mod deburst;
 pub mod dem;
 pub mod egm_2008;
+pub mod geocoding;
 pub mod geodesy;
 pub mod goldstein;
 pub mod granule_id;
