@@ -73,6 +73,17 @@ impl DEM {
         }
     }
 
+    /// Whether (`lat`, `lon`) is within the area covered by the DEM posts (edges included), i.e.
+    /// where [`get_height_at_lat_lon`](Self::get_height_at_lat_lon) interpolates instead of
+    /// clamping.
+    pub fn contains(&self, lat: f64, lon: f64) -> bool {
+        let igt = self.inv_geo_transform;
+        let col = lon * igt[0] + igt[1];
+        let row = lat * igt[2] + igt[3];
+        (0.0..=(self.cols - 1) as f64).contains(&col)
+            && (0.0..=(self.rows - 1) as f64).contains(&row)
+    }
+
     /// Maps (latitude, longitude) to raster [row, col].
     pub fn get_pixel_at_lat_lon(&self, lat: f64, lon: f64) -> [usize; 2] {
         let igt = self.inv_geo_transform;
@@ -384,5 +395,9 @@ mod tests {
         assert_eq!(dem.get_height_at_lat_lon(-0.5, 0.5), 15.0);
         // Outside the raster, values are clamped to the edge
         assert_eq!(dem.get_height_at_lat_lon(1.0, 5.0), 10.0);
+        assert!(dem.contains(-0.5, 0.5));
+        assert!(dem.contains(0.0, 1.0));
+        assert!(!dem.contains(1.0, 5.0));
+        assert!(!dem.contains(-1.5, 0.5));
     }
 }

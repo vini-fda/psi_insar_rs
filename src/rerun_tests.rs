@@ -36,6 +36,7 @@ mod tests {
             COHERENCE_THRESHOLD, CoherenceWindow, bounding_box_from_burst_stack,
             bounding_box_from_stack, coherence, coherence_mask, valid_data_mask,
         },
+        masking::{Connectivity, remove_small_components, zero_height_mask},
         metadata::annotation_xml::SlcProductAnnotation,
         multilook::{Looks, multilook},
         perp_baseline::{
@@ -1749,7 +1750,9 @@ mod tests {
     /// 8. Terrain correction: resample onto a north-up latitude/longitude grid of 30 m pixels,
     ///    using the DEM points of the warp functions as tie points.
     ///
-    /// Finally, as the recipe suggests, the phase is masked where the coherence is below 0.3.
+    /// Finally, the sea is masked out of the geocoded images, as in the recipe's figures (with
+    /// the DEM: the large regions at exactly 0 m), and, as the recipe suggests, the phase is
+    /// also masked where the coherence is below 0.3.
     ///
     /// The results are logged to Rerun both in radar geometry and geocoded, with pixels without
     /// data (and, in the masked interferogram, with low coherence) transparent, and with the
@@ -1831,6 +1834,7 @@ mod tests {
         let mut interferograms = Vec::new();
         let mut coherences = Vec::new();
         let mut burst_tie_points = Vec::new();
+        let mut dems = Vec::new();
         for (reference_burst, secondary_burst) in pairs {
             let reference = load_burst(&reference_burst.request());
             let secondary = load_burst(&secondary_burst.request());
@@ -1844,6 +1848,7 @@ mod tests {
             interferograms.push(interferogram);
             coherences.push(coherence);
             burst_tie_points.push(tie_points);
+            dems.push(dem);
         }
 
         // Step 4: deburst, in the geometry of the reference bursts.
@@ -1929,7 +1934,23 @@ mod tests {
         // Goldstein filtering keeps those zeros, and the coherence there only comes from the
         // valid neighbors in its window.
         let data_mask = valid_data_mask(interferogram.view());
-        let geocoded_data_mask = valid_data_mask(geocoded_interferogram.view());
+        // The sea is no data either, like in the recipe's figures: the regions of at least
+        // 1 km² (about 1100 pixels of 30 m) where the DEMs are at exactly 0 m. Each burst pair
+        // has its own DEM, so their zero-height pixels are merged first.
+        let mut zero_height = Array2::from_elem((grid.rows, grid.cols), false);
+        for dem in &dems {
+            zero_height.zip_mut_with(&zero_height_mask(dem, &grid), |zero, &at_zero| {
+                *zero |= at_zero;
+            });
+        }
+        let sea = remove_small_components(zero_height.view(), 1100, Connectivity::Eight);
+        let mut geocoded_data_mask = valid_data_mask(geocoded_interferogram.view());
+        geocoded_data_mask.zip_mut_with(&sea, |valid, &is_sea| *valid &= !is_sea);
+        log::info!(
+            "Masked {} sea pixels of {} at 0 m",
+            sea.iter().filter(|&&is_sea| is_sea).count(),
+            zero_height.iter().filter(|&&at_zero| at_zero).count()
+        );
         // The recipe's coherence mask, restricted to the pixels with data.
         let mut geocoded_coherence_mask =
             coherence_mask(geocoded_coherence.view(), COHERENCE_THRESHOLD);

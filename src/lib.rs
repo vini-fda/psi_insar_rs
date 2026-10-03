@@ -11,6 +11,7 @@ pub mod granule_id;
 pub mod interferometry;
 pub mod interpolation;
 pub mod io;
+pub mod masking;
 pub mod metadata;
 pub mod multilook;
 pub mod perp_baseline;
