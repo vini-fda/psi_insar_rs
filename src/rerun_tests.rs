@@ -112,9 +112,9 @@ mod tests {
 
     fn rr_phase_from_complex(complex: &Array2<Complex<f32>>) -> rerun::Image {
         let (rows, cols) = complex.dim();
+        // Logical order, so that arrays with non-standard strides (e.g. flipped views) are
+        // shown as indexed.
         let rgb_vector: Vec<u8> = complex
-            .as_slice_memory_order()
-            .unwrap()
             .iter()
             .flat_map(|&x| {
                 let phase = x.arg();
@@ -134,9 +134,9 @@ mod tests {
 
     fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
         let (rows, cols) = phase.dim();
+        // Logical order, so that arrays with non-standard strides (e.g. flipped views) are
+        // shown as indexed.
         let rgb_vector: Vec<u8> = phase
-            .as_slice_memory_order()
-            .unwrap()
             .iter()
             .flat_map(|&phase| {
                 let remainder = phase.rem_euclid(std::f32::consts::TAU);
@@ -1984,22 +1984,17 @@ mod tests {
         // blocks and α = 1, which filters harder).
         let filtered = GoldsteinFilter::default().apply(interferogram.view());
 
-        // On an ascending pass, lines run from south to north and samples from west to east,
-        // so flipping the lines puts north up (but the images stay in radar geometry).
-        fn north_up<T: Clone>(array: &Array2<T>) -> Array2<T> {
-            array.slice(s![..;-1, ..]).to_owned()
-        }
         rr.log(
             "kumamoto/interferogram",
-            &rr_phase_from_complex(&north_up(&interferogram)),
+            &rr_phase_from_complex(&interferogram),
         )
         .expect("Could not log the interferogram to Rerun");
         rr.log(
             "kumamoto/interferogram_filtered",
-            &rr_phase_from_complex(&north_up(&filtered)),
+            &rr_phase_from_complex(&filtered),
         )
         .expect("Could not log the filtered interferogram to Rerun");
-        rr.log("kumamoto/coherence", &rr_grayscale(&north_up(&coherence)))
+        rr.log("kumamoto/coherence", &rr_grayscale(&coherence))
             .expect("Could not log the coherence to Rerun");
     }
 
