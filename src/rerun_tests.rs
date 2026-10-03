@@ -28,6 +28,7 @@ mod tests {
         deburst::{BurstGeometry, Debursted, deburst},
         dem::DEM,
         geodesy::{geodetic_to_ecef, local_normal},
+        goldstein::GoldsteinFilter,
         granule_id::IWSwath,
         interferometry::{
             CoherenceWindow, bounding_box_from_burst_stack, bounding_box_from_stack, coherence,
@@ -1833,9 +1834,10 @@ mod tests {
     /// 4. Deburst the interferograms and coherences.
     /// 5. Remove the topographic phase (done per burst, before step 4, together with step 3).
     /// 6. Multilook (6 range looks, square ground pixels: 6 × 2 in IW1).
+    /// 7. Goldstein phase filtering (32 × 32 patches, α = 0.5).
     ///
-    /// Steps 7 (Goldstein phase filtering) and 8 (terrain correction) are not implemented yet,
-    /// so the results are logged to Rerun in radar geometry. Enhanced spectral diversity (ESD)
+    /// Step 8 (terrain correction) is not implemented yet, so the results are logged to Rerun
+    /// in radar geometry. Enhanced spectral diversity (ESD)
     /// is not applied either (neither does the recipe), so small phase jumps can remain at the
     /// burst boundaries.
     #[test]
@@ -1978,6 +1980,10 @@ mod tests {
             interferogram.dim()
         );
 
+        // Step 7: Goldstein phase filtering, with this crate's defaults (SNAP defaults to 64 × 64
+        // blocks and α = 1, which filters harder).
+        let filtered = GoldsteinFilter::default().apply(interferogram.view());
+
         // On an ascending pass, lines run from south to north and samples from west to east,
         // so flipping the lines puts north up (but the images stay in radar geometry).
         fn north_up<T: Clone>(array: &Array2<T>) -> Array2<T> {
@@ -1988,6 +1994,11 @@ mod tests {
             &rr_phase_from_complex(&north_up(&interferogram)),
         )
         .expect("Could not log the interferogram to Rerun");
+        rr.log(
+            "kumamoto/interferogram_filtered",
+            &rr_phase_from_complex(&north_up(&filtered)),
+        )
+        .expect("Could not log the filtered interferogram to Rerun");
         rr.log("kumamoto/coherence", &rr_grayscale(&north_up(&coherence)))
             .expect("Could not log the coherence to Rerun");
     }

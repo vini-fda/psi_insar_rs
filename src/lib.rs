@@ -5,6 +5,7 @@ pub mod deburst;
 pub mod dem;
 pub mod egm_2008;
 pub mod geodesy;
+pub mod goldstein;
 pub mod granule_id;
 pub mod interferometry;
 pub mod interpolation;
