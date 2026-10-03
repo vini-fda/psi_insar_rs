@@ -2,12 +2,14 @@
 mod tests {
     use std::f32::consts::PI;
 
+    use chrono::{NaiveDate, TimeZone, Utc};
     use nalgebra::{Matrix3, Unit, Vector3};
     use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2, Axis, s};
     use ndarray_npy::WriteNpyExt;
     use num_complex::{Complex, ComplexFloat};
     use rayon::prelude::*;
     use rerun::{Color, Image, RecordingStream};
+    use spade::Triangulation;
 
     use crate::{
         constants::SENTINEL_1_WAVELENGTH,
@@ -17,15 +19,26 @@ mod tests {
             interpolation2d::{KnabSincKernel, interpolate_2d},
         },
         datasets::{
-            asf::burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
+            asf::{
+                burst_download::Polarization,
+                burst_search::{AsfBurstSearch, BurstSearchQuery, SearchArea},
+            },
             cdse::orbit_download::CdseOrbitDownloader,
-            opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
+            opentopography::dem_download::CopernicusDemType,
         },
+        deburst::{BurstGeometry, Debursted, deburst},
         dem::DEM,
+        geocoding::{GeocodingFunction, LatLonGrid, TiePoint},
         geodesy::{geodetic_to_ecef, local_normal},
+        goldstein::GoldsteinFilter,
         granule_id::IWSwath,
-        interferometry::{bounding_box_from_burst_stack, bounding_box_from_stack},
+        interferometry::{
+            COHERENCE_THRESHOLD, CoherenceWindow, bounding_box_from_burst_stack,
+            bounding_box_from_stack, coherence, coherence_mask, valid_data_mask,
+        },
+        masking::{Connectivity, remove_small_components, zero_height_mask},
         metadata::annotation_xml::SlcProductAnnotation,
+        multilook::{Looks, multilook},
         perp_baseline::{
             EnhancedDelaunayWarpFunction, FlatEarthComponentsInterpolator, flat_earth_dphi,
             perp_baseline,
@@ -35,19 +48,11 @@ mod tests {
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
+        test_data::{
+            STACK_143_305967_IW3, burst_143_305967_iw3, dem_covering, fetch_dem, load_burst,
+        },
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
-
-    /// The Copernicus DEM covering `bounds`, downloaded from OpenTopography on the first run
-    /// (requires OPENTOPOGRAPHY_API_KEY) and read from the cache afterwards.
-    fn fetch_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> DEM {
-        OpenTopographyDemDownloader::builder()
-            .build()
-            .fetch_dem(bounds, dem_type)
-            .unwrap_or_else(|err| {
-                panic!("Could not fetch the {dem_type} DEM for {bounds:?}: {err}")
-            })
-    }
 
     fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
         let name = &burst.granule_id.raw_filename;
@@ -84,7 +89,7 @@ mod tests {
         let array = burst.data.array_f32();
         let (rows, cols) = array.dim();
         let complex = array.slice(s![0..rows / 2, 0..cols / 2]).to_owned();
-        let img = rr_phase_from_complex(&complex);
+        let img = rr_phase_from_complex(&complex, None);
         rr.log_static(log_name, &img)
             .expect("Could not log SLC Image Phase");
     }
@@ -101,47 +106,55 @@ mod tests {
             .expect("Unable to create Rerun image")
     }
 
-    fn rr_phase_from_complex(complex: &Array2<Complex<f32>>) -> rerun::Image {
-        let (rows, cols) = complex.dim();
-        let rgb_vector: Vec<u8> = complex
-            .as_slice_memory_order()
-            .unwrap()
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let remainder = phase.rem_euclid(std::f32::consts::TAU);
-                let normalized_phase = remainder / (std::f32::consts::TAU);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
+    /// An RGBA image with `colors` (one per pixel of a `rows × cols` image, in row-major order),
+    /// fully transparent where `mask` is `false`. Without a mask, every pixel is valid (opaque).
+    fn rr_masked_rgba(
+        (rows, cols): (usize, usize),
+        colors: impl Iterator<Item = [u8; 3]>,
+        mask: Option<&Array2<bool>>,
+    ) -> rerun::Image {
+        if let Some(mask) = mask {
+            assert_eq!(mask.dim(), (rows, cols), "Image and mask shapes differ");
+        }
+        // Logical order, so that arrays with non-standard strides (e.g. flipped views) are
+        // shown as indexed.
+        let valid = mask
+            .into_iter()
+            .flat_map(|mask| mask.iter().copied())
+            .chain(std::iter::repeat(true));
+        let rgba: Vec<u8> = colors
+            .zip(valid)
+            .flat_map(|([r, g, b], valid)| [r, g, b, if valid { 255 } else { 0 }])
             .collect();
-
         rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
+            rgba,
             [cols as u32, rows as u32],
-            rerun::ColorModel::RGB,
+            rerun::ColorModel::RGBA,
             rerun::ChannelDatatype::U8,
         )
     }
 
-    fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
-        let (rows, cols) = phase.dim();
-        let rgb_vector: Vec<u8> = phase
-            .as_slice_memory_order()
-            .unwrap()
-            .iter()
-            .flat_map(|&phase| {
-                let remainder = phase.rem_euclid(std::f32::consts::TAU);
-                let normalized_phase = remainder / (std::f32::consts::TAU);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
+    /// The cubehelix color of a (wrapped) phase.
+    fn phase_color(phase: f32) -> [u8; 3] {
+        let normalized_phase = phase.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+        cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+    }
 
-        rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [cols as u32, rows as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
+    /// The phase of `complex`, transparent outside `mask` (if any).
+    fn rr_phase_from_complex(
+        complex: &Array2<Complex<f32>>,
+        mask: Option<&Array2<bool>>,
+    ) -> rerun::Image {
+        rr_masked_rgba(
+            complex.dim(),
+            complex.iter().map(|z| phase_color(z.arg())),
+            mask,
         )
+    }
+
+    /// `phase`, transparent outside `mask` (if any).
+    fn rr_phase(phase: &Array2<f32>, mask: Option<&Array2<bool>>) -> rerun::Image {
+        rr_masked_rgba(phase.dim(), phase.iter().map(|&p| phase_color(p)), mask)
     }
 
     fn rr_stft_3d_tensor(
@@ -175,16 +188,8 @@ mod tests {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
 
         let rr = rerun::RecordingStreamBuilder::new("plot_slc_images")
             .connect_grpc()
@@ -199,16 +204,8 @@ mod tests {
     #[ignore]
     fn compare_zero_doppler() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
         let osh1 = primary.orbital_state_history();
         let osh2 = secondary.orbital_state_history();
         let ground_target_pos =
@@ -257,7 +254,20 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let dem = DEM::open_file("dem.tif");
+        // Backgeocoding
+        let bursts = [
+            "20151022",
+            "20150916",
+            // "20150928",
+            // "20151010",
+            // "20151103",
+            // "20151115",
+            // "20151127",
+        ]
+        .iter()
+        .map(|date| burst_143_305967_iw3(date))
+        .collect::<Vec<_>>();
+        let dem = dem_covering(&bursts, CopernicusDemType::Cop90);
         // DEM extent
         let dem_corners = dem.closed_corners_lat_lon();
         rr.log(
@@ -268,19 +278,6 @@ mod tests {
         )
         .unwrap();
 
-        // Backgeocoding
-        let bursts = [
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            // "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        ]
-        .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
-        .collect::<Vec<_>>();
         for burst in bursts {
             let annotation = &burst.metadata;
             let burst_name = &burst.granule_id.raw_filename;
@@ -338,16 +335,8 @@ mod tests {
     #[ignore]
     fn test_orbit_speed() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151103");
         let rr = rerun::RecordingStreamBuilder::new("test_orbit_speed")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -419,21 +408,17 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
         let secondaries = [
-            // "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            // "20150916",
+            // "20150928",
+            // "20151010",
+            // "20151103",
+            // "20151115",
+            "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -578,22 +563,12 @@ mod tests {
     #[test]
     #[ignore]
     fn coarse_coregistration_stack() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
         let secondaries = [
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "20151022", "20150916", "20150928", "20151010", "20151103", "20151115", "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let rec = rerun::RecordingStreamBuilder::new("coarse_coregistration_stack")
             .connect_grpc()
@@ -656,7 +631,7 @@ mod tests {
             let sec_patch =
                 secondary_image.slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()]);
             let phase: Array2<f32> = (&ref_patch.map(|x| x.conj()) * &sec_patch).map(|x| x.arg());
-            rec.log("insar_phase", &rr_phase(&phase)).unwrap();
+            rec.log("insar_phase", &rr_phase(&phase, None)).unwrap();
 
             let lat_lon = secondary
                 .metadata
@@ -679,17 +654,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resample_secondary_to_reference() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
 
         let burst_index = 0;
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
@@ -768,7 +735,11 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -822,7 +793,11 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem_rgb() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -905,17 +880,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_warp_function() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
         let rho = crate::coregistration::compute_warp_function(&reference, &secondary, &dem);
         let (rows, cols) = rho.dim();
         let rho = rho.slice(s![0..rows, 0..cols / 2]).to_owned();
@@ -932,12 +899,8 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem_radar_coords() {
-        let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let dem = dem_covering([&reference], CopernicusDemType::Cop90);
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -1292,11 +1255,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
 
         let image = reference.data.array_f32();
         let rec =
@@ -1359,11 +1318,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
 
         let array = reference.data.array_f32();
         // cut cols in half
@@ -1395,17 +1350,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resampled_phase_difference() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
 
         // Secondary resampled to reference (also deramped)
         let burst_index = 0;
@@ -1459,48 +1406,13 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        // The same IW3/VV burst of each acquisition. Bursts are downloaded from ASF on the first
-        // run (requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD) and read from the user cache
-        // directory afterwards (see `default_cache_dir`).
-        let downloader = AsfBurstDownloader::builder().build();
-        let load_burst = |granule: &str, burst_index: u32| {
-            let burst = BurstRequest::new(granule, IWSwath::IW3, Polarization::VV, burst_index);
-            let safe_dir = downloader
-                .fetch_burst(&burst)
-                .unwrap_or_else(|err| panic!("Could not fetch {burst:?}: {err:?}"));
-            Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, safe_dir).unwrap()
-        };
-        let reference = load_burst(
-            "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
-            2,
-        );
-        let secondaries = [
-            (
-                "S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956",
-                4,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF",
-                4,
-            ),
-        ]
-        .map(|(granule, burst_index)| load_burst(granule, burst_index));
+        // The same IW3/VV burst of each acquisition, with the 2015-10-22 one as reference.
+        let reference = burst_143_305967_iw3("20151022");
+        let secondaries: Vec<_> = STACK_143_305967_IW3
+            .iter()
+            .filter(|(date, _, _)| *date != "20151022")
+            .map(|(date, _, _)| burst_143_305967_iw3(date))
+            .collect();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
@@ -1613,7 +1525,7 @@ mod tests {
                     (s1 * s2.conj()).arg()
                 });
 
-            rr.log("phase", &rr_phase(&phase_diff))
+            rr.log("phase", &rr_phase(&phase_diff, None))
                 .expect("Could not log phase to Rerun");
 
             log::info!("Removing topographic phase");
@@ -1686,9 +1598,421 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("diff_phase", &rr_phase(&phase_diff))
+            rr.log("diff_phase", &rr_phase(&phase_diff, None))
                 .expect("Could not log phase to Rerun");
         }
+    }
+
+    /// Steps 2, 3 and 5 of NASA's interferogram recipe (see [`kumamoto_interferogram`]) for one
+    /// burst: coregisters `secondary` to `reference` with precise orbits and the DEM, forms the
+    /// interferogram `s1 · s2*`, removes its flat-earth and topographic phase, and estimates its
+    /// coherence. Returns the interferogram and the coherence, in the geometry of the reference
+    /// burst, and the tie points of the warp function (the DEM points with their coordinates in
+    /// the reference burst), for geocoding.
+    ///
+    /// Both swaths must be single-burst products, as served by the ASF burst extractor: their
+    /// first line is the burst's first line, so the warp function's azimuth coordinates (which
+    /// count lines from the product start) are burst lines.
+    fn flattened_burst_interferogram(
+        reference: &Sentinel1SlcIWSwath,
+        secondary: &Sentinel1SlcIWSwath,
+        dem: &DEM,
+    ) -> (Array2<Complex<f32>>, Array2<f32>, Vec<TiePoint>) {
+        // Precise orbits are used both for the warp function and for the geometric phase, so
+        // both steps share the same trajectories and time reference.
+        let osh_1 = reference.precise_orbital_state_history();
+        let osh_2 = secondary.precise_orbital_state_history();
+        let reference_burst = reference.burst(0);
+        let warp_function =
+            EnhancedDelaunayWarpFunction::with_orbits(&reference_burst, &osh_1, &osh_2, dem);
+        let reference_img = &reference_burst.burst_data.array;
+        // Only the secondary is resampled, so only the secondary is deramped, and it is
+        // reramped at the secondary coordinates after resampling.
+        let secondary_img = DerampSlcBurst::process_burst(&secondary.burst(0));
+        let secondary_reramp =
+            DerampSlcBurst::new(&secondary.metadata, 0).direction(Direction::Backward);
+        let kernel = KnabSincKernel::default();
+
+        const CHUNK_SIZE: usize = 256;
+        let mut coregistered_secondary = Array2::zeros(reference_img.dim());
+        let mut interferogram = Array2::zeros(reference_img.dim());
+        coregistered_secondary
+            .axis_chunks_iter_mut(Axis(0), CHUNK_SIZE)
+            .into_par_iter()
+            .zip(interferogram.axis_chunks_iter_mut(Axis(0), CHUNK_SIZE))
+            .enumerate()
+            .for_each_init(
+                || warp_function.triangulation.natural_neighbor(),
+                |nn, (chunk_idx, (mut secondary_chunk, mut interferogram_chunk))| {
+                    for i in 0..secondary_chunk.nrows() {
+                        let ref_az = chunk_idx * CHUNK_SIZE + i;
+                        for ref_rg in 0..secondary_chunk.ncols() {
+                            let s1 = reference_img[[ref_az, ref_rg]];
+                            // Invalid (zero-filled) reference samples stay zero.
+                            if s1.norm_sqr() == 0.0 {
+                                continue;
+                            }
+                            let point = [ref_az as f64, ref_rg as f64].into();
+                            let (Some(sec_az), Some(sec_rg), Some(lat), Some(lon)) = (
+                                nn.interpolate(|v| v.data().secondary_coords[0], point),
+                                nn.interpolate(|v| v.data().secondary_coords[1], point),
+                                nn.interpolate(|v| v.data().lat, point),
+                                nn.interpolate(|v| v.data().lon, point),
+                            ) else {
+                                continue;
+                            };
+
+                            // Step 2: resample the secondary at the warped coordinates.
+                            let reramp_phase = secondary_reramp.phi_at_pixel(sec_az, sec_rg);
+                            let reramp =
+                                Complex::new(reramp_phase.cos() as f32, reramp_phase.sin() as f32);
+                            let s2 = interpolate_2d(
+                                secondary_img.view(),
+                                sec_az as f32,
+                                sec_rg as f32,
+                                &kernel,
+                            ) * reramp;
+
+                            // Steps 3 and 5: the phase of s1 · s2* expected from the geometry
+                            // alone (flat earth and topography) is -4π(r1 - r2)/λ, so adding
+                            // 4π(r1 - r2)/λ leaves the deformation (plus atmosphere and noise).
+                            let target = Vector3::from(dem.get_ecef_at_lat_lon(lat, lon));
+                            let t1 = osh_1.pixel_to_zero_doppler_time(ref_az as f64, ref_rg as f64);
+                            let t2 = osh_2.pixel_to_zero_doppler_time(sec_az, sec_rg);
+                            let r1 = (osh_1.interp_pos(t1) - target).norm();
+                            let r2 = (osh_2.interp_pos(t2) - target).norm();
+                            // Wrap in f64 first: the phase can be ~1e4 rad, where f32 loses
+                            // precision.
+                            let geometric_phase = (4.0 * std::f64::consts::PI * (r1 - r2)
+                                / SENTINEL_1_WAVELENGTH)
+                                .rem_euclid(std::f64::consts::TAU);
+                            let flattening = Complex::new(
+                                geometric_phase.cos() as f32,
+                                geometric_phase.sin() as f32,
+                            );
+
+                            secondary_chunk[[i, ref_rg]] = s2;
+                            interferogram_chunk[[i, ref_rg]] = s1 * s2.conj() * flattening;
+                        }
+                    }
+                },
+            );
+
+        let coherence = coherence(
+            interferogram.view(),
+            reference_img.view(),
+            coregistered_secondary.view(),
+            CoherenceWindow::default(),
+        );
+        let tie_points = warp_function
+            .triangulation
+            .vertices()
+            .map(|vertex| {
+                let mapping = vertex.data();
+                TiePoint {
+                    lat: mapping.lat,
+                    lon: mapping.lon,
+                    azimuth: mapping.reference_coords[0],
+                    range: mapping.reference_coords[1],
+                }
+            })
+            .collect();
+        (interferogram, coherence, tie_points)
+    }
+
+    /// A grayscale image of `values` in `[0, 1]` (e.g. coherence), transparent outside `mask`
+    /// (if any).
+    fn rr_grayscale(values: &Array2<f32>, mask: Option<&Array2<bool>>) -> rerun::Image {
+        let gray = |v: f32| {
+            let level = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            [level; 3]
+        };
+        rr_masked_rgba(values.dim(), values.iter().map(|&v| gray(v)), mask)
+    }
+
+    /// Differential interferogram of the April 2016 Kumamoto earthquakes, following NASA
+    /// Earthdata's "Create an Interferogram Using ESA's Sentinel-1 Toolbox" data recipe:
+    /// <https://www.earthdata.nasa.gov/learn/data-recipes/create-interferogram-using-esas-sentinel-1-toolbox>
+    ///
+    /// Like the recipe, it uses the Sentinel-1A IW1/VV acquisitions of 2016-04-08 (reference,
+    /// before the April 14 foreshock and the April 16 mainshock) and 2016-04-20 (secondary).
+    /// Instead of whole SLC products, it uses the bursts around the mainshock epicenter, and
+    /// follows the recipe's steps:
+    ///
+    /// 1. Find and download the bursts (ASF search and burst extractor).
+    /// 2. Coregister each secondary burst to its reference burst (precise orbits, DEM-assisted
+    ///    back-geocoding).
+    /// 3. Form each burst's interferogram and coherence.
+    /// 4. Deburst the interferograms and coherences.
+    /// 5. Remove the topographic phase (done per burst, before step 4, together with step 3).
+    /// 6. Multilook (6 range looks, square ground pixels: 6 × 2 in IW1).
+    /// 7. Goldstein phase filtering (32 × 32 patches, α = 0.5).
+    /// 8. Terrain correction: resample onto a north-up latitude/longitude grid of 30 m pixels,
+    ///    using the DEM points of the warp functions as tie points.
+    ///
+    /// Finally, the sea is masked out of the geocoded images, as in the recipe's figures (with
+    /// the DEM: the large regions at exactly 0 m), and, as the recipe suggests, the phase is
+    /// also masked where the coherence is below 0.3.
+    ///
+    /// The results are logged to Rerun both in radar geometry and geocoded, with pixels without
+    /// data (and, in the masked interferogram, with low coherence) transparent, and with the
+    /// extent of the geocoded grid and the epicenter as geographic primitives for a map view. Enhanced
+    /// spectral diversity (ESD) is not applied (neither does the recipe), so small phase jumps
+    /// can remain at the burst boundaries.
+    #[test]
+    #[ignore]
+    fn kumamoto_interferogram() {
+        env_logger::init();
+        log::info!("Starting kumamoto_interferogram test.");
+        let rr = rerun::RecordingStreamBuilder::new("kumamoto_interferogram")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        // Epicenter of the M7.0 mainshock, from the USGS event page:
+        // <https://earthquake.usgs.gov/earthquakes/eventpage/us20005iis/executive>
+        const EPICENTER_LAT: f64 = 32.7906;
+        const EPICENTER_LON: f64 = 130.7543;
+        let reference_date = NaiveDate::from_ymd_opt(2016, 4, 8).unwrap();
+        let secondary_date = NaiveDate::from_ymd_opt(2016, 4, 20).unwrap();
+
+        // Step 1: find the IW1 bursts whose centers are within about 22 km (north-south) and
+        // 23 km (east-west) of the epicenter, which are the 3 consecutive bursts around it. The
+        // ASF search needs no credentials, and its response is cached (see
+        // `burst_search::default_cache_dir`), so that once the bursts, orbits and DEMs are
+        // cached, the test runs offline.
+        let area = SearchArea::around(EPICENTER_LAT, EPICENTER_LON, 0.2, 0.25);
+        let query = BurstSearchQuery::new(
+            area,
+            Utc.from_utc_datetime(&reference_date.and_hms_opt(0, 0, 0).unwrap()),
+            Utc.from_utc_datetime(&secondary_date.and_hms_opt(23, 59, 59).unwrap()),
+            Polarization::VV,
+        )
+        .subswath(IWSwath::IW1);
+        let bursts = AsfBurstSearch::builder()
+            .build()
+            .search(&query)
+            .unwrap_or_else(|err| panic!("Could not search {query:?}: {err}"));
+        // Bursts with the same ID image the same area from the same track, so each reference
+        // burst is paired with the secondary burst with its ID.
+        let reference_bursts: Vec<_> = bursts
+            .iter()
+            .filter(|burst| {
+                burst.start_time.date_naive() == reference_date
+                    && area.contains(burst.center_lat, burst.center_lon)
+            })
+            .collect();
+        assert!(
+            !reference_bursts.is_empty(),
+            "No IW1 burst around the epicenter on {reference_date}"
+        );
+        let pairs: Vec<_> = reference_bursts
+            .into_iter()
+            .map(|reference| {
+                let secondary = bursts
+                    .iter()
+                    .find(|burst| {
+                        burst.start_time.date_naive() == secondary_date
+                            && burst.full_burst_id == reference.full_burst_id
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("No burst {} on {secondary_date}", reference.full_burst_id)
+                    });
+                log::info!(
+                    "Burst {}: index {} of {} and index {} of {}",
+                    reference.full_burst_id,
+                    reference.burst_index,
+                    reference.granule,
+                    secondary.burst_index,
+                    secondary.granule
+                );
+                (reference, secondary)
+            })
+            .collect();
+
+        // Steps 2, 3 and 5, burst by burst. Each pair gets a DEM covering just its bursts,
+        // since the warp function visits every DEM point.
+        let mut references = Vec::new();
+        let mut interferograms = Vec::new();
+        let mut coherences = Vec::new();
+        let mut burst_tie_points = Vec::new();
+        let mut dems = Vec::new();
+        for (reference_burst, secondary_burst) in pairs {
+            let reference = load_burst(&reference_burst.request());
+            let secondary = load_burst(&secondary_burst.request());
+            let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
+            log::info!("Processing burst {}", reference_burst.full_burst_id);
+            let start_time = std::time::Instant::now();
+            let (interferogram, coherence, tie_points) =
+                flattened_burst_interferogram(&reference, &secondary, &dem);
+            log::info!("Time taken: {:?}", start_time.elapsed());
+            references.push(reference);
+            interferograms.push(interferogram);
+            coherences.push(coherence);
+            burst_tie_points.push(tie_points);
+            dems.push(dem);
+        }
+
+        // Step 4: deburst, in the geometry of the reference bursts.
+        let geometries: Vec<_> = references
+            .iter()
+            .map(|reference| BurstGeometry::from_annotation(&reference.metadata, 0).unwrap())
+            .collect();
+        let azimuth_time_interval = references[0]
+            .metadata
+            .image_annotation
+            .image_information
+            .azimuth_time_interval;
+        fn deburst_all<T: Copy + num_traits::Zero + Send + Sync>(
+            arrays: &[Array2<T>],
+            geometries: &[BurstGeometry],
+            azimuth_time_interval: f64,
+        ) -> Debursted<T> {
+            let bursts: Vec<_> = arrays.iter().map(|a| a.view()).zip(geometries).collect();
+            deburst(&bursts, azimuth_time_interval).unwrap()
+        }
+        let interferogram = deburst_all(&interferograms, &geometries, azimuth_time_interval);
+        drop(interferograms);
+        let coherence = deburst_all(&coherences, &geometries, azimuth_time_interval);
+        drop(coherences);
+        log::info!(
+            "Debursted {} bursts: {:?} pixels from {}",
+            references.len(),
+            interferogram.data.dim(),
+            interferogram.first_line_time
+        );
+
+        // Step 6: multilook. The complex interferogram is averaged, not its phase.
+        let looks = Looks::square_ground_pixel(6, &references[0].metadata);
+        // The tie points of each burst, moved to the debursted lines and then to the multilooked
+        // image. In the burst overlaps, only the tie points of the burst whose lines the
+        // deburst kept are used, so that each ground point has one set of radar coordinates.
+        let tie_points: Vec<_> = burst_tie_points
+            .into_iter()
+            .enumerate()
+            .flat_map(|(k, tie_points)| {
+                let offset = interferogram.line_offsets[k] as f64;
+                let lines = interferogram.burst_lines[k].clone();
+                tie_points.into_iter().filter_map(move |tie_point| {
+                    let line = tie_point.azimuth + offset;
+                    (line >= 0.0 && lines.contains(&(line.round() as usize))).then(|| {
+                        let [azimuth, range] = looks.multilooked_coords([line, tie_point.range]);
+                        TiePoint {
+                            azimuth,
+                            range,
+                            ..tie_point
+                        }
+                    })
+                })
+            })
+            .collect();
+        let interferogram = multilook(interferogram.data.view(), looks);
+        let coherence = multilook(coherence.data.view(), looks);
+        log::info!(
+            "Multilooked with {looks:?}: {:?} pixels",
+            interferogram.dim()
+        );
+
+        // Step 7: Goldstein phase filtering, with this crate's defaults (SNAP defaults to 64 × 64
+        // blocks and α = 1, which filters harder).
+        let filtered = GoldsteinFilter::default().apply(interferogram.view());
+
+        // Step 8: terrain correction, onto a grid of 30 m pixels (about the size of the
+        // multilooked pixels and of the DEM's) covering the tie points.
+        log::info!("Triangulating {} tie points", tie_points.len());
+        let start_time = std::time::Instant::now();
+        let geocoding = GeocodingFunction::new(tie_points);
+        let grid = LatLonGrid::covering(geocoding.bounds().unwrap(), 30.0);
+        let geocoded_interferogram = geocoding.geocode(filtered.view(), &grid);
+        let geocoded_coherence = geocoding.geocode(coherence.view(), &grid);
+        log::info!(
+            "Geocoded onto {} × {} pixels in {:?}",
+            grid.rows,
+            grid.cols,
+            start_time.elapsed()
+        );
+
+        // Pixels where the interferogram has no data (zero) are transparent in all images:
+        // Goldstein filtering keeps those zeros, and the coherence there only comes from the
+        // valid neighbors in its window.
+        let data_mask = valid_data_mask(interferogram.view());
+        // The sea is no data either, like in the recipe's figures: the regions of at least
+        // 1 km² (about 1100 pixels of 30 m) where the DEMs are at exactly 0 m. Each burst pair
+        // has its own DEM, so their zero-height pixels are merged first.
+        let mut zero_height = Array2::from_elem((grid.rows, grid.cols), false);
+        for dem in &dems {
+            zero_height.zip_mut_with(&zero_height_mask(dem, &grid), |zero, &at_zero| {
+                *zero |= at_zero;
+            });
+        }
+        let sea = remove_small_components(zero_height.view(), 1100, Connectivity::Eight);
+        let mut geocoded_data_mask = valid_data_mask(geocoded_interferogram.view());
+        geocoded_data_mask.zip_mut_with(&sea, |valid, &is_sea| *valid &= !is_sea);
+        log::info!(
+            "Masked {} sea pixels of {} at 0 m",
+            sea.iter().filter(|&&is_sea| is_sea).count(),
+            zero_height.iter().filter(|&&at_zero| at_zero).count()
+        );
+        // The recipe's coherence mask, restricted to the pixels with data.
+        let mut geocoded_coherence_mask =
+            coherence_mask(geocoded_coherence.view(), COHERENCE_THRESHOLD);
+        geocoded_coherence_mask.zip_mut_with(&geocoded_data_mask, |valid, &has_data| {
+            *valid &= has_data;
+        });
+        log::info!(
+            "Coherence of at least {COHERENCE_THRESHOLD} in {} of {} geocoded pixels with data",
+            geocoded_coherence_mask
+                .iter()
+                .filter(|&&valid| valid)
+                .count(),
+            geocoded_data_mask.iter().filter(|&&valid| valid).count()
+        );
+
+        rr.log(
+            "kumamoto/interferogram",
+            &rr_phase_from_complex(&interferogram, Some(&data_mask)),
+        )
+        .expect("Could not log the interferogram to Rerun");
+        rr.log(
+            "kumamoto/interferogram_filtered",
+            &rr_phase_from_complex(&filtered, Some(&data_mask)),
+        )
+        .expect("Could not log the filtered interferogram to Rerun");
+        rr.log(
+            "kumamoto/coherence",
+            &rr_grayscale(&coherence, Some(&data_mask)),
+        )
+        .expect("Could not log the coherence to Rerun");
+
+        // Geocoded images are north-up (row 0 is the northern edge of the grid). Their extent
+        // and the epicenter are logged as geographic primitives, which a map view shows.
+        rr.log(
+            "kumamoto/geocoded/interferogram",
+            &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_data_mask)),
+        )
+        .expect("Could not log the geocoded interferogram to Rerun");
+        rr.log(
+            "kumamoto/geocoded/interferogram_masked",
+            &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_coherence_mask)),
+        )
+        .expect("Could not log the masked geocoded interferogram to Rerun");
+        rr.log(
+            "kumamoto/geocoded/coherence",
+            &rr_grayscale(&geocoded_coherence, Some(&geocoded_data_mask)),
+        )
+        .expect("Could not log the geocoded coherence to Rerun");
+        rr.log(
+            "kumamoto/geocoded/extent",
+            &rerun::GeoLineStrings::from_lat_lon([grid.closed_corners_lat_lon()])
+                .with_radii([rerun::Radius::new_ui_points(2.0)])
+                .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+        )
+        .expect("Could not log the geocoded extent to Rerun");
+        rr.log(
+            "kumamoto/geocoded/epicenter",
+            &rerun::GeoPoints::from_lat_lon([(EPICENTER_LAT, EPICENTER_LON)])
+                .with_radii([rerun::Radius::new_ui_points(6.0)])
+                .with_colors([rerun::Color::from_rgb(255, 0, 0)]),
+        )
+        .expect("Could not log the epicenter to Rerun");
     }
 
     #[test]
@@ -1699,21 +2023,12 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("topo_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
         let secondaries = [
-            "download/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302.SAFE",
-            "download/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
+            "20150916", "20150928", "20151010", "20151103", "20151115", "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -1857,7 +2172,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx))
+            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx, None))
                 .expect("Could not log phase to Rerun");
 
             log::info!("Calculating topographic phase (exact)");
@@ -1922,7 +2237,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact))
+            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact, None))
                 .expect("Could not log phase to Rerun");
         }
     }
@@ -1932,16 +2247,8 @@ mod tests {
     fn warp_fn_offsets_histogram() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_histogram test.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
@@ -1996,16 +2303,8 @@ mod tests {
     fn orbital_path_coregistration() {
         env_logger::init();
         log::info!("Starting orbital_path_coregistration test.");
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&primary, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
@@ -2187,16 +2486,8 @@ mod tests {
     fn warp_fn_offsets_mesh() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_mesh test.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
@@ -2283,17 +2574,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_flat_earth_dphi() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&primary, &secondary], CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2332,17 +2615,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_interpolated_flat_earth_dphi() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&primary, &secondary], CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2437,16 +2712,8 @@ mod tests {
     #[ignore]
     fn plot_warp_fn() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
         let [min_lat, max_lat, min_lon, max_lon] = &primary
             .metadata
             .geolocation_grid
@@ -2517,7 +2784,11 @@ mod tests {
     #[test]
     #[ignore]
     fn dem_mesh_test() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2699,7 +2970,11 @@ mod tests {
         rec.log_static("universe/z", &arrow_z).unwrap();
 
         // DEM
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
         let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; dem.len()];
         let vertex_colors: Vec<u32> = dem.vertex_colors();
@@ -2912,7 +3187,7 @@ mod tests {
             .expect("Could not log resampled_amplitude to Rerun");
 
         // Log phase for resampled data
-        let rr_resampled_phase = rr_phase_from_complex(&resampled_data);
+        let rr_resampled_phase = rr_phase_from_complex(&resampled_data, None);
         rr.log("resampled_phase", &rr_resampled_phase)
             .expect("Could not log resampled_phase to Rerun");
 
@@ -2926,7 +3201,7 @@ mod tests {
             .expect("Could not log reference_amplitude to Rerun");
 
         // Log phase for reference data
-        let rr_ref_phase = rr_phase_from_complex(&ref_array);
+        let rr_ref_phase = rr_phase_from_complex(&ref_array, None);
         rr.log("reference_phase", &rr_ref_phase)
             .expect("Could not log reference_phase to Rerun");
     }

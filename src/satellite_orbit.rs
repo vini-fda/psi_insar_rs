@@ -913,12 +913,13 @@ pub fn zero_doppler_time(azimuth_index: f64, annotation: &SlcProductAnnotation) 
 mod tests {
     use super::OrbitalStateHistory;
     use crate::{
-        dem::DEM,
-        metadata::{
-            annotation_xml::{OrbitList, SlcProductAnnotation},
-            orbit_xml::EarthExplorerFile,
+        datasets::{
+            cdse::orbit_download::CdseOrbitDownloader,
+            opentopography::dem_download::CopernicusDemType,
         },
+        metadata::annotation_xml::{OrbitList, SlcProductAnnotation},
         satellite_orbit::radar_coords_to_pixel_coords,
+        test_data::fetch_dem,
     };
 
     /// Reads the first `<orbitList>` element found in the XML file at `path`.
@@ -945,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Needs to open external files"]
+    #[ignore = "Needs to download external data"]
     fn find_zero_doppler_from_orbit_list() {
         let annotation =
             SlcProductAnnotation::open("src/metadata/test_data/annotation_example.xml")
@@ -953,9 +954,27 @@ mod tests {
         // let orbit_list = read_orbit_list_from_file("src/metadata/test_data/annotation_example.xml");
         let start_time = annotation.ads_header.start_time;
         let end_time = annotation.ads_header.stop_time;
-        let eef = EarthExplorerFile::open("orbit.EOF").expect("Failed to open orbit file");
+        // The precise orbit (requires CDSE credentials on the first run) and the DEM around the
+        // annotated burst, both read from their caches afterwards.
+        let eef = CdseOrbitDownloader::builder()
+            .build()
+            .fetch_poe_orbit(annotation.ads_header.mission_id, start_time, end_time)
+            .expect("Failed to fetch the precise orbit");
         let osh = OrbitalStateHistory::from_poe_timeframe(eef, start_time, end_time);
-        let dem = DEM::open_file("dem.tif");
+        let [min_lat, max_lat, min_lon, max_lon] = annotation
+            .geolocation_grid
+            .geolocation_grid_point_list
+            .get_bounding_box_lat_lon();
+        let margin = 0.05;
+        let dem = fetch_dem(
+            [
+                min_lat - margin,
+                max_lat + margin,
+                min_lon - margin,
+                max_lon + margin,
+            ],
+            CopernicusDemType::Cop90,
+        );
         let [lat, lon] = [19.498_314_288_106_79, -98.593_010_003_702_77];
         let pos = dem.get_ecef_at_lat_lon(lat, lon);
 

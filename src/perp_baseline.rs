@@ -965,20 +965,15 @@ pub fn coregister_and_remove_flat_phase(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{
         datasets::opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
-        granule_id::IWSwath,
+        test_data::burst_143_305967_iw3,
     };
 
     #[test]
     #[ignore = "Needs to download external data"]
     fn get_bounding_box_lat_lon() {
-        let burst = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-        )
-        .unwrap();
+        let burst = burst_143_305967_iw3("20151022");
         let metadata = &burst.metadata;
         let [min_lat, max_lat, min_lon, max_lon] = &metadata
             .geolocation_grid

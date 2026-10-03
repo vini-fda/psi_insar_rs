@@ -524,16 +524,16 @@ impl Sentinel1SlcIWBurst {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::test_data::burst_143_305967_iw3;
 
     #[test]
-    #[ignore = "Needs to open external files"]
+    #[ignore = "Needs to download external data"]
     fn test_load_slc_burst() {
-        // root directory
-        let root = PathBuf::from(
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
+        let swath = burst_143_305967_iw3("20151022");
+        assert_eq!(swath.metadata.swath_timing.burst_list.bursts.len(), 1);
+        assert_eq!(
+            swath.burst(0).burst_data.raster_size(),
+            swath.data.raster_size()
         );
-        let _ = Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW1, &root)
-            .expect("Failed to load burst");
     }
 }

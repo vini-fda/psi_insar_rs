@@ -1,17 +1,24 @@
 pub mod constants;
 pub mod coregistration;
 pub mod datasets;
+pub mod deburst;
 pub mod dem;
 pub mod egm_2008;
+pub mod geocoding;
 pub mod geodesy;
+pub mod goldstein;
 pub mod granule_id;
 pub mod interferometry;
 pub mod interpolation;
 pub mod io;
+pub mod masking;
 pub mod metadata;
+pub mod multilook;
 pub mod perp_baseline;
 mod rerun_tests;
 pub mod satellite_orbit;
 pub mod sentinel;
 pub mod slc_image;
+#[cfg(test)]
+mod test_data;
 pub mod visualization;

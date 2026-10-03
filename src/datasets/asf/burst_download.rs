@@ -218,6 +218,20 @@ impl std::fmt::Display for Polarization {
     }
 }
 
+impl std::str::FromStr for Polarization {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "HH" => Ok(Polarization::HH),
+            "HV" => Ok(Polarization::HV),
+            "VH" => Ok(Polarization::VH),
+            "VV" => Ok(Polarization::VV),
+            s => Err(format!("Invalid polarization: {s}")),
+        }
+    }
+}
+
 /// A single burst of a Sentinel-1 IW SLC product, as addressed by the ASF burst extractor:
 /// `GET /{granule}/{subswath}/{polarization}/{burst_index}.zip`.
 #[derive(Debug, Clone, PartialEq, Eq)]
