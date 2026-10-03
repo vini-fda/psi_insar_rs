@@ -33,7 +33,8 @@ mod tests {
         goldstein::GoldsteinFilter,
         granule_id::IWSwath,
         interferometry::{
-            CoherenceWindow, bounding_box_from_burst_stack, bounding_box_from_stack, coherence,
+            COHERENCE_THRESHOLD, CoherenceWindow, bounding_box_from_burst_stack,
+            bounding_box_from_stack, coherence, coherence_mask, valid_data_mask,
         },
         metadata::annotation_xml::SlcProductAnnotation,
         multilook::{Looks, multilook},
@@ -87,7 +88,7 @@ mod tests {
         let array = burst.data.array_f32();
         let (rows, cols) = array.dim();
         let complex = array.slice(s![0..rows / 2, 0..cols / 2]).to_owned();
-        let img = rr_phase_from_complex(&complex);
+        let img = rr_phase_from_complex(&complex, None);
         rr.log_static(log_name, &img)
             .expect("Could not log SLC Image Phase");
     }
@@ -104,47 +105,55 @@ mod tests {
             .expect("Unable to create Rerun image")
     }
 
-    fn rr_phase_from_complex(complex: &Array2<Complex<f32>>) -> rerun::Image {
-        let (rows, cols) = complex.dim();
+    /// An RGBA image with `colors` (one per pixel of a `rows × cols` image, in row-major order),
+    /// fully transparent where `mask` is `false`. Without a mask, every pixel is valid (opaque).
+    fn rr_masked_rgba(
+        (rows, cols): (usize, usize),
+        colors: impl Iterator<Item = [u8; 3]>,
+        mask: Option<&Array2<bool>>,
+    ) -> rerun::Image {
+        if let Some(mask) = mask {
+            assert_eq!(mask.dim(), (rows, cols), "Image and mask shapes differ");
+        }
         // Logical order, so that arrays with non-standard strides (e.g. flipped views) are
         // shown as indexed.
-        let rgb_vector: Vec<u8> = complex
-            .iter()
-            .flat_map(|&x| {
-                let phase = x.arg();
-                let remainder = phase.rem_euclid(std::f32::consts::TAU);
-                let normalized_phase = remainder / (std::f32::consts::TAU);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
+        let valid = mask
+            .into_iter()
+            .flat_map(|mask| mask.iter().copied())
+            .chain(std::iter::repeat(true));
+        let rgba: Vec<u8> = colors
+            .zip(valid)
+            .flat_map(|([r, g, b], valid)| [r, g, b, if valid { 255 } else { 0 }])
             .collect();
-
         rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
+            rgba,
             [cols as u32, rows as u32],
-            rerun::ColorModel::RGB,
+            rerun::ColorModel::RGBA,
             rerun::ChannelDatatype::U8,
         )
     }
 
-    fn rr_phase(phase: &Array2<f32>) -> rerun::Image {
-        let (rows, cols) = phase.dim();
-        // Logical order, so that arrays with non-standard strides (e.g. flipped views) are
-        // shown as indexed.
-        let rgb_vector: Vec<u8> = phase
-            .iter()
-            .flat_map(|&phase| {
-                let remainder = phase.rem_euclid(std::f32::consts::TAU);
-                let normalized_phase = remainder / (std::f32::consts::TAU);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
+    /// The cubehelix color of a (wrapped) phase.
+    fn phase_color(phase: f32) -> [u8; 3] {
+        let normalized_phase = phase.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+        cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+    }
 
-        rerun::Image::from_color_model_and_bytes(
-            rgb_vector,
-            [cols as u32, rows as u32],
-            rerun::ColorModel::RGB,
-            rerun::ChannelDatatype::U8,
+    /// The phase of `complex`, transparent outside `mask` (if any).
+    fn rr_phase_from_complex(
+        complex: &Array2<Complex<f32>>,
+        mask: Option<&Array2<bool>>,
+    ) -> rerun::Image {
+        rr_masked_rgba(
+            complex.dim(),
+            complex.iter().map(|z| phase_color(z.arg())),
+            mask,
         )
+    }
+
+    /// `phase`, transparent outside `mask` (if any).
+    fn rr_phase(phase: &Array2<f32>, mask: Option<&Array2<bool>>) -> rerun::Image {
+        rr_masked_rgba(phase.dim(), phase.iter().map(|&p| phase_color(p)), mask)
     }
 
     fn rr_stft_3d_tensor(
@@ -621,7 +630,7 @@ mod tests {
             let sec_patch =
                 secondary_image.slice(s![sec_image_range[0].clone(), sec_image_range[1].clone()]);
             let phase: Array2<f32> = (&ref_patch.map(|x| x.conj()) * &sec_patch).map(|x| x.arg());
-            rec.log("insar_phase", &rr_phase(&phase)).unwrap();
+            rec.log("insar_phase", &rr_phase(&phase, None)).unwrap();
 
             let lat_lon = secondary
                 .metadata
@@ -1515,7 +1524,7 @@ mod tests {
                     (s1 * s2.conj()).arg()
                 });
 
-            rr.log("phase", &rr_phase(&phase_diff))
+            rr.log("phase", &rr_phase(&phase_diff, None))
                 .expect("Could not log phase to Rerun");
 
             log::info!("Removing topographic phase");
@@ -1588,7 +1597,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("diff_phase", &rr_phase(&phase_diff))
+            rr.log("diff_phase", &rr_phase(&phase_diff, None))
                 .expect("Could not log phase to Rerun");
         }
     }
@@ -1710,19 +1719,14 @@ mod tests {
         (interferogram, coherence, tie_points)
     }
 
-    /// A grayscale image of `values` in `[0, 1]` (e.g. coherence).
-    fn rr_grayscale(values: &Array2<f32>) -> rerun::Image {
-        let (rows, cols) = values.dim();
-        let bytes: Vec<u8> = values
-            .iter()
-            .map(|&v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect();
-        rerun::Image::from_color_model_and_bytes(
-            bytes,
-            [cols as u32, rows as u32],
-            rerun::ColorModel::L,
-            rerun::ChannelDatatype::U8,
-        )
+    /// A grayscale image of `values` in `[0, 1]` (e.g. coherence), transparent outside `mask`
+    /// (if any).
+    fn rr_grayscale(values: &Array2<f32>, mask: Option<&Array2<bool>>) -> rerun::Image {
+        let gray = |v: f32| {
+            let level = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            [level; 3]
+        };
+        rr_masked_rgba(values.dim(), values.iter().map(|&v| gray(v)), mask)
     }
 
     /// Differential interferogram of the April 2016 Kumamoto earthquakes, following NASA
@@ -1745,8 +1749,11 @@ mod tests {
     /// 8. Terrain correction: resample onto a north-up latitude/longitude grid of 30 m pixels,
     ///    using the DEM points of the warp functions as tie points.
     ///
-    /// The results are logged to Rerun both in radar geometry and geocoded, with the extent of
-    /// the geocoded grid and the epicenter as geographic primitives for a map view. Enhanced
+    /// Finally, as the recipe suggests, the phase is masked where the coherence is below 0.3.
+    ///
+    /// The results are logged to Rerun both in radar geometry and geocoded, with pixels without
+    /// data (and, in the masked interferogram, with low coherence) transparent, and with the
+    /// extent of the geocoded grid and the epicenter as geographic primitives for a map view. Enhanced
     /// spectral diversity (ESD) is not applied (neither does the recipe), so small phase jumps
     /// can remain at the burst boundaries.
     #[test]
@@ -1918,29 +1925,57 @@ mod tests {
             start_time.elapsed()
         );
 
+        // Pixels where the interferogram has no data (zero) are transparent in all images:
+        // Goldstein filtering keeps those zeros, and the coherence there only comes from the
+        // valid neighbors in its window.
+        let data_mask = valid_data_mask(interferogram.view());
+        let geocoded_data_mask = valid_data_mask(geocoded_interferogram.view());
+        // The recipe's coherence mask, restricted to the pixels with data.
+        let mut geocoded_coherence_mask =
+            coherence_mask(geocoded_coherence.view(), COHERENCE_THRESHOLD);
+        geocoded_coherence_mask.zip_mut_with(&geocoded_data_mask, |valid, &has_data| {
+            *valid &= has_data;
+        });
+        log::info!(
+            "Coherence of at least {COHERENCE_THRESHOLD} in {} of {} geocoded pixels with data",
+            geocoded_coherence_mask
+                .iter()
+                .filter(|&&valid| valid)
+                .count(),
+            geocoded_data_mask.iter().filter(|&&valid| valid).count()
+        );
+
         rr.log(
             "kumamoto/interferogram",
-            &rr_phase_from_complex(&interferogram),
+            &rr_phase_from_complex(&interferogram, Some(&data_mask)),
         )
         .expect("Could not log the interferogram to Rerun");
         rr.log(
             "kumamoto/interferogram_filtered",
-            &rr_phase_from_complex(&filtered),
+            &rr_phase_from_complex(&filtered, Some(&data_mask)),
         )
         .expect("Could not log the filtered interferogram to Rerun");
-        rr.log("kumamoto/coherence", &rr_grayscale(&coherence))
-            .expect("Could not log the coherence to Rerun");
+        rr.log(
+            "kumamoto/coherence",
+            &rr_grayscale(&coherence, Some(&data_mask)),
+        )
+        .expect("Could not log the coherence to Rerun");
 
         // Geocoded images are north-up (row 0 is the northern edge of the grid). Their extent
         // and the epicenter are logged as geographic primitives, which a map view shows.
         rr.log(
             "kumamoto/geocoded/interferogram",
-            &rr_phase_from_complex(&geocoded_interferogram),
+            &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_data_mask)),
         )
         .expect("Could not log the geocoded interferogram to Rerun");
         rr.log(
+            "kumamoto/geocoded/interferogram_masked",
+            &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_coherence_mask)),
+        )
+        .expect("Could not log the masked geocoded interferogram to Rerun");
+        rr.log(
             "kumamoto/geocoded/coherence",
-            &rr_grayscale(&geocoded_coherence),
+            &rr_grayscale(&geocoded_coherence, Some(&geocoded_data_mask)),
         )
         .expect("Could not log the geocoded coherence to Rerun");
         rr.log(
@@ -2116,7 +2151,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx))
+            rr.log("topo_phase/approx", &rr_phase(&topo_phase_approx, None))
                 .expect("Could not log phase to Rerun");
 
             log::info!("Calculating topographic phase (exact)");
@@ -2181,7 +2216,7 @@ mod tests {
             let end_time = std::time::Instant::now();
             log::info!("Time taken: {:?}", end_time - start_time);
 
-            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact))
+            rr.log("topo_phase/exact", &rr_phase(&topo_phase_exact, None))
                 .expect("Could not log phase to Rerun");
         }
     }
@@ -3131,7 +3166,7 @@ mod tests {
             .expect("Could not log resampled_amplitude to Rerun");
 
         // Log phase for resampled data
-        let rr_resampled_phase = rr_phase_from_complex(&resampled_data);
+        let rr_resampled_phase = rr_phase_from_complex(&resampled_data, None);
         rr.log("resampled_phase", &rr_resampled_phase)
             .expect("Could not log resampled_phase to Rerun");
 
@@ -3145,7 +3180,7 @@ mod tests {
             .expect("Could not log reference_amplitude to Rerun");
 
         // Log phase for reference data
-        let rr_ref_phase = rr_phase_from_complex(&ref_array);
+        let rr_ref_phase = rr_phase_from_complex(&ref_array, None);
         rr.log("reference_phase", &rr_ref_phase)
             .expect("Could not log reference_phase to Rerun");
     }

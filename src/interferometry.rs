@@ -369,6 +369,45 @@ where
     sums
 }
 
+/// Coherence below which NASA's Sentinel-1 interferogram recipe considers the phase unreliable:
+/// "typically data with coherence values less than 0.3 are thrown out".
+///
+/// Source: <https://www.earthdata.nasa.gov/learn/data-recipes/create-interferogram-using-esas-sentinel-1-toolbox>
+pub const COHERENCE_THRESHOLD: f32 = 0.3;
+
+/// A coherence mask: `true` (valid) where `coherence` is at least `threshold` (e.g.
+/// [`COHERENCE_THRESHOLD`]), `false` elsewhere.
+///
+/// Pixels whose whole coherence window has no data have zero coherence (see [`coherence`]), so
+/// they are invalid for any positive threshold. But at the edges of the data, the window of a
+/// pixel without data can reach valid neighbors, so combine it with [`valid_data_mask`] to
+/// exclude all the pixels without data.
+pub fn coherence_mask(coherence: ArrayView2<'_, f32>, threshold: f32) -> Array2<bool> {
+    coherence.mapv(|gamma| gamma >= threshold)
+}
+
+/// A no-data mask: `true` (valid) where `data` is non-zero, `false` where it is zero, which is
+/// how the processing steps of this crate mark pixels without data (e.g. outside the valid
+/// samples of a burst, or outside the image when geocoding).
+pub fn valid_data_mask<T: Zero + Clone>(data: ArrayView2<'_, T>) -> Array2<bool> {
+    data.map(|value| !value.is_zero())
+}
+
+/// `data` with the pixels outside `mask` (where it is `false`) set to zero, i.e. to no data.
+///
+/// # Panics
+///
+/// If `data` and `mask` do not have the same shape.
+pub fn apply_mask<T: Zero + Clone>(mut data: Array2<T>, mask: ArrayView2<'_, bool>) -> Array2<T> {
+    assert_eq!(data.dim(), mask.dim(), "Data and mask shapes differ");
+    data.zip_mut_with(&mask, |value, &valid| {
+        if !valid {
+            *value = T::zero();
+        }
+    });
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +520,24 @@ mod tests {
             CoherenceWindow::default(),
         );
         assert!(gamma.iter().all(|&g| g == 0.0));
+    }
+
+    #[test]
+    fn masks() {
+        let coherence = ndarray::array![[0.0f32, 0.29], [0.3, 0.9]];
+        assert_eq!(
+            coherence_mask(coherence.view(), COHERENCE_THRESHOLD),
+            ndarray::array![[false, false], [true, true]]
+        );
+
+        let data = ndarray::array![[Complex::new(0.0f32, 0.0), Complex::new(0.0, 1.0)]];
+        let mask = valid_data_mask(data.view());
+        assert_eq!(mask, ndarray::array![[false, true]]);
+
+        let masked = apply_mask(
+            coherence,
+            ndarray::array![[true, false], [false, true]].view(),
+        );
+        assert_eq!(masked, ndarray::array![[0.0, 0.0], [0.0, 0.9]]);
     }
 }
