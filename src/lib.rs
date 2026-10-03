@@ -17,4 +17,6 @@ mod rerun_tests;
 pub mod satellite_orbit;
 pub mod sentinel;
 pub mod slc_image;
+#[cfg(test)]
+mod test_data;
 pub mod visualization;

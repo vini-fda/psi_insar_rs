@@ -290,24 +290,18 @@ pub fn check_for_layover(burst: &Sentinel1SlcIWSwath, dem: &DEM) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::granule_id::IWSwath;
-
     use super::*;
+    use crate::{
+        datasets::opentopography::dem_download::CopernicusDemType,
+        test_data::{burst_143_305967_iw3, dem_covering},
+    };
 
     #[test]
-    #[ignore = "Needs to open external files"]
+    #[ignore = "Needs to download external data"]
     fn test_check_layover() {
-        let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122546_20151022T122546_008265_00BA51_422D.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122546_20151010T122546_008090_00B578_BFAD.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
 
         println!("\nChecking layover in reference image...");
         let ref_layover = check_for_layover(&reference, &dem);

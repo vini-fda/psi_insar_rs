@@ -19,11 +19,11 @@ mod tests {
         },
         datasets::{
             asf::{
-                burst_download::{AsfBurstDownloader, BurstRequest, Polarization},
-                burst_search::{AsfBurstSearch, BurstSearchQuery, BurstSearchResult, SearchArea},
+                burst_download::Polarization,
+                burst_search::{AsfBurstSearch, BurstSearchQuery, SearchArea},
             },
             cdse::orbit_download::CdseOrbitDownloader,
-            opentopography::dem_download::{CopernicusDemType, OpenTopographyDemDownloader},
+            opentopography::dem_download::CopernicusDemType,
         },
         deburst::{BurstGeometry, Debursted, deburst},
         dem::DEM,
@@ -44,19 +44,11 @@ mod tests {
             radar_coords_to_pixel_coords, zero_doppler_time,
         },
         sentinel::{Sentinel1SlcIWBurst, Sentinel1SlcIWSwath},
+        test_data::{
+            STACK_143_305967_IW3, burst_143_305967_iw3, dem_covering, fetch_dem, load_burst,
+        },
         visualization::{cubehelix_colormap, turbo_colorized_values},
     };
-
-    /// The Copernicus DEM covering `bounds`, downloaded from OpenTopography on the first run
-    /// (requires OPENTOPOGRAPHY_API_KEY) and read from the cache afterwards.
-    fn fetch_dem(bounds: [f64; 4], dem_type: CopernicusDemType) -> DEM {
-        OpenTopographyDemDownloader::builder()
-            .build()
-            .fetch_dem(bounds, dem_type)
-            .unwrap_or_else(|err| {
-                panic!("Could not fetch the {dem_type} DEM for {bounds:?}: {err}")
-            })
-    }
 
     fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
         let name = &burst.granule_id.raw_filename;
@@ -184,16 +176,8 @@ mod tests {
         //Records logged during cargo test will not be captured by the test harness by default.
         // The Builder::is_test method can be used in unit tests to ensure logs will be captured
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
 
         let rr = rerun::RecordingStreamBuilder::new("plot_slc_images")
             .connect_grpc()
@@ -208,16 +192,8 @@ mod tests {
     #[ignore]
     fn compare_zero_doppler() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
         let osh1 = primary.orbital_state_history();
         let osh2 = secondary.orbital_state_history();
         let ground_target_pos =
@@ -266,7 +242,20 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_backgeocoding")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let dem = DEM::open_file("dem.tif");
+        // Backgeocoding
+        let bursts = [
+            "20151022",
+            "20150916",
+            // "20150928",
+            // "20151010",
+            // "20151103",
+            // "20151115",
+            // "20151127",
+        ]
+        .iter()
+        .map(|date| burst_143_305967_iw3(date))
+        .collect::<Vec<_>>();
+        let dem = dem_covering(&bursts, CopernicusDemType::Cop90);
         // DEM extent
         let dem_corners = dem.closed_corners_lat_lon();
         rr.log(
@@ -277,19 +266,6 @@ mod tests {
         )
         .unwrap();
 
-        // Backgeocoding
-        let bursts = [
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            // "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        ]
-        .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
-        .collect::<Vec<_>>();
         for burst in bursts {
             let annotation = &burst.metadata;
             let burst_name = &burst.granule_id.raw_filename;
@@ -347,16 +323,8 @@ mod tests {
     #[ignore]
     fn test_orbit_speed() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151103");
         let rr = rerun::RecordingStreamBuilder::new("test_orbit_speed")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -428,21 +396,17 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("test_baseline_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
         let secondaries = [
-            // "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            // "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            // "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            // "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            // "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            // "20150916",
+            // "20150928",
+            // "20151010",
+            // "20151103",
+            // "20151115",
+            "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -587,22 +551,12 @@ mod tests {
     #[test]
     #[ignore]
     fn coarse_coregistration_stack() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
         let secondaries = [
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-            "download/S1_305967_IW3_20150916T122546_VV_8302-BURST",
-            "download/S1_305967_IW3_20150928T122546_VV_5407-BURST",
-            "download/S1_305967_IW3_20151010T122546_VV_7501-BURST",
-            "download/S1_305967_IW3_20151103T122546_VV_AE93-BURST",
-            "download/S1_305967_IW3_20151115T122546_VV_8956-BURST",
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
+            "20151022", "20150916", "20150928", "20151010", "20151103", "20151115", "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let rec = rerun::RecordingStreamBuilder::new("coarse_coregistration_stack")
             .connect_grpc()
@@ -688,17 +642,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resample_secondary_to_reference() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
 
         let burst_index = 0;
         let resampled_data = crate::coregistration::warp_function::resample_secondary_to_reference(
@@ -777,7 +723,11 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -831,7 +781,11 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem_rgb() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_dem_rgb")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -914,17 +868,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_warp_function() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
         let rho = crate::coregistration::compute_warp_function(&reference, &secondary, &dem);
         let (rows, cols) = rho.dim();
         let rho = rho.slice(s![0..rows, 0..cols / 2]).to_owned();
@@ -941,12 +887,8 @@ mod tests {
     #[test]
     #[ignore]
     fn testfn_dem_radar_coords() {
-        let dem = DEM::open_file("dem.tif");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let dem = dem_covering([&reference], CopernicusDemType::Cop90);
         let rr = rerun::RecordingStreamBuilder::new("test_warp_fn_radar_coords")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance");
@@ -1301,11 +1243,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_spectrum_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
 
         let image = reference.data.array_f32();
         let rec =
@@ -1368,11 +1306,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_phase_visualization() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
 
         let array = reference.data.array_f32();
         // cut cols in half
@@ -1404,17 +1338,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_resampled_phase_difference() {
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
 
         // Secondary resampled to reference (also deramped)
         let burst_index = 0;
@@ -1468,48 +1394,13 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("differential_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        // The same IW3/VV burst of each acquisition. Bursts are downloaded from ASF on the first
-        // run (requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD) and read from the user cache
-        // directory afterwards (see `default_cache_dir`).
-        let downloader = AsfBurstDownloader::builder().build();
-        let load_burst = |granule: &str, burst_index: u32| {
-            let burst = BurstRequest::new(granule, IWSwath::IW3, Polarization::VV, burst_index);
-            let safe_dir = downloader
-                .fetch_burst(&burst)
-                .unwrap_or_else(|err| panic!("Could not fetch {burst:?}: {err:?}"));
-            Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, safe_dir).unwrap()
-        };
-        let reference = load_burst(
-            "S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48",
-            2,
-        );
-        let secondaries = [
-            (
-                "S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93",
-                2,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956",
-                4,
-            ),
-            (
-                "S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF",
-                4,
-            ),
-        ]
-        .map(|(granule, burst_index)| load_burst(granule, burst_index));
+        // The same IW3/VV burst of each acquisition, with the 2015-10-22 one as reference.
+        let reference = burst_143_305967_iw3("20151022");
+        let secondaries: Vec<_> = STACK_143_305967_IW3
+            .iter()
+            .filter(|(date, _, _)| *date != "20151022")
+            .map(|(date, _, _)| burst_143_305967_iw3(date))
+            .collect();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
         println!("Bounding box: {bounding_box:?}");
@@ -1909,29 +1800,15 @@ mod tests {
             })
             .collect();
 
-        // Downloaded from ASF on the first run (requires EARTHDATA_USERNAME and
-        // EARTHDATA_PASSWORD) and read from the user cache directory afterwards.
-        let downloader = AsfBurstDownloader::builder().build();
-        let load = |burst: &BurstSearchResult| {
-            let request = burst.request();
-            let safe_dir = downloader
-                .fetch_burst(&request)
-                .unwrap_or_else(|err| panic!("Could not fetch {request:?}: {err:?}"));
-            Sentinel1SlcIWSwath::load_swath_from_directory(request.subswath, safe_dir).unwrap()
-        };
-
         // Steps 2, 3 and 5, burst by burst. Each pair gets a DEM covering just its bursts,
         // since the warp function visits every DEM point.
         let mut references = Vec::new();
         let mut interferograms = Vec::new();
         let mut coherences = Vec::new();
         for (reference_burst, secondary_burst) in pairs {
-            let reference = load(reference_burst);
-            let secondary = load(secondary_burst);
-            let dem = fetch_dem(
-                bounding_box_from_stack([&reference, &secondary]),
-                CopernicusDemType::Cop30,
-            );
+            let reference = load_burst(&reference_burst.request());
+            let secondary = load_burst(&secondary_burst.request());
+            let dem = dem_covering([&reference, &secondary], CopernicusDemType::Cop30);
             log::info!("Processing burst {}", reference_burst.full_burst_id);
             let start_time = std::time::Instant::now();
             let (interferogram, coherence) =
@@ -2006,21 +1883,12 @@ mod tests {
         let rr = rerun::RecordingStreamBuilder::new("topo_phase_plot")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
         let secondaries = [
-            "download/S1A_IW_SLC__1SSV_20150916T122538_20150916T122603_007740_00AC19_8302.SAFE",
-            "download/S1A_IW_SLC__1SSV_20150928T122539_20150928T122606_007915_00B0D8_5407.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151103T122539_20151103T122603_008440_00BEE0_AE93.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151115T122533_20151115T122600_008615_00C3B4_8956.SAFE",
-            "download/S1A_IW_SLC__1SSV_20151127T122533_20151127T122557_008790_00C894_14CF.SAFE",
+            "20150916", "20150928", "20151010", "20151103", "20151115", "20151127",
         ]
         .iter()
-        .map(|name| Sentinel1SlcIWSwath::load_swath_from_directory(IWSwath::IW3, name).unwrap())
+        .map(|date| burst_143_305967_iw3(date))
         .collect::<Vec<_>>();
         let all_bursts = std::iter::once(&reference).chain(&secondaries);
         let bounding_box = bounding_box_from_stack(all_bursts.clone());
@@ -2239,16 +2107,8 @@ mod tests {
     fn warp_fn_offsets_histogram() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_histogram test.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop30);
@@ -2303,16 +2163,8 @@ mod tests {
     fn orbital_path_coregistration() {
         env_logger::init();
         log::info!("Starting orbital_path_coregistration test.");
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&primary, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
@@ -2494,16 +2346,8 @@ mod tests {
     fn warp_fn_offsets_mesh() {
         env_logger::init();
         log::info!("Starting warp_fn_offsets_mesh test.");
-        let reference = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
+        let reference = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
         let bounding_box = bounding_box_from_stack([&reference, &secondary]);
         log::info!("Downloading DEM");
         let dem = fetch_dem(bounding_box, CopernicusDemType::Cop90);
@@ -2590,17 +2434,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_flat_earth_dphi() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&primary, &secondary], CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2639,17 +2475,9 @@ mod tests {
     #[test]
     #[ignore]
     fn test_interpolated_flat_earth_dphi() {
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151022T122539_20151022T122606_008265_00BA51_5A48.SAFE",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1A_IW_SLC__1SSV_20151010T122539_20151010T122603_008090_00B578_7501.SAFE",
-        )
-        .unwrap();
-        let dem = DEM::open_file("dem.tif");
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151010");
+        let dem = dem_covering([&primary, &secondary], CopernicusDemType::Cop30);
         let rr = rerun::RecordingStreamBuilder::new("test_interpolated_flat_earth_dphi")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -2744,16 +2572,8 @@ mod tests {
     #[ignore]
     fn plot_warp_fn() {
         env_logger::init();
-        let primary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151022T122546_VV_5A48-BURST",
-        )
-        .unwrap();
-        let secondary = Sentinel1SlcIWSwath::load_swath_from_directory(
-            IWSwath::IW3,
-            "download/S1_305967_IW3_20151127T122546_VV_14CF-BURST",
-        )
-        .unwrap();
+        let primary = burst_143_305967_iw3("20151022");
+        let secondary = burst_143_305967_iw3("20151127");
         let [min_lat, max_lat, min_lon, max_lon] = &primary
             .metadata
             .geolocation_grid
@@ -2824,7 +2644,11 @@ mod tests {
     #[test]
     #[ignore]
     fn dem_mesh_test() {
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let rec = rerun::RecordingStreamBuilder::new("dem_mesh_test")
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
@@ -3006,7 +2830,11 @@ mod tests {
         rec.log_static("universe/z", &arrow_z).unwrap();
 
         // DEM
-        let dem = DEM::open_file("dem.tif");
+        // The area of the reference burst of the 2015 stack.
+        let dem = dem_covering(
+            [&burst_143_305967_iw3("20151022")],
+            CopernicusDemType::Cop90,
+        );
         let vertex_positions: Vec<[f32; 3]> = dem.vertex_positions();
         let vertex_normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; dem.len()];
         let vertex_colors: Vec<u32> = dem.vertex_colors();
