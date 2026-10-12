@@ -1382,6 +1382,151 @@ mod tests {
             .expect("Could not log phase_difference to Rerun");
     }
 
+    /// Differential interferograms of the [`STACK_143_305967_IW3`] stack over Mexico City (the
+    /// data of [`differential_phase_plot`]), processed like [`kumamoto_interferogram`]: the
+    /// 2015-10-22 burst is the reference, and each of the other 6 acquisitions is a secondary.
+    ///
+    /// The stack is fixed, so step 1 (the ASF search) is skipped, and each product holds the one
+    /// burst `143_305967_IW3`, so step 4 (deburst) is too. For each secondary:
+    ///
+    /// - Steps 2, 3 and 5: coregistration, interferogram, coherence and removal of the
+    ///   flat-earth and topographic phase ([`flattened_burst_interferogram`]).
+    /// - Step 6: multilook (6 range looks, square ground pixels: 6 × 1 in IW3).
+    /// - Step 7: Goldstein phase filtering.
+    /// - Step 8: terrain correction onto a north-up latitude/longitude grid of 30 m pixels.
+    ///
+    /// The tie points of the terrain correction only depend on the reference orbit and the DEM,
+    /// so the geocoding function and the grid are shared by all the interferograms, which are
+    /// then logged to Rerun on the same grid, one per `secondary_id` time step. The phase is also
+    /// masked where the coherence is below 0.3. There is no sea to mask over Mexico City.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    #[ignore]
+    fn mexico_city_interferograms() {
+        env_logger::init();
+        log::info!("Starting mexico_city_interferograms test.");
+        let rr = rerun::RecordingStreamBuilder::new("mexico_city_interferograms")
+            .connect_grpc()
+            .expect("Could not connect to local Rerun instance.");
+        const REFERENCE_DATE: &str = "20151022";
+        let reference = burst_143_305967_iw3(REFERENCE_DATE);
+        let secondaries: Vec<_> = STACK_143_305967_IW3
+            .iter()
+            .filter(|(date, _, _)| *date != REFERENCE_DATE)
+            .map(|(date, _, _)| burst_143_305967_iw3(date))
+            .collect();
+        // The same DEM as differential_phase_plot: one covering the whole stack.
+        let dem = dem_covering(
+            std::iter::once(&reference).chain(&secondaries),
+            CopernicusDemType::Cop30,
+        );
+        let looks = Looks::square_ground_pixel(6, &reference.metadata);
+        let reference_start_time = reference.metadata.ads_header.start_time;
+        let mut geocoding_grid = None;
+
+        for (id, secondary) in secondaries.iter().enumerate() {
+            rr.set_time_sequence("secondary_id", id as i64);
+            let temporal_baseline = secondary.metadata.ads_header.start_time - reference_start_time;
+            log::info!(
+                "Processing secondary {} ({} days from the reference)",
+                secondary.granule_id.raw_filename,
+                temporal_baseline.num_days()
+            );
+
+            // Steps 2, 3 and 5.
+            let start_time = std::time::Instant::now();
+            let (interferogram, coherence, tie_points) =
+                flattened_burst_interferogram(&reference, secondary, &dem);
+            log::info!("Time taken: {:?}", start_time.elapsed());
+
+            // Step 6: multilook, in the complex domain.
+            let interferogram = multilook(interferogram.view(), looks);
+            let coherence = multilook(coherence.view(), looks);
+
+            // Step 7: Goldstein phase filtering.
+            let filtered = GoldsteinFilter::default().apply(interferogram.view());
+
+            // Step 8: terrain correction. The geocoding function is built from the tie points of
+            // the first pair, moved to the multilooked image.
+            let (geocoding, grid) = geocoding_grid.get_or_insert_with(|| {
+                log::info!("Triangulating {} tie points", tie_points.len());
+                let geocoding = GeocodingFunction::new(tie_points.into_iter().map(|tie_point| {
+                    let [azimuth, range] =
+                        looks.multilooked_coords([tie_point.azimuth, tie_point.range]);
+                    TiePoint {
+                        azimuth,
+                        range,
+                        ..tie_point
+                    }
+                }));
+                let grid = LatLonGrid::covering(geocoding.bounds().unwrap(), 30.0);
+                log::info!("Geocoding onto {} × {} pixels", grid.rows, grid.cols);
+                (geocoding, grid)
+            });
+            let geocoded_interferogram = geocoding.geocode(filtered.view(), grid);
+            let geocoded_coherence = geocoding.geocode(coherence.view(), grid);
+
+            // Pixels without data are transparent, and the masked interferogram is also
+            // transparent where the coherence is low.
+            let data_mask = valid_data_mask(interferogram.view());
+            let geocoded_data_mask = valid_data_mask(geocoded_interferogram.view());
+            let mut geocoded_coherence_mask =
+                coherence_mask(geocoded_coherence.view(), COHERENCE_THRESHOLD);
+            geocoded_coherence_mask.zip_mut_with(&geocoded_data_mask, |valid, &has_data| {
+                *valid &= has_data;
+            });
+            log::info!(
+                "Coherence of at least {COHERENCE_THRESHOLD} in {} of {} geocoded pixels with data",
+                geocoded_coherence_mask
+                    .iter()
+                    .filter(|&&valid| valid)
+                    .count(),
+                geocoded_data_mask.iter().filter(|&&valid| valid).count()
+            );
+
+            rr.log(
+                "mexico_city/interferogram",
+                &rr_phase_from_complex(&interferogram, Some(&data_mask)),
+            )
+            .expect("Could not log the interferogram to Rerun");
+            rr.log(
+                "mexico_city/interferogram_filtered",
+                &rr_phase_from_complex(&filtered, Some(&data_mask)),
+            )
+            .expect("Could not log the filtered interferogram to Rerun");
+            rr.log(
+                "mexico_city/coherence",
+                &rr_grayscale(&coherence, Some(&data_mask)),
+            )
+            .expect("Could not log the coherence to Rerun");
+            rr.log(
+                "mexico_city/geocoded/interferogram",
+                &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_data_mask)),
+            )
+            .expect("Could not log the geocoded interferogram to Rerun");
+            rr.log(
+                "mexico_city/geocoded/interferogram_masked",
+                &rr_phase_from_complex(&geocoded_interferogram, Some(&geocoded_coherence_mask)),
+            )
+            .expect("Could not log the masked geocoded interferogram to Rerun");
+            rr.log(
+                "mexico_city/geocoded/coherence",
+                &rr_grayscale(&geocoded_coherence, Some(&geocoded_data_mask)),
+            )
+            .expect("Could not log the geocoded coherence to Rerun");
+        }
+
+        if let Some((_, grid)) = &geocoding_grid {
+            rr.log_static(
+                "mexico_city/geocoded/extent",
+                &rerun::GeoLineStrings::from_lat_lon([grid.closed_corners_lat_lon()])
+                    .with_radii([rerun::Radius::new_ui_points(2.0)])
+                    .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
+            )
+            .expect("Could not log the geocoded extent to Rerun");
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     #[test]
     #[ignore]
