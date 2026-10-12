@@ -51,7 +51,7 @@ mod tests {
         test_data::{
             STACK_143_305967_IW3, burst_143_305967_iw3, dem_covering, fetch_dem, load_burst,
         },
-        visualization::{cubehelix_colormap, turbo_colorized_values},
+        visualization::{cubehelix_phase_color, turbo_colorized_values},
     };
 
     fn plot_burst_amplitude(rr: &RecordingStream, burst: &Sentinel1SlcIWBurst) {
@@ -134,12 +134,6 @@ mod tests {
         )
     }
 
-    /// The cubehelix color of a (wrapped) phase.
-    fn phase_color(phase: f32) -> [u8; 3] {
-        let normalized_phase = phase.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
-        cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-    }
-
     /// The phase of `complex`, transparent outside `mask` (if any).
     fn rr_phase_from_complex(
         complex: &Array2<Complex<f32>>,
@@ -147,14 +141,18 @@ mod tests {
     ) -> rerun::Image {
         rr_masked_rgba(
             complex.dim(),
-            complex.iter().map(|z| phase_color(z.arg())),
+            complex.iter().map(|z| cubehelix_phase_color(z.arg())),
             mask,
         )
     }
 
     /// `phase`, transparent outside `mask` (if any).
     fn rr_phase(phase: &Array2<f32>, mask: Option<&Array2<bool>>) -> rerun::Image {
-        rr_masked_rgba(phase.dim(), phase.iter().map(|&p| phase_color(p)), mask)
+        rr_masked_rgba(
+            phase.dim(),
+            phase.iter().map(|&p| cubehelix_phase_color(p)),
+            mask,
+        )
     }
 
     fn rr_stft_3d_tensor(
@@ -686,9 +684,7 @@ mod tests {
             .iter()
             .flat_map(|&x| {
                 let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+                cubehelix_phase_color(phase)
             })
             .collect();
         let rr_image = rerun::Image::from_color_model_and_bytes(
@@ -718,9 +714,7 @@ mod tests {
             .iter()
             .flat_map(|&x| {
                 let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+                cubehelix_phase_color(phase)
             })
             .collect();
         let rr_image = rerun::Image::from_color_model_and_bytes(
@@ -1330,9 +1324,7 @@ mod tests {
             .iter()
             .flat_map(|&x| {
                 let phase = x.arg();
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
+                cubehelix_phase_color(phase)
             })
             .collect();
         let rec = rerun::RecordingStreamBuilder::new("image_phase_visualization").connect_grpc()?;
@@ -1379,14 +1371,7 @@ mod tests {
             .connect_grpc()
             .expect("Could not connect to local Rerun instance.");
         let vector = phase_diff.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&phase| {
-                let normalized_phase =
-                    (phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
+        let rgb_vector: Vec<u8> = vector.into_iter().flat_map(cubehelix_phase_color).collect();
         let phase_diff_img = rerun::Image::from_color_model_and_bytes(
             rgb_vector,
             [cols as u32 / 2, rows as u32],
@@ -2596,12 +2581,9 @@ mod tests {
         });
         let vector = data.as_slice_memory_order().unwrap().to_vec();
         let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&phase| {
-                let normalized_phase =
-                    (phase + std::f64::consts::PI) / (2.0 * std::f64::consts::PI);
-                cubehelix_colormap(normalized_phase as f32).map(|x| (x * 255.0) as u8)
-            })
+            .into_iter()
+            .map(|x| x as f32)
+            .flat_map(cubehelix_phase_color)
             .collect();
         let rr_image = rerun::Image::from_color_model_and_bytes(
             rgb_vector,
@@ -2643,11 +2625,9 @@ mod tests {
         let (az_size, rg_size) = data.dim();
         let vector = data.as_slice_memory_order().unwrap().to_vec();
         let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&phase| {
-                let normalized_phase = phase / (2.0 * std::f64::consts::PI);
-                cubehelix_colormap(normalized_phase as f32).map(|x| (x * 255.0) as u8)
-            })
+            .into_iter()
+            .map(|x| x as f32)
+            .flat_map(cubehelix_phase_color)
             .collect();
         let rr_image = rerun::Image::from_color_model_and_bytes(
             rgb_vector,
@@ -2692,13 +2672,7 @@ mod tests {
         let phase = phase.slice(s![.., 0..phase.dim().1 / 2]).to_owned();
         let (az_size, rg_size) = phase.dim();
         let vector = phase.as_slice_memory_order().unwrap().to_vec();
-        let rgb_vector: Vec<u8> = vector
-            .iter()
-            .flat_map(|&phase| {
-                let normalized_phase = phase / (2.0 * std::f32::consts::PI);
-                cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
-            })
-            .collect();
+        let rgb_vector: Vec<u8> = vector.into_iter().flat_map(cubehelix_phase_color).collect();
         let rr_image = rerun::Image::from_color_model_and_bytes(
             rgb_vector,
             [rg_size as u32, az_size as u32],
