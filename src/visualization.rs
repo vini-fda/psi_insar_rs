@@ -1,3 +1,15 @@
+/// Colors of the cubehelix cyclic colormap, from the BEAM colour palette.
+const CUBEHELIX_COLORS: [[f32; 3]; 8] = [
+    [110.0 / 255.0, 60.0 / 255.0, 170.0 / 255.0],
+    [210.0 / 255.0, 60.0 / 255.0, 160.0 / 255.0],
+    [1.0, 110.0 / 255.0, 70.0 / 255.0],
+    [200.0 / 255.0, 200.0 / 255.0, 50.0 / 255.0],
+    [80.0 / 255.0, 245.0 / 255.0, 100.0 / 255.0],
+    [25.0 / 255.0, 200.0 / 255.0, 180.0 / 255.0],
+    [60.0 / 255.0, 130.0 / 255.0, 220.0 / 255.0],
+    [100.0 / 255.0, 70.0 / 255.0, 190.0 / 255.0],
+];
+
 /// Turbo colormap (polynomial approximation)
 /// Reference: <https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html>
 /// Original LUT: <https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f>
@@ -91,63 +103,44 @@ pub fn turbo_colormap_bytes(x: f32) -> u32 {
     ((red as u32) << 24) | ((green as u32) << 16) | ((blue as u32) << 8) | (alpha as u32)
 }
 
-/// Cubehelix cycle colormap
-/// Based on the BEAM Color Palette Definition
-pub fn cubehelix_colormap(x: f32) -> [f32; 3] {
-    // Color points from the palette (normalized to [0,1])
-    let colors: [[f32; 3]; 8] = [
-        [110.0 / 255.0, 60.0 / 255.0, 170.0 / 255.0], // color0
-        [210.0 / 255.0, 60.0 / 255.0, 160.0 / 255.0], // color1
-        [1.0, 110.0 / 255.0, 70.0 / 255.0],           // color2
-        [200.0 / 255.0, 200.0 / 255.0, 50.0 / 255.0], // color3
-        [80.0 / 255.0, 245.0 / 255.0, 100.0 / 255.0], // color4
-        [25.0 / 255.0, 200.0 / 255.0, 180.0 / 255.0], // color5
-        [60.0 / 255.0, 130.0 / 255.0, 220.0 / 255.0], // color6
-        [100.0 / 255.0, 70.0 / 255.0, 190.0 / 255.0], // color7
-    ];
-
-    // Wrap input to [0, 1]
-    let x = x.rem_euclid(1.0);
-
-    // Scale x to [0, 7] to match our 8 color points
-    let x_scaled = x * 7.0;
-
-    // Get the two colors to interpolate between
-    let idx = x_scaled.floor() as usize;
-    let t = x_scaled - idx as f32;
-
-    // Handle the wrap-around case
-    let (c1, c2) = if idx == 7 {
-        (colors[7], colors[0])
-    } else {
-        (colors[idx], colors[idx + 1])
-    };
-
-    // Cubic interpolation
+/// Uniform Catmull–Rom interpolation between the control points `p1` and `p2`.
+///
+/// `p0` and `p3` are the neighbouring control points.
+///
+/// The spline passes exactly through its control points (`f(0) == p1`,
+/// `f(1) == p2`) and is C1 continuous where segments meet.
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let t2 = t * t;
     let t3 = t2 * t;
+    0.5 * ((2.0 * p1)
+        + (p2 - p0) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (3.0f32.mul_add(p1, -p0) - 3.0 * p2 + p3) * t3)
+}
 
-    // Cubic interpolation coefficients
-    let a = -0.5 * c1[0] + 1.5 * c2[0] - 1.5 * c1[0] + 0.5 * c2[0];
-    let b = c1[0] - 2.5 * c2[0] + 2.0 * c1[0] - 0.5 * c2[0];
-    let c = -0.5 * c1[0] + 0.5 * c2[0];
-    let d = c1[0];
+/// Evaluates the closed cubehelix loop at `t`, taken modulo `1`.
+fn cubehelix_colormap(t: f32) -> [f32; 3] {
+    const CONTROL_POINTS: usize = CUBEHELIX_COLORS.len();
 
-    let red = a * t3 + b * t2 + c * t + d;
+    // The loop has as many segments as control points, because the last segment closes it
+    // by running from point 7 back to point 0.
+    let x = t.rem_euclid(1.0) * CONTROL_POINTS as f32;
+    let segment = (x.floor() as usize) % CONTROL_POINTS;
+    let local = x - x.floor();
 
-    let a = -0.5 * c1[1] + 1.5 * c2[1] - 1.5 * c1[1] + 0.5 * c2[1];
-    let b = c1[1] - 2.5 * c2[1] + 2.0 * c1[1] - 0.5 * c2[1];
-    let c = -0.5 * c1[1] + 0.5 * c2[1];
-    let d = c1[1];
+    let point = |offset: usize| CUBEHELIX_COLORS[(segment + offset) % CONTROL_POINTS];
+    let (p0, p1, p2, p3) = (point(CONTROL_POINTS - 1), point(0), point(1), point(2));
 
-    let green = a * t3 + b * t2 + c * t + d;
+    let mut rgb = [0.0; 3];
+    for (channel, out) in rgb.iter_mut().enumerate() {
+        *out =
+            catmull_rom(p0[channel], p1[channel], p2[channel], p3[channel], local).clamp(0.0, 1.0);
+    }
+    rgb
+}
 
-    let a = -0.5 * c1[2] + 1.5 * c2[2] - 1.5 * c1[2] + 0.5 * c2[2];
-    let b = c1[2] - 2.5 * c2[2] + 2.0 * c1[2] - 0.5 * c2[2];
-    let c = -0.5 * c1[2] + 0.5 * c2[2];
-    let d = c1[2];
-
-    let blue = a * t3 + b * t2 + c * t + d;
-
-    [red, green, blue]
+/// The cubehelix color of an arbitrary phase, in the RGB format with u8 samples (0..=255).
+pub fn cubehelix_phase_color(phase: f32) -> [u8; 3] {
+    let normalized_phase = phase.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+    cubehelix_colormap(normalized_phase).map(|x| (x * 255.0) as u8)
 }
