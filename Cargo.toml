@@ -34,5 +34,5 @@ zip = { version = "8.6.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-rerun = { version = "0.38.1", default-features = false, features = ["sdk"] }
+rerun = { version = "0.40.0", default-features = false, features = ["sdk"] }
 rand = "0.10.3"
